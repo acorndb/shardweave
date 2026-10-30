@@ -186,6 +186,11 @@ type HandshakeResponse41 struct {
 func (r *HandshakeResponse41) Encode() ([]byte, error) {
 	capability := r.Capability
 	capability |= mysql.ClientProtocol41 | mysql.ClientSecureConnection | mysql.ClientPluginAuth
+	if r.Database == "" {
+		capability &^= mysql.ClientConnectWithDB
+	} else {
+		capability |= mysql.ClientConnectWithDB
+	}
 
 	auth := r.AuthResponse
 	authLEI := packet.AppendLenEncInt(nil, uint64(len(auth)))
@@ -199,8 +204,7 @@ func (r *HandshakeResponse41) Encode() ([]byte, error) {
 	}
 
 	length := 4 + 4 + 1 + 23 + len(r.Username) + 1 + len(authLEI) + len(auth) + len(plugin) + 1
-	if r.Database != "" {
-		capability |= mysql.ClientConnectWithDB
+	if capability&mysql.ClientConnectWithDB != 0 {
 		length += len(r.Database) + 1
 	}
 
