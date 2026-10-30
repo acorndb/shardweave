@@ -14,6 +14,7 @@ test-unit:
 
 test-integration:
 	$(GO) test -race -count=1 -timeout 20m -v ./test/differential/ -run TestNullProxyCalibration
+	$(GO) test -race -count=1 -timeout 20m -v ./test/handshake/ -run TestClientDial_RealMySQL
 
 lint:
 	$(GO) vet ./...

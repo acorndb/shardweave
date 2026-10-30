@@ -28,8 +28,8 @@ sharding-proxy 是 Go 1.25+ 项目（module: `github.com/sharding-proxy`）：My
 - 测试文件与被测代码**同包、同目录**；命名规则：**正式文件名 + `_test`**。例如 `conn.go` → `conn_test.go`，`encoding.go` → `encoding_test.go`。不要另起无关的 `xxx_test.go` 名称（跨多文件的包级用例可用 `package_test.go` 等少数例外，并在注释说明）。
 - 优先**表驱动** + `t.Run(tc.name, ...)`（参考 `test/differential/` 中的对比与脚本风格）。
 - 断言使用 `github.com/stretchr/testify`。
-- **单元测试**（`-short`）：不得依赖 Docker、真实 MySQL、网络或外部服务；用 fake/stub/内存实现。
-- **差分 / 集成**：放在 `test/differential/`（或后续 `test/e2e/`）；Docker 不可用时跳过。需要 Docker 的用例须在 `-short` 下 Skip。
+- **单元测试**（`-short`）：不得依赖 Docker、真实 MySQL、网络或外部服务；用 fake/stub/内存实现。配置与容器夹具**不要**放进产品包目录（如 `mysql/`、`pool/`）。
+- **差分 / 集成 / 冒烟**：一律放在仓库根下 `test/`（如 `test/differential/`、`test/handshake/`、后续 `test/e2e/`）；相关 `testdata/`、MySQL cnf、init.sql 等只放在对应 `test/...` 子目录。Docker 不可用时跳过；需要 Docker 的用例须在 `-short` 下 Skip。
 - 可选：纯集成文件可用 `xxx_integration_test.go` + 首行 `//go:build integration`；与默认 `go test` 分离时须在文档/Makefile 中说明如何跑。
 - 测试命名：`TestXxx`；差分校准类保持现有 `TestNullProxyCalibration` / 后续 `TestPassthroughDifferential` 风格。
 

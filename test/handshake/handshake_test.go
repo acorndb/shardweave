@@ -1,8 +1,9 @@
-package client_test
+package handshake_test
 
 import (
 	"context"
 	"net"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,20 +12,22 @@ import (
 	mysqltc "github.com/testcontainers/testcontainers-go/modules/mysql"
 )
 
-// TestDial_RealMySQL verifies our client completes a native-password handshake
-// against a real MySQL 8 container (P0 smoke; no query path yet).
-func TestDial_RealMySQL(t *testing.T) {
+// TestClientDial_RealMySQL verifies P0 client handshake against MySQL 8.
+// Config lives under test/handshake/testdata — not inside mysql/ packages.
+func TestClientDial_RealMySQL(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short 模式跳过需要 Docker 的握手冒烟")
 	}
 
 	ctx := context.Background()
-	// Force native password: our P0 client does not yet handle caching_sha2 AuthSwitch.
+	cfg, err := filepath.Abs(filepath.Join("testdata", "native.cnf"))
+	require.NoError(t, err)
+
 	c, err := mysqltc.Run(ctx, "mysql:8.0",
 		mysqltc.WithDatabase("smoke"),
 		mysqltc.WithUsername("smoke"),
 		mysqltc.WithPassword("smoke-pass"),
-		mysqltc.WithConfigFile("testdata/native.cnf"),
+		mysqltc.WithConfigFile(cfg),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Terminate(ctx) })
