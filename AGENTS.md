@@ -25,7 +25,7 @@ sharding-proxy 是 Go 1.25+ 项目（module: `github.com/sharding-proxy`）：My
 
 ### 测试约定
 
-- 测试文件与被测代码同包，命名 `xxx_test.go`。
+- 测试文件与被测代码**同包、同目录**；命名规则：**正式文件名 + `_test`**。例如 `conn.go` → `conn_test.go`，`encoding.go` → `encoding_test.go`。不要另起无关的 `xxx_test.go` 名称（跨多文件的包级用例可用 `package_test.go` 等少数例外，并在注释说明）。
 - 优先**表驱动** + `t.Run(tc.name, ...)`（参考 `test/differential/` 中的对比与脚本风格）。
 - 断言使用 `github.com/stretchr/testify`。
 - **单元测试**（`-short`）：不得依赖 Docker、真实 MySQL、网络或外部服务；用 fake/stub/内存实现。
