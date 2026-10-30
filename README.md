@@ -11,7 +11,13 @@ M1(透传)起步。差分测试基建已落地:零号代理(纯字节转发的 T
 
 ## 开发
 
-要求:Go 1.25+(随依赖自动选择工具链);Docker(差分测试用,不可用时自动跳过)。
+要求:Go 1.25+（引入 tidb/parser 后 go.mod 可能要求更高工具链，随 `GOTOOLCHAIN=auto` 自动下载）;Docker(差分测试用,不可用时自动跳过)。
+
+## P0 已落地
+
+- `mysql/packet`：长度编码 + 帧读写（对齐 go-mysql `WritePacket` 前 4 字节 header）
+- `mysql/auth` + `server`/`client`：HandshakeV10 / native-password 内存闭环
+- `sql/parser`：tidb/parser 包装（panic→error）；数据面尚未改写
 
 ```sh
 make build            # 编译
