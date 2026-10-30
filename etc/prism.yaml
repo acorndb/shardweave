@@ -1,0 +1,25 @@
+# Example prism M1 passthrough config.
+# Start: go run ./cmd/prism -config etc/prism.yaml
+# Reload users/log: kill -USR1 <pid>
+
+listen: "0.0.0.0:3307"
+
+users:
+  - name: root
+    password: "root"
+
+backend:
+  address: "127.0.0.1:3306"
+  user: root
+  password: "root"
+  database: ""
+
+pool:
+  capacity: 4
+  max_capacity: 16
+  get_timeout: 2s
+
+log:
+  level: info
+
+termination_drain: 5s

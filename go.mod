@@ -4,8 +4,10 @@ go 1.27.3
 
 require (
 	github.com/go-sql-driver/mysql v1.10.1
+	github.com/pingcap/tidb/pkg/parser v0.0.0-20261030090024-427d73796829
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go/modules/mysql v0.44.0
+	go.yaml.in/yaml/v3 v3.0.5
 )
 
 require (
@@ -47,7 +49,6 @@ require (
 	github.com/pingcap/errors v0.11.5-0.20250523034308-74f78ae071ee // indirect
 	github.com/pingcap/failpoint v0.0.0-20240528011301-b51a646c7c86 // indirect
 	github.com/pingcap/log v1.1.0 // indirect
-	github.com/pingcap/tidb/pkg/parser v0.0.0-20261030090024-427d73796829 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.6 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
@@ -63,7 +64,6 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
