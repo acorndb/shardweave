@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/acorndb/prism/mysql"
-	"github.com/acorndb/prism/mysql/packet"
+	"github.com/acorndb/prism/pkg/mysql"
+	"github.com/acorndb/prism/pkg/mysql/packet"
 )
 
 // Auth plugin names (MySQL / go-mysql).

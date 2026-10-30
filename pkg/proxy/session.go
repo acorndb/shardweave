@@ -6,11 +6,11 @@ import (
 	"net"
 	"strings"
 
-	"github.com/acorndb/prism/mysql"
-	"github.com/acorndb/prism/mysql/packet"
-	"github.com/acorndb/prism/mysql/server"
-	"github.com/acorndb/prism/pool"
-	"github.com/acorndb/prism/session"
+	"github.com/acorndb/prism/pkg/mysql"
+	"github.com/acorndb/prism/pkg/mysql/packet"
+	"github.com/acorndb/prism/pkg/mysql/server"
+	"github.com/acorndb/prism/pkg/pool"
+	"github.com/acorndb/prism/pkg/session"
 )
 
 // SessionConfig wires frontend auth and backend pool for passthrough.
@@ -34,7 +34,7 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 	var sticky pool.Backend
 	defer func() {
 		if sticky != nil {
-			_ = sticky.Close()
+			_ = cfg.Pool.Discard(sticky)
 		}
 	}()
 
@@ -65,7 +65,7 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 			db := string(data[1:])
 			st.SetDatabase(db)
 			if err := withBackend(ctx, cfg.Pool, st, &sticky, func(b pool.Backend) error {
-				return execCommand(front, b, data, false)
+				return execCommand(front, b, st, data, false)
 			}); err != nil {
 				return err
 			}
@@ -77,8 +77,11 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 			if db, ok := parseUse(sql); ok {
 				st.SetDatabase(db)
 			}
+			if cs, ok := parseSetNames(sql); ok {
+				st.SetCharset(cs)
+			}
 			if err := withBackend(ctx, cfg.Pool, st, &sticky, func(b pool.Backend) error {
-				return execCommand(front, b, data, false)
+				return execCommand(front, b, st, data, false)
 			}); err != nil {
 				return err
 			}
@@ -86,13 +89,13 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 			// Statement IDs are connection-local → pin backend.
 			st.MarkReserved()
 			if err := withBackend(ctx, cfg.Pool, st, &sticky, func(b pool.Backend) error {
-				return execCommand(front, b, data, true)
+				return execCommand(front, b, st, data, true)
 			}); err != nil {
 				return err
 			}
 		case mysql.ComStmtExecute, mysql.ComStmtReset:
 			if err := withBackend(ctx, cfg.Pool, st, &sticky, func(b pool.Backend) error {
-				return execCommand(front, b, data, false)
+				return execCommand(front, b, st, data, false)
 			}); err != nil {
 				return err
 			}
@@ -101,6 +104,13 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 			if err := withBackend(ctx, cfg.Pool, st, &sticky, func(b pool.Backend) error {
 				return writeBackend(b, data)
 			}); err != nil {
+				return err
+			}
+		case mysql.ComResetConnection:
+			if err := handleComResetConnection(ctx, cfg.Pool, st, &sticky); err != nil {
+				return err
+			}
+			if err := writeOK(front); err != nil {
 				return err
 			}
 		default:
@@ -129,31 +139,87 @@ func parseUse(sql string) (string, bool) {
 	return rest, true
 }
 
+func parseSetNames(sql string) (string, bool) {
+	s := strings.TrimSpace(sql)
+	s = strings.TrimSuffix(s, ";")
+	s = strings.TrimSpace(s)
+	upper := strings.ToUpper(s)
+	const prefix = "SET NAMES"
+	if !strings.HasPrefix(upper, prefix) {
+		return "", false
+	}
+	rest := strings.TrimSpace(s[len(prefix):])
+	if rest == "" {
+		return "", false
+	}
+	// Take first token; ignore optional COLLATE clause.
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return "", false
+	}
+	cs := strings.Trim(fields[0], "`\"'")
+	if cs == "" {
+		return "", false
+	}
+	return cs, true
+}
+
+// handleComResetConnection releases any sticky backend (Reset via pool.Release)
+// and clears session sticky flags while preserving current database.
+func handleComResetConnection(ctx context.Context, p *pool.Pool, st *session.State, sticky *pool.Backend) error {
+	_ = ctx
+	if *sticky != nil {
+		b := *sticky
+		*sticky = nil
+		if err := p.Release(b); err != nil {
+			// Release already closed on reset failure; still clear session.
+			st.Reset()
+			return nil
+		}
+	}
+	st.Reset()
+	return nil
+}
+
 func withBackend(ctx context.Context, p *pool.Pool, st *session.State, sticky *pool.Backend, fn func(pool.Backend) error) error {
 	var b pool.Backend
 	var err error
-	release := false
-	switch {
-	case st.NeedsSticky() && *sticky != nil:
+	if *sticky != nil {
 		b = *sticky
-	case st.NeedsSticky():
+	} else {
 		b, err = p.Acquire(ctx)
 		if err != nil {
 			return err
 		}
-		*sticky = b
-	default:
-		b, err = p.Acquire(ctx)
-		if err != nil {
-			return err
-		}
-		release = true
 	}
+
+	if err := alignBackend(ctx, b, st); err != nil {
+		if *sticky == nil {
+			_ = p.Release(b)
+		}
+		return err
+	}
+
 	ferr := fn(b)
-	if release {
-		_ = p.Release(b)
+
+	if st.NeedsSticky() {
+		*sticky = b
+		return ferr
 	}
+	// Transaction ended or never sticky — return to pool.
+	*sticky = nil
+	_ = p.Release(b)
 	return ferr
+}
+
+func alignBackend(ctx context.Context, b pool.Backend, st *session.State) error {
+	a, ok := b.(interface {
+		Align(context.Context, string, string) error
+	})
+	if !ok {
+		return nil
+	}
+	return a.Align(ctx, st.Database(), st.Charset())
 }
 
 func writeBackend(b pool.Backend, cmd []byte) error {
@@ -168,7 +234,7 @@ func writeBackend(b pool.Backend, cmd []byte) error {
 	return back.WritePacket(buf)
 }
 
-func execCommand(front *packet.Conn, b pool.Backend, cmd []byte, prepare bool) error {
+func execCommand(front *packet.Conn, b pool.Backend, st *session.State, cmd []byte, prepare bool) error {
 	mb, ok := b.(*pool.MySQLBackend)
 	if !ok {
 		return fmt.Errorf("proxy: backend type %T not supported", b)
@@ -185,7 +251,12 @@ func execCommand(front *packet.Conn, b pool.Backend, cmd []byte, prepare bool) e
 	if prepare {
 		return mysql.ForwardPrepareResponse(front, back, deprecateEOF)
 	}
-	return mysql.ForwardResponse(front, back, deprecateEOF)
+	status, err := mysql.ForwardResponse(front, back, deprecateEOF)
+	if err != nil {
+		return err
+	}
+	st.SetInTx(status&mysql.ServerStatusInTrans != 0)
+	return nil
 }
 
 func writeOK(front *packet.Conn) error {

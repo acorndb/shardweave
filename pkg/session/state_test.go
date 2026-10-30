@@ -3,7 +3,7 @@ package session_test
 import (
 	"testing"
 
-	"github.com/acorndb/prism/session"
+	"github.com/acorndb/prism/pkg/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,6 +39,22 @@ func TestState_NeedsSticky(t *testing.T) {
 	s.SetInTx(false)
 	s.MarkReserved()
 	require.True(t, s.NeedsSticky())
+}
+
+func TestState_Reset(t *testing.T) {
+	s := session.NewState()
+	s.SetDatabase("app")
+	s.SetCharset("utf8mb4")
+	s.SetInTx(true)
+	s.MarkReserved()
+
+	s.Reset()
+
+	require.Equal(t, "app", s.Database(), "COM_RESET_CONNECTION preserves current database")
+	require.Equal(t, "", s.Charset())
+	require.False(t, s.InTx())
+	require.False(t, s.Reserved())
+	require.False(t, s.NeedsSticky())
 }
 
 func TestDetectReservedSQL(t *testing.T) {

@@ -126,6 +126,19 @@ func (p *Pool) Release(b Backend) error {
 	return nil
 }
 
+// Discard closes b and drops it from the in-use count without returning it to the idle list.
+// Used when a sticky/reserved frontend session disconnects (Vitess-style terminate).
+func (p *Pool) Discard(b Backend) error {
+	if b == nil {
+		return nil
+	}
+	err := b.Close()
+	p.mu.Lock()
+	p.active--
+	p.mu.Unlock()
+	return err
+}
+
 // Close closes idle backends; in-use backends are closed when released.
 func (p *Pool) Close() error {
 	p.mu.Lock()

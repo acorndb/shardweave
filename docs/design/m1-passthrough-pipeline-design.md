@@ -104,7 +104,7 @@ mysql/server 编码响应 → client
 ### 3.2 包与依赖
 
 ```
-cmd/sharding-proxy/
+cmd/prism/
 mysql/{packet,auth,server,client,charset}
 session/{state,stickiness}          # stickiness M1 可仅接口/空实现
 pool/
@@ -201,7 +201,7 @@ type BackendPool interface {
 - 连接阶段：Handshake、Auth — **`mysql_native_password` + `caching_sha2_password`**（D1-A），本地用户表校验
 - `COM_QUIT` / `COM_PING` / `COM_INIT_DB` / `COM_QUERY`
 - `COM_STMT_PREPARE` / `COM_STMT_EXECUTE` / `COM_STMT_CLOSE` / `COM_STMT_RESET`（与现有 CalibrationScript 对齐）
-- `COM_RESET_CONNECTION`（前端）：清会话态；后端归还池前优先 `COM_RESET_CONNECTION`（MySQL 5.7+）
+- `COM_RESET_CONNECTION`（前端）：清会话态（**保留当前 database**，对齐 MySQL/ProxySQL）；解除 reserved / inTx；若有 sticky 后端则对其发 `COM_RESET_CONNECTION` 后归还或丢弃，再回前端 OK。后端归还共享池前同样优先 `COM_RESET_CONNECTION`（MySQL 5.7+）。
 
 暂缓：压缩协议、全量 `COM_FIELD_LIST`、binlog dump、多结果集边界情况的极致对齐（差分暴露后再补）。
 
@@ -230,24 +230,24 @@ type BackendPool interface {
 跟踪并在借后端连接时同步（可复用连接时）：
 
 - current database（`COM_INIT_DB` / `USE`）
-- charset / collation（握手与 `SET NAMES` 的有限子集）
-- 事务中标志（`BEGIN`/`COMMIT`/`ROLLBACK` 或 server status 位）— 事务期间连接钉住，提交/回滚后再归还
+- charset / collation（握手与 `SET NAMES` 的有限子集；首批对齐以 `USE` + `SET NAMES`/charset 为准，`sql_mode` / `autocommit` 为紧随子项）
+- **事务中标志：以转发响应中的 `SERVER_STATUS_IN_TRANS` 为准**（ProxySQL 同款；覆盖隐式事务与 `autocommit=0`），不单靠解析 `BEGIN`/`COMMIT`/`ROLLBACK`。事务期间钉住同一后端，status 清位后再可归还。
 
 #### 粘性 / reserved（D3-A，对标开源）
 
 | 组件 | 用户变量 `@x` | 临时表 | `GET_LOCK` / LOCK TABLES | 系统变量 SET |
 |---|---|---|---|---|
-| **ProxySQL** | 禁用 multiplexing，会话级不再恢复 | 同上 | 同上 | 跟踪后在换后端时回放；可配 session_track |
-| **Vitess** | 尽量在 VTGate 层改写/托管，避免脏后端 | reserved 直到断开 | reserved | 现代池按 settings 匹配连接，少 reserved |
+| **ProxySQL** | 禁用 multiplexing；`COM_RESET_CONNECTION` 可清标志后再池化 | 同上 | 同上 | 跟踪后在换后端时回放；可配 session_track |
+| **Vitess** | 尽量在 VTGate 层改写/托管，避免脏后端 | reserved 直到断开 | reserved | **settings pool** 按 settings 指纹匹配连接，少 reserved |
 | **Gaea** | 有限 session 变量列表 + 借连批量 SET；另有 **keep-session** 一对一模式 | 能力有限 | 忽略 `LOCK TABLES` 以免脏池 | 借连对齐 charset/sql_mode 等 |
 | **kingshard** | 弱；归还前 `COM_RESET_CONNECTION` 清脏 | 弱 | 弱 | SET NAMES 等少量 |
 
-**本项目 M1 选定（贴近 ProxySQL「正确优先」、实现比 Vitess 改写简单）**：
+**本项目 M1 选定（ProxySQL reserved 规则 + Gaea 借连对齐；不引入 Vitess settings pool）**：
 
-1. 检测到用户变量（`SET @` / digest 含 `@` 用户变量）、`CREATE TEMPORARY TABLE`、`GET_LOCK`/`RELEASE_LOCK`、`LOCK TABLES` → 会话进入 **reserved**：钉住同一条后端连接直到前端断开；期间不再 multiplexing。
-2. 常见系统变量（`SET NAMES` / charset / `autocommit` / `sql_mode` 有限白名单）→ **记录在 session，借连时批量对齐**（Gaea 模式），不因此 reserved。
-3. 归还共享池前发 `COM_RESET_CONNECTION`；失败则丢弃连接（kingshard/驱动通病修复同款）。
-4. 后置演进：Vitess 式对用户变量做 proxy 层托管、session tracking 消费 OK 包——不阻塞 M1。
+1. 检测到用户变量（`SET @` / digest 含 `@` 用户变量）、`CREATE TEMPORARY TABLE`、`GET_LOCK`/`RELEASE_LOCK`、`LOCK TABLES` → 会话进入 **reserved**：钉住同一条后端连接；期间不再 multiplexing。前端 `COM_RESET_CONNECTION` 或前端断开后解除。
+2. 常见系统变量（首批：`USE` / `SET NAMES`·charset；后续：`autocommit` / `sql_mode`）→ **记录在 session，Acquire 后按需发对齐命令**（Gaea 模式），不因此 reserved。
+3. 归还共享池前发 `COM_RESET_CONNECTION`；失败则丢弃连接（kingshard/驱动通病修复同款）。Acquire 后再做 settings 对齐，形成双保险。
+4. **后置（不阻塞 M1）**：Vitess settings pool、用户变量 proxy 层托管、`SET_VAR` hint、完整 session tracking 消费。
 
 ### 5.2 pool（单后端）
 
@@ -255,9 +255,9 @@ type BackendPool interface {
 
 行为：
 
-1. `Acquire(want Settings)`：取连接；若 settings 不一致则批量 `SET` / `USE` 对齐（Gaea 模式，M1 够用）。
-2. 事务中 / reserved：不归还共享池，钉在 session。
-3. `Release`：非 sticky 时发 `COM_RESET_CONNECTION`（失败则丢弃连接），再入池。
+1. `Acquire`：取空闲或新建连接；返回后由调用方按 session 做 **Gaea 式** `USE` / `SET NAMES` 对齐（仅当 want 与连接已知态不同）。**不做** Vitess settings-pool 指纹分桶（后置）。
+2. 事务中（`SERVER_STATUS_IN_TRANS`）/ reserved：不归还共享池，钉在 session。
+3. `Release`：发 `COM_RESET_CONNECTION`（失败则丢弃连接），再入池；Reset 后清除该连接上缓存的 database/charset 已知态。
 4. 不定期 ping 全池（Gaea 经验：写失败重建）；idle 定时回收。
 5. **不用** `database/sql`。
 

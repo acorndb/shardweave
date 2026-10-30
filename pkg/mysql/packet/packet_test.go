@@ -5,7 +5,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/acorndb/prism/mysql/packet"
+	"github.com/acorndb/prism/pkg/mysql/packet"
 	"github.com/stretchr/testify/require"
 )
 

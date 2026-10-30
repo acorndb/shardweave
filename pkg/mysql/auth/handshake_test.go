@@ -3,8 +3,8 @@ package auth_test
 import (
 	"testing"
 
-	"github.com/acorndb/prism/mysql"
-	"github.com/acorndb/prism/mysql/auth"
+	"github.com/acorndb/prism/pkg/mysql"
+	"github.com/acorndb/prism/pkg/mysql/auth"
 	"github.com/stretchr/testify/require"
 )
 

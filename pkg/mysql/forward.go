@@ -4,25 +4,29 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/acorndb/prism/mysql/packet"
+	"github.com/acorndb/prism/pkg/mysql/packet"
 )
 
 // ForwardResponse copies one MySQL command response from src to dst,
 // adjusting packet framing via each Conn's sequence counters.
 // Handles OK/ERR, text/binary result sets, and multi-result (MORE_RESULTS_EXISTS).
+// Returns the SERVER_STATUS from the last OK/EOF terminator (0 on ERR-only).
 //
 // Resultset framing matches go-mysql-org/go-mysql client/resp.go:
 //   - CLIENT_DEPRECATE_EOF: no intermediate marker after columns; rows end with
 //     a short 0xfe packet (OK that replaces EOF).
 //   - otherwise: EOF after columns, then rows, then EOF.
-func ForwardResponse(dst, src *packet.Conn, deprecateEOF bool) error {
+func ForwardResponse(dst, src *packet.Conn, deprecateEOF bool) (serverStatus uint16, err error) {
 	for {
-		more, err := forwardOne(dst, src, deprecateEOF)
+		var more bool
+		var status uint16
+		more, status, err = forwardOne(dst, src, deprecateEOF)
 		if err != nil {
-			return err
+			return 0, err
 		}
+		serverStatus = status
 		if !more {
-			return nil
+			return serverStatus, nil
 		}
 	}
 }
@@ -62,51 +66,53 @@ func ForwardPrepareResponse(dst, src *packet.Conn, deprecateEOF bool) error {
 	return nil
 }
 
-func forwardOne(dst, src *packet.Conn, deprecateEOF bool) (more bool, err error) {
+func forwardOne(dst, src *packet.Conn, deprecateEOF bool) (more bool, status uint16, err error) {
 	data, err := src.ReadPacket()
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	if err := writePayload(dst, data); err != nil {
-		return false, err
+		return false, 0, err
 	}
 	if len(data) == 0 {
-		return false, nil
+		return false, 0, nil
 	}
 	switch data[0] {
 	case ErrHeader:
-		return false, nil
+		return false, 0, nil
 	case OKHeader:
-		return statusHasMore(okStatus(data)), nil
+		status = okStatus(data)
+		return statusHasMore(status), status, nil
 	case 0xfb: // LOCAL INFILE — not supported in P1/P2
-		return false, fmt.Errorf("mysql: LOCAL INFILE not supported")
+		return false, 0, fmt.Errorf("mysql: LOCAL INFILE not supported")
 	}
 
 	cols, _, _, err := readLenEncInt(data)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	if err := forwardDefinitions(dst, src, cols, deprecateEOF); err != nil {
-		return false, err
+		return false, 0, err
 	}
 
 	for {
 		row, err := src.ReadPacket()
 		if err != nil {
-			return false, err
+			return false, 0, err
 		}
 		if err := writePayload(dst, row); err != nil {
-			return false, err
+			return false, 0, err
 		}
 		if len(row) == 0 {
 			continue
 		}
 		if row[0] == ErrHeader {
-			return false, nil
+			return false, 0, nil
 		}
 		// Terminator: classic EOF or OK-replacing-EOF (0xfe, len < 9).
 		if row[0] == EOFHeader && len(row) < 9 {
-			return statusHasMore(eofStatus(row, deprecateEOF)), nil
+			status = eofStatus(row, deprecateEOF)
+			return statusHasMore(status), status, nil
 		}
 	}
 }

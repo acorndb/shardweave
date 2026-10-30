@@ -3,7 +3,7 @@ package parser_test
 import (
 	"testing"
 
-	"github.com/acorndb/prism/sql/parser"
+	"github.com/acorndb/prism/pkg/sql/parser"
 	"github.com/stretchr/testify/require"
 )
 

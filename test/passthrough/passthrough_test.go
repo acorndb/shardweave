@@ -10,8 +10,8 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 
-	"github.com/acorndb/prism/pool"
-	"github.com/acorndb/prism/proxy"
+	"github.com/acorndb/prism/pkg/pool"
+	"github.com/acorndb/prism/pkg/proxy"
 	"github.com/stretchr/testify/require"
 	mysqltc "github.com/testcontainers/testcontainers-go/modules/mysql"
 )

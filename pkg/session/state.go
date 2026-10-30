@@ -36,6 +36,14 @@ func (s *State) SetCharset(cs string) {
 	s.charset = cs
 }
 
+// Reset clears transaction/reserved/charset state for COM_RESET_CONNECTION.
+// Current database is preserved (MySQL COM_RESET_CONNECTION semantics).
+func (s *State) Reset() {
+	s.inTx = false
+	s.reserved = false
+	s.charset = ""
+}
+
 // NeedsSticky reports whether the session must keep the same backend connection.
 func (s *State) NeedsSticky() bool {
 	return s.inTx || s.reserved

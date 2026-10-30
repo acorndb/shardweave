@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/acorndb/prism/mysql"
-	"github.com/acorndb/prism/mysql/auth"
-	"github.com/acorndb/prism/mysql/packet"
+	"github.com/acorndb/prism/pkg/mysql"
+	"github.com/acorndb/prism/pkg/mysql/auth"
+	"github.com/acorndb/prism/pkg/mysql/packet"
 )
 
 // Conn is a client-side MySQL connection after a successful handshake.

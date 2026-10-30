@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/acorndb/prism/mysql"
-	"github.com/acorndb/prism/mysql/auth"
-	"github.com/acorndb/prism/mysql/packet"
+	"github.com/acorndb/prism/pkg/mysql"
+	"github.com/acorndb/prism/pkg/mysql/auth"
+	"github.com/acorndb/prism/pkg/mysql/packet"
 )
 
 // UserProvider looks up plaintext passwords for handshake (M1 local user table).

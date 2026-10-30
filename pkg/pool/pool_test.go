@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acorndb/prism/pool"
+	"github.com/acorndb/prism/pkg/pool"
 	"github.com/stretchr/testify/require"
 )
 
@@ -67,6 +67,25 @@ func TestPool_ReleaseResetFailureDiscards(t *testing.T) {
 	s1 := b1.(*stubBackend)
 	require.Error(t, p.Release(b1), "reset failure is surfaced")
 	require.Equal(t, int32(1), s1.closeCalls.Load())
+
+	b2, err := p.Acquire(ctx)
+	require.NoError(t, err)
+	require.NotSame(t, b1, b2)
+	require.Equal(t, int32(2), n.Load())
+}
+
+func TestPool_DiscardFreesCapacity(t *testing.T) {
+	var n atomic.Int32
+	p := pool.New(pool.Config{Capacity: 0, MaxCapacity: 1, GetTimeout: 50 * time.Millisecond}, func(ctx context.Context) (pool.Backend, error) {
+		return &stubBackend{id: int(n.Add(1))}, nil
+	})
+	t.Cleanup(func() { _ = p.Close() })
+
+	ctx := context.Background()
+	b1, err := p.Acquire(ctx)
+	require.NoError(t, err)
+	require.NoError(t, p.Discard(b1))
+	require.Equal(t, int32(1), b1.(*stubBackend).closeCalls.Load())
 
 	b2, err := p.Acquire(ctx)
 	require.NoError(t, err)

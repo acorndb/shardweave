@@ -4,8 +4,8 @@ import (
 	"net"
 	"testing"
 
-	"github.com/acorndb/prism/mysql"
-	"github.com/acorndb/prism/mysql/packet"
+	"github.com/acorndb/prism/pkg/mysql"
+	"github.com/acorndb/prism/pkg/mysql/packet"
 	"github.com/stretchr/testify/require"
 )
 
@@ -55,14 +55,30 @@ func drainFront(t *testing.T, r *packet.Conn, n int) <-chan [][]byte {
 
 func TestForwardResponse_OK(t *testing.T) {
 	src, dst, bw, fr := pipePair(t)
-	ok := mysql.EncodeOK(1, 0, 2, 0)
+	ok := mysql.EncodeOK(1, 0, mysql.ServerStatusAutocommit, 0)
 	werr := writePackets(t, bw, [][]byte{ok})
 	front := drainFront(t, fr, 1)
 
-	require.NoError(t, mysql.ForwardResponse(dst, src, true))
+	status, err := mysql.ForwardResponse(dst, src, true)
+	require.NoError(t, err)
+	require.Equal(t, mysql.ServerStatusAutocommit, status)
 	require.NoError(t, <-werr)
 	got := <-front
 	require.Equal(t, [][]byte{ok}, got)
+}
+
+func TestForwardResponse_OK_InTrans(t *testing.T) {
+	src, dst, bw, fr := pipePair(t)
+	want := mysql.ServerStatusAutocommit | mysql.ServerStatusInTrans
+	ok := mysql.EncodeOK(0, 0, want, 0)
+	werr := writePackets(t, bw, [][]byte{ok})
+	front := drainFront(t, fr, 1)
+
+	status, err := mysql.ForwardResponse(dst, src, true)
+	require.NoError(t, err)
+	require.Equal(t, want, status)
+	require.NoError(t, <-werr)
+	require.NotNil(t, <-front)
 }
 
 func TestForwardResponse_ERR(t *testing.T) {
@@ -71,7 +87,9 @@ func TestForwardResponse_ERR(t *testing.T) {
 	werr := writePackets(t, bw, [][]byte{er})
 	front := drainFront(t, fr, 1)
 
-	require.NoError(t, mysql.ForwardResponse(dst, src, true))
+	status, err := mysql.ForwardResponse(dst, src, true)
+	require.NoError(t, err)
+	require.Equal(t, uint16(0), status)
 	require.NoError(t, <-werr)
 	got := <-front
 	require.Equal(t, [][]byte{er}, got)
@@ -103,7 +121,9 @@ func TestForwardResponse_ResultsetDeprecateEOF(t *testing.T) {
 	werr := writePackets(t, bw, packets)
 	front := drainFront(t, fr, len(packets))
 
-	require.NoError(t, mysql.ForwardResponse(dst, src, true))
+	status, err := mysql.ForwardResponse(dst, src, true)
+	require.NoError(t, err)
+	require.Equal(t, mysql.ServerStatusAutocommit, status) // eofOK status=0x0002
 	require.NoError(t, <-werr)
 	got := <-front
 	require.Equal(t, packets, got)
@@ -146,7 +166,26 @@ func TestForwardResponse_MultiResult(t *testing.T) {
 	werr := writePackets(t, bw, packets)
 	front := drainFront(t, fr, len(packets))
 
-	require.NoError(t, mysql.ForwardResponse(dst, src, true))
+	status, err := mysql.ForwardResponse(dst, src, true)
+	require.NoError(t, err)
+	require.Equal(t, mysql.ServerStatusAutocommit, status)
+	require.NoError(t, <-werr)
+	require.Equal(t, packets, <-front)
+}
+
+func TestForwardResponse_MultiResult_LastStatusInTrans(t *testing.T) {
+	src, dst, bw, fr := pipePair(t)
+
+	okMore := mysql.EncodeOK(0, 0, mysql.ServerStatusAutocommit|mysql.ServerMoreResultsExists, 0)
+	okDone := mysql.EncodeOK(0, 0, mysql.ServerStatusAutocommit|mysql.ServerStatusInTrans, 0)
+	packets := [][]byte{okMore, okDone}
+
+	werr := writePackets(t, bw, packets)
+	front := drainFront(t, fr, len(packets))
+
+	status, err := mysql.ForwardResponse(dst, src, true)
+	require.NoError(t, err)
+	require.Equal(t, mysql.ServerStatusAutocommit|mysql.ServerStatusInTrans, status)
 	require.NoError(t, <-werr)
 	require.Equal(t, packets, <-front)
 }
@@ -176,7 +215,9 @@ func TestForwardResponse_ResultsetClassicEOF(t *testing.T) {
 	werr := writePackets(t, bw, packets)
 	front := drainFront(t, fr, len(packets))
 
-	require.NoError(t, mysql.ForwardResponse(dst, src, false))
+	status, err := mysql.ForwardResponse(dst, src, false)
+	require.NoError(t, err)
+	require.Equal(t, mysql.ServerStatusAutocommit, status)
 	require.NoError(t, <-werr)
 	got := <-front
 	require.Equal(t, packets, got)
