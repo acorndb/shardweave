@@ -1,35 +1,7 @@
 # AGENTS.md
 
 sharding-proxy 是 Go 1.25+ 项目（module: `github.com/sharding-proxy`）：MySQL 分库分表代理。
-
-- North star：[`docs/architecture.md`](docs/architecture.md)
-- 当前开工合同：[`docs/design/m1-passthrough-pipeline-design.md`](docs/design/m1-passthrough-pipeline-design.md)
 - 实现偏离已定设计时：**先改文档，再改代码**。
-
-## 目录与分层（目标结构）
-
-按 architecture / M1 设计落地（当前仓库以差分基建为主，产品包按设计逐步补齐）：
-
-```
-cmd/sharding-proxy/     # 单二进制入口
-mysql/                  # 协议层（第一方）：packet / auth / server / client / charset
-session/                # 会话态与粘性（stickiness）
-pool/                   # 后端连接池（非 database/sql）
-sql/                    # parser 包装 / rewrite / fingerprint
-router/                 # 分片规则与路由（M1 为 Noop）
-executor/               # plan（三态）/ dispatch / merge
-config/                 # YAML 配置与校验
-admin/                  # explain route 等管理面（net/http）
-obs/                    # slog / prometheus
-test/differential/      # 差分 harness（裸 MySQL vs proxy）
-```
-
-### 依赖规则（强制）
-
-- 依赖单向：`mysql` ← `session`/`pool` ← `sql`/`router` ← `executor`；`config` 只读；`obs`/`admin` 横切。
-- `mysql/` **不得** import `router/`、`executor/` 等上层——协议层须能在透传模式下独立差分。
-- 运行时直接依赖保持极少；不引入 gin/grpc/zap 全家桶（管理面用 `net/http`，日志用 `log/slog`）。
-- SQL 构造只有三态：完全支持 / 可证明单分片直通 / **明确报错**。禁止静默返回错误结果。
 
 ## 测试与 TDD 规范（强制）
 
@@ -153,3 +125,9 @@ files:
 - 配置中的 `sharding` 段：M1 可忽略并 warn，不得假装已生效。
 - 用户变量 / 临时表 / 锁：会话 **reserved** 钉后端连接；系统变量白名单借连对齐；归还池前优先 `COM_RESET_CONNECTION`。
 - Prepare：前后端均走二进制协议（见 M1 设计 D2-A）。
+
+### 协议层实现原则（强制）
+
+- **对照移植，少自创**：`mysql/packet`、`auth`、握手与 COM 处理以 [`go-mysql-org/go-mysql`](https://github.com/go-mysql-org/go-mysql) 的包结构与 API 约定为第一参考（如 `WritePacket` 前 4 字节预留 header、`Sequence` 字段）；auth/能力协商细节对照 Vitess `go/mysql`。
+- 代码第一方维护，**不**把 go-mysql / Vitess 整库当运行时黑盒依赖；可复制/改编必要片段并注明来源。
+- 不发明与上述项目不一致的线格式或帧语义；压缩等复杂路径 P0 不做，需要时再按开源实现补。

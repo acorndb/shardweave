@@ -1,5 +1,8 @@
 package packet
 
+// Length-encoded helpers aligned with go-mysql mysql.LengthEncodedInt /
+// AppendLengthEncodedInteger (same wire format; local names kept short).
+
 import (
 	"encoding/binary"
 	"errors"

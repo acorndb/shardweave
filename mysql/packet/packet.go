@@ -1,0 +1,119 @@
+package packet
+
+import (
+	"fmt"
+	"io"
+	"net"
+)
+
+// MaxPayloadLen is the maximum payload size of a single MySQL protocol packet
+// (same as go-mysql / MySQL server).
+const MaxPayloadLen = 1<<24 - 1 // 0xFFFFFF
+
+// Conn handles MySQL packet framing. Shape mirrors go-mysql-org/go-mysql/packet.Conn
+// for the uncompressed path: embed net.Conn, exported Sequence, WritePacket expects
+// a buffer whose first 4 bytes are header space (payload starts at index 4).
+type Conn struct {
+	net.Conn
+	Sequence uint8
+
+	header [4]byte
+}
+
+// NewConn wraps c with MySQL packet framing.
+func NewConn(c net.Conn) *Conn {
+	return &Conn{Conn: c}
+}
+
+// ResetSequence sets Sequence to 0 (call before each new command after handshake).
+func (c *Conn) ResetSequence() {
+	c.Sequence = 0
+}
+
+// ReadPacket reads one logical MySQL packet payload (header stripped).
+// Continuation packets (length == MaxPayloadLen) are concatenated.
+// Aligned with go-mysql packet.Conn.ReadPacket / ReadPacketTo (uncompressed).
+func (c *Conn) ReadPacket() ([]byte, error) {
+	return c.readPacket(nil)
+}
+
+func (c *Conn) readPacket(dst []byte) ([]byte, error) {
+	if _, err := io.ReadFull(c.Conn, c.header[:4]); err != nil {
+		return nil, err
+	}
+	length := int(uint32(c.header[0]) | uint32(c.header[1])<<8 | uint32(c.header[2])<<16)
+	seq := c.header[3]
+	if seq != c.Sequence {
+		return nil, fmt.Errorf("packet: invalid sequence %d != %d", seq, c.Sequence)
+	}
+	c.Sequence++
+
+	if length == 0 {
+		return dst, nil
+	}
+	if cap(dst) >= length {
+		dst = dst[:length]
+	} else {
+		dst = make([]byte, length)
+	}
+	if _, err := io.ReadFull(c.Conn, dst); err != nil {
+		return nil, err
+	}
+	if length < MaxPayloadLen {
+		return dst, nil
+	}
+	// continuation
+	more, err := c.readPacket(nil)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, length+len(more))
+	copy(out, dst)
+	copy(out[length:], more)
+	return out, nil
+}
+
+// WritePacket writes a packet. data already has a 4-byte header prefix; the
+// payload is data[4:]. The header bytes are filled in-place (go-mysql convention).
+func (c *Conn) WritePacket(data []byte) error {
+	if len(data) < 4 {
+		return fmt.Errorf("packet: WritePacket buffer too short: %d", len(data))
+	}
+	length := len(data) - 4
+
+	for length >= MaxPayloadLen {
+		data[0] = 0xff
+		data[1] = 0xff
+		data[2] = 0xff
+		data[3] = c.Sequence
+		if n, err := c.Conn.Write(data[:4+MaxPayloadLen]); err != nil {
+			return err
+		} else if n != 4+MaxPayloadLen {
+			return io.ErrShortWrite
+		}
+		c.Sequence++
+		length -= MaxPayloadLen
+		data = data[MaxPayloadLen:]
+	}
+
+	data[0] = byte(length)
+	data[1] = byte(length >> 8)
+	data[2] = byte(length >> 16)
+	data[3] = c.Sequence
+	if n, err := c.Conn.Write(data); err != nil {
+		return err
+	} else if n != len(data) {
+		return io.ErrShortWrite
+	}
+	c.Sequence++
+	return nil
+}
+
+// Close resets sequence and closes the underlying connection.
+func (c *Conn) Close() error {
+	c.Sequence = 0
+	if c.Conn != nil {
+		return c.Conn.Close()
+	}
+	return nil
+}
