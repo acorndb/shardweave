@@ -1,6 +1,8 @@
 # 后端拓扑：`backend_server`（single / rwsplit，sharding 预留）
 
-> 状态：**已定稿（待实现）** — 含全文件通读附录 A；实现计划见 [backend-server-single-rwsplit-plan.md](backend-server-single-rwsplit-plan.md)  
+> 状态：**已定稿 / 已实现（single+rwsplit）** — `sharding` 仍 Validate 拒绝；集成冒烟见 plan P6/P7；附录 A 通读见文末  
+> 实现计划：[backend-server-single-rwsplit-plan.md](backend-server-single-rwsplit-plan.md)  
+
 > 日期：2026-10-30  
 > 范围：配置与选源；**先落地 `single` + `rwsplit`**；`sharding` 仅占位并拒绝  
 > 上位： [m1-passthrough-pipeline-design.md](m1-passthrough-pipeline-design.md)、[m1-process-and-pipeline-design.md](m1-process-and-pipeline-design.md)（**E10**）  

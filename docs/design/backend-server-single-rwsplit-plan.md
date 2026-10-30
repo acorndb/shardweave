@@ -1,7 +1,7 @@
 # 实现计划：`backend_server` single + rwsplit
 
-> 状态：**待执行**（设计已通读加固，见 [backend-server-single-rwsplit-design.md](backend-server-single-rwsplit-design.md)）  
-> 日期：2026-10-30  
+> 状态：**P0–P5 已完成**（2026-10-30，`986ce02`）；**P6/P7 待跑**  
+> 设计：[backend-server-single-rwsplit-design.md](backend-server-single-rwsplit-design.md)  
 > 约束：TDD；聚焦包测试；**禁止**未要求时跑全量 `make test-unit`；未实现 mode 拒绝；规则禁止自创（对照设计 §5 + 附录 A）
 
 ---
@@ -143,5 +143,5 @@ flowchart LR
 
 ## 执行顺序口令
 
-当前建议下一刀：**P0 默认值落文档 → P1 config TDD**。  
-未等你逐步催促：你确认「按 plan 开干」后从 P1 连续做到 P5（P6/P7 听你指令再跑集成）。
+**已完成**：P0–P5（config / session sticky / router Pick / Group / proxy·server 接线 + `pkg/pool`→`pkg/backend_server`）。  
+**建议下一刀**：P6 single 差分回归（用户明示再跑）→ P7 rwsplit 冒烟（可选 Docker 一主一从）→ 再谈 M1 收尾或 M2。
