@@ -28,7 +28,7 @@ prism 是 Go 1.25+ 项目（module: `github.com/acorndb/prism`）：MySQL 分库
 - 测试文件与被测代码**同包、同目录**；命名规则：**正式文件名 + `_test`**。例如 `conn.go` → `conn_test.go`，`encoding.go` → `encoding_test.go`。不要另起无关的 `xxx_test.go` 名称（跨多文件的包级用例可用 `package_test.go` 等少数例外，并在注释说明）。
 - 优先**表驱动** + `t.Run(tc.name, ...)`（参考 `test/differential/` 中的对比与脚本风格）。
 - 断言使用 `github.com/stretchr/testify`。
-- **单元测试**（`-short`）：不得依赖 Docker、真实 MySQL、网络或外部服务；用 fake/stub/内存实现。配置与容器夹具**不要**放进产品包目录（如 `mysql/`、`pool/`）。
+- **单元测试**（`-short`）：不得依赖 Docker、真实 MySQL、网络或外部服务；用 fake/stub/内存实现。配置与容器夹具**不要**放进产品包目录（如 `pkg/mysql/`、`pkg/pool/`）。
 - **差分 / 集成 / 冒烟**：一律放在仓库根下 `test/`（如 `test/differential/`、`test/handshake/`、后续 `test/e2e/`）；相关 `testdata/`、MySQL cnf、init.sql 等只放在对应 `test/...` 子目录。Docker 不可用时跳过；需要 Docker 的用例须在 `-short` 下 Skip。
 - 可选：纯集成文件可用 `xxx_integration_test.go` + 首行 `//go:build integration`；与默认 `go test` 分离时须在文档/Makefile 中说明如何跑。
 - 测试命名：`TestXxx`；差分校准类保持现有 `TestNullProxyCalibration` / 后续 `TestPassthroughDifferential` 风格。
@@ -49,7 +49,7 @@ prism 是 Go 1.25+ 项目（module: `github.com/acorndb/prism`）：MySQL 分库
 默认验证方式：
 
 1. 对**本次变更涉及的包**跑聚焦测试，例如：  
-   `go test -race -short -count=1 ./mysql/packet/ ./pool/ ...`
+   `go test -race -short -count=1 ./pkg/mysql/packet/ ./pkg/pool/ ...`
 2. 需要覆盖率时对上述包加 `-cover`（或 `-coverprofile`），新增可执行逻辑应有对应用例盖住；目标是变更相关包保持全绿且新增分支可测。
 3. 改动后跑 `make lint`（若环境无 golangci-lint，至少 `go vet` 变更包）。
 4. 涉及协议行为或代理语义时，在用户明确要求下再跑差分；差分语料随 Bug 增长。
@@ -63,7 +63,7 @@ prism 是 Go 1.25+ 项目（module: `github.com/acorndb/prism`）：MySQL 分库
 - 协议 Bug 是否已考虑写入差分语料？
 - 变更包聚焦测试是否全绿？
 - `make lint`（或等价 vet）是否干净？
-- 是否违反 `mysql/` 依赖边界或三态契约？
+- 是否违反 `pkg/mysql/` 依赖边界或三态契约？
 - Code Review 报告中是否还有 `status: open` 的问题？（见下节）
 
 ## Code Review 流程（强制）
@@ -122,12 +122,12 @@ files:
 
 - M1 主路径：`NoopRouter → PassthroughPlan → Dispatch(1) → IdentityMerger`；分片/改写/聚合只经预留接口演进。
 - 不采用 Gaea 式「全局物化再计算」作为默认跨片路径；分片规则后置调研。
-- 配置中的 `sharding` 段：M1 可忽略并 warn，不得假装已生效。
+- 分片配置尚未落地：不要在 YAML 里预留“忽略生效”的 `sharding` 假字段；未实现前用 KnownFields 拒绝未知段。
 - 用户变量 / 临时表 / 锁：会话 **reserved** 钉后端连接；系统变量白名单借连对齐；归还池前优先 `COM_RESET_CONNECTION`。
 - Prepare：前后端均走二进制协议（见 M1 设计 D2-A）。
 
 ### 协议层实现原则（强制）
 
-- **对照移植，少自创**：`mysql/packet`、`auth`、握手与 COM 处理以 [`go-mysql-org/go-mysql`](https://github.com/go-mysql-org/go-mysql) 的包结构与 API 约定为第一参考（如 `WritePacket` 前 4 字节预留 header、`Sequence` 字段）；auth/能力协商细节对照 Vitess `go/mysql`。
+- **对照移植，少自创**：`pkg/mysql/packet`、`auth`、握手与 COM 处理以 [`go-mysql-org/go-mysql`](https://github.com/go-mysql-org/go-mysql) 的包结构与 API 约定为第一参考（如 `WritePacket` 前 4 字节预留 header、`Sequence` 字段）；auth/能力协商细节对照 Vitess `go/mysql`。
 - 代码第一方维护，**不**把 go-mysql / Vitess 整库当运行时黑盒依赖；可复制/改编必要片段并注明来源。
 - 不发明与上述项目不一致的线格式或帧语义；压缩等复杂路径 P0 不做，需要时再按开源实现补。

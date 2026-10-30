@@ -31,40 +31,46 @@
 
 ## 3. 模块划分
 
+布局约定：Go 常见 **`cmd/` + `pkg/`**——可被 import 的库代码在 `pkg/<domain>`；进程入口只在 `cmd/`。`test/`、`docs/`、`etc/` 留在模块根。
+
 ```
 prism/
-├── cmd/prism/        # 入口：装配、信号处理、优雅退出（单二进制）
-├── mysql/                     # 【协议层】第一方代码，参考 go-mysql
-│   ├── packet/                #   包编解码：header、长度编码、压缩协议
-│   ├── auth/                  #   认证：握手、native/caching_sha2（含 RSA/TLS 全 auth）
-│   ├── server/                #   前端：listener、会话建立、能力协商
-│   ├── client/                #   后端：raw conn（非 database/sql）
-│   └── charset/               #   字符集/排序规则
-├── sql/                       # 【SQL 处理层】
-│   ├── parser/                #   tidb/parser 包装：panic→error，统一三态报错出口
-│   ├── rewrite/               #   改写：LIMIT/OFFSET、INSERT VALUES、聚合拆分
-│   └── fingerprint/           #   慢 SQL 指纹
-├── router/                    # 【路由层】
-│   ├── rule/                  #   分片规则：hash/range、全局表
-│   └── route/                 #   路由决策：AST → 目标分片集合
-├── executor/                  # 【执行层】
-│   ├── plan/                  #   三态契约判定：直通 / 改写 / 明确报错
-│   ├── dispatch/              #   并行下发，errors.Join 聚合多分片错误
-│   └── merge/                 #   流式 k 路归并：排序堆、聚合、GROUP BY 二次归并
-├── session/                   # 【会话层】
-│   ├── state/                 #   会话状态机：变量跟踪（session tracking）
-│   └── stickiness/            #   粘性矩阵：哪些状态阻塞后端连接复用
-├── pool/                      # 【资源层】后端连接池（自研）
-│   ├── pool.go                #   per-user/per-backend 池、借还、COM_RESET_CONNECTION
-│   └── health.go              #   健康检查、只读检测（read_only/super_read_only）
-├── config/                    # 【配置层】
-│   ├── schema.go              #   严格类型定义（protobuf 起草）
-│   ├── loader.go              #   YAML + watch（v1）；etcd v3（v2）
-│   └── validate.go            #   校验 + dry-run
-├── admin/                     # 【管理面】REST(net/http) + OpenAPI
-│   ├── explain.go             #   explain route for <SQL>
-│   └── record.go              #   会话录制（packet 级）与回放
-├── obs/                       # 【可观测】metrics（prometheus）、logging（slog 基建）
+├── cmd/prism/                 # 入口：装配、信号处理、优雅退出（单二进制）
+├── pkg/
+│   ├── mysql/                 # 【协议层】第一方代码，参考 go-mysql
+│   │   ├── packet/            #   包编解码：header、长度编码、压缩协议
+│   │   ├── auth/              #   认证：握手、native/caching_sha2（含 RSA/TLS 全 auth）
+│   │   ├── server/            #   前端：会话建立、能力协商
+│   │   ├── client/            #   后端：raw conn（非 database/sql）
+│   │   └── charset/           #   字符集/排序规则
+│   ├── sql/                   # 【SQL 处理层】
+│   │   ├── parser/            #   tidb/parser 包装：panic→error，统一三态报错出口
+│   │   ├── rewrite/           #   改写：LIMIT/OFFSET、INSERT VALUES、聚合拆分
+│   │   └── fingerprint/       #   慢 SQL 指纹
+│   ├── router/                # 【路由层】
+│   │   ├── rule/              #   分片规则：hash/range、全局表
+│   │   └── route/             #   路由决策：AST → 目标分片集合
+│   ├── executor/              # 【执行层】
+│   │   ├── plan/              #   三态契约判定：直通 / 改写 / 明确报错
+│   │   ├── dispatch/          #   并行下发，errors.Join 聚合多分片错误
+│   │   └── merge/             #   流式 k 路归并：排序堆、聚合、GROUP BY 二次归并
+│   ├── session/               # 【会话层】
+│   │   ├── state/             #   会话状态机：变量跟踪（session tracking）
+│   │   └── stickiness/        #   粘性矩阵：哪些状态阻塞后端连接复用
+│   ├── pool/                  # 【资源层】后端连接池（自研）
+│   │   ├── pool.go            #   per-user/per-backend 池、借还、COM_RESET_CONNECTION
+│   │   └── health.go          #   健康检查、只读检测（read_only/super_read_only）
+│   ├── proxy/                 # 【会话编排】Accept 之后的 Serve / 命令循环（透传入口）
+│   ├── config/                # 【配置层】
+│   │   ├── schema.go          #   严格类型定义
+│   │   ├── loader.go          #   YAML 加载；热更以 SIGUSR1 为主（见 M1 进程设计）
+│   │   └── validate.go        #   校验 + dry-run
+│   ├── admin/                 # 【管理面】REST(net/http) + OpenAPI
+│   │   ├── explain.go         #   explain route for <SQL>
+│   │   └── record.go          #   会话录制（packet 级）与回放
+│   └── obs/                   # 【可观测】metrics（prometheus）、logging（slog 基建）
+├── etc/                       # 示例配置（无 Go import）
+├── docs/
 └── test/                      # 【测试基建】
     ├── differential/          #   差分 harness：裸 MySQL vs proxy 逐包对比
     ├── metamorphic/           #   变形 harness：分片 vs 单库结果一致
@@ -75,41 +81,41 @@ prism/
 ## 4. 数据通路
 
 ```
-client ──▶ mysql/server + session        （协议层前端）
+client ──▶ pkg/mysql/server + pkg/session        （协议层前端）
                 │
                 ▼
-         executor/plan                    三态判定
+         pkg/executor/plan                    三态判定
                 │
       ┌─────────┴──────────────┐
       ▼                        ▼
   fast path（直通）          slow path
-  最小解析直接转发          sql/parser → router → sql/rewrite
+  最小解析直接转发          pkg/sql/parser → pkg/router → pkg/sql/rewrite
       │                        │
       ▼                        ▼
-  pool/ 后端连接 ◀──── executor/dispatch（并行多分片）
+  pkg/pool 后端连接 ◀──── pkg/executor/dispatch（并行多分片）
       │                        │
-      └──▶ executor/merge（流式 k 路归并）◀──┘
+      └──▶ pkg/executor/merge（流式 k 路归并）◀──┘
                  │
-client ◀── mysql/server（响应编码）
+client ◀── pkg/mysql/server（响应编码）
 ```
 
 ## 5. 依赖规则（强制）
 
-- `mysql/` 不允许 import `router/`、`executor/`、`config/` 之外的任何上层——协议层必须可在透传模式下独立运行与差分测试。
-- 依赖方向：`mysql` ← `session`/`pool` ← `sql`/`router` ← `executor`；`config` 被所有层读；`obs`/`admin` 横切。
-- `admin/` 只读内部状态、下发控制指令，不参与数据面路径。
+- `pkg/mysql` 不允许 import `pkg/router`、`pkg/executor`、`pkg/config` 之外的任何上层——协议层必须可在透传模式下独立运行与差分测试。
+- 依赖方向：`pkg/mysql` ← `pkg/session`/`pkg/pool` ← `pkg/sql`/`pkg/router` ← `pkg/executor`；`pkg/config` 被装配与读快照方引用；`pkg/obs`/`pkg/admin` 横切。
+- `pkg/admin` 只读内部状态、下发控制指令，不参与数据面路径。
 - 每个顶层包对外只暴露小接口（Go 惯例：接口定义在消费方）。
 
 ## 6. 模块与测试流水线的映射
 
 | 模块 | L0 单元 | L1 fuzz/property | L2 集成 | L3 差分 | L4 变形 |
 |---|---|---|---|---|---|
-| mysql/* | codec 往返 | packet/auth fuzz | auth、charset、prepare | **透传模式即差分** | — |
-| sql/* | 改写变换 | 改写幂等、parser 不 panic | — | 改写后语义对比 | 聚合拆分 |
-| router/* | 规则→分片 | 路由确定性 | — | — | 不均匀分片 |
-| executor/* | 归并堆 | — | 多分片下发 | — | **分片 vs 单库** |
-| pool/* | 粘性状态机 | — | 故障注入（杀容器） | — | — |
-| config/* | 校验/dry-run | — | 热加载不中断 | — | — |
+| pkg/mysql/* | codec 往返 | packet/auth fuzz | auth、charset、prepare | **透传模式即差分** | — |
+| pkg/sql/* | 改写变换 | 改写幂等、parser 不 panic | — | 改写后语义对比 | 聚合拆分 |
+| pkg/router/* | 规则→分片 | 路由确定性 | — | — | 不均匀分片 |
+| pkg/executor/* | 归并堆 | — | 多分片下发 | — | **分片 vs 单库** |
+| pkg/pool/* | 粘性状态机 | — | 故障注入（杀容器） | — | — |
+| pkg/config/* | 校验/dry-run | — | 热加载不中断 | — | — |
 
 ## 7. v1 明确不做
 
@@ -117,7 +123,7 @@ client ◀── mysql/server（响应编码）
 
 ## 8. 里程碑
 
-1. **M1 透传**：mysql/ + pool/ + session/ + 配置，差分 harness 跑通（协议保真度开始被验证）。
+1. **M1 透传**：`pkg/mysql` + `pkg/pool` + `pkg/session` + `pkg/config` + `cmd/prism`，差分 harness 跑通（协议保真度开始被验证）。
 2. **M2 单分片**：parser + router + plan 三态判定 + explain route。
 3. **M3 跨分片**：dispatch + merge，变形 harness 上线。
 4. **M4 生产化**：粘性矩阵完整、故障注入通过、性能门禁、发布认证。
