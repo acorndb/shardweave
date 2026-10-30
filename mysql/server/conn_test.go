@@ -4,8 +4,8 @@ import (
 	"net"
 	"testing"
 
-	"github.com/sharding-proxy/mysql/client"
-	"github.com/sharding-proxy/mysql/server"
+	"github.com/acorndb/prism/mysql/client"
+	"github.com/acorndb/prism/mysql/server"
 	"github.com/stretchr/testify/require"
 )
 

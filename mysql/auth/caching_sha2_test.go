@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/sharding-proxy/mysql/auth"
+	"github.com/acorndb/prism/mysql/auth"
 	"github.com/stretchr/testify/require"
 )
 

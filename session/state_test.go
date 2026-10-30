@@ -3,7 +3,7 @@ package session_test
 import (
 	"testing"
 
-	"github.com/sharding-proxy/session"
+	"github.com/acorndb/prism/session"
 	"github.com/stretchr/testify/require"
 )
 

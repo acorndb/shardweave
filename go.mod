@@ -1,4 +1,4 @@
-module github.com/sharding-proxy
+module github.com/acorndb/prism
 
 go 1.27.3
 

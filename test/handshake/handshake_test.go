@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sharding-proxy/mysql/client"
+	"github.com/acorndb/prism/mysql/client"
 	"github.com/stretchr/testify/require"
 	mysqltc "github.com/testcontainers/testcontainers-go/modules/mysql"
 )

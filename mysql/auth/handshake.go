@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/sharding-proxy/mysql"
-	"github.com/sharding-proxy/mysql/packet"
+	"github.com/acorndb/prism/mysql"
+	"github.com/acorndb/prism/mysql/packet"
 )
 
 // Auth plugin names (MySQL / go-mysql).

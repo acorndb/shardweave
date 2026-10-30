@@ -1,7 +1,7 @@
-# sharding-proxy 架构设计（草案 v0.1）
+# prism 架构设计（草案 v0.1）
 
 > 状态：讨论定稿中。本文档是项目的 north star，实现偏离此处记录的设计时先改文档。
-> 模块路径暂定 `github.com/sharding-proxy`，落远端后对齐。
+> 模块路径：`github.com/acorndb/prism`（GitHub 仓库名可随后改为 `prism`）。
 
 ## 1. 设计原则
 
@@ -32,8 +32,8 @@
 ## 3. 模块划分
 
 ```
-sharding-proxy/
-├── cmd/sharding-proxy/        # 入口：装配、信号处理、优雅退出（单二进制）
+prism/
+├── cmd/prism/        # 入口：装配、信号处理、优雅退出（单二进制）
 ├── mysql/                     # 【协议层】第一方代码，参考 go-mysql
 │   ├── packet/                #   包编解码：header、长度编码、压缩协议
 │   ├── auth/                  #   认证：握手、native/caching_sha2（含 RSA/TLS 全 auth）

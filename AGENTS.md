@@ -1,6 +1,6 @@
 # AGENTS.md
 
-sharding-proxy 是 Go 1.25+ 项目（module: `github.com/sharding-proxy`）：MySQL 分库分表代理。
+prism 是 Go 1.25+ 项目（module: `github.com/acorndb/prism`）：MySQL 分库分表代理。
 - 实现偏离已定设计时：**先改文档，再改代码**。
 
 ## 测试与 TDD 规范（强制）

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sharding-proxy/pool"
+	"github.com/acorndb/prism/pool"
 	"github.com/stretchr/testify/require"
 )
 

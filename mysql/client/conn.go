@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/sharding-proxy/mysql"
-	"github.com/sharding-proxy/mysql/auth"
-	"github.com/sharding-proxy/mysql/packet"
+	"github.com/acorndb/prism/mysql"
+	"github.com/acorndb/prism/mysql/auth"
+	"github.com/acorndb/prism/mysql/packet"
 )
 
 // Conn is a client-side MySQL connection after a successful handshake.

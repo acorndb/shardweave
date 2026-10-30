@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/sharding-proxy/mysql"
-	"github.com/sharding-proxy/mysql/auth"
-	"github.com/sharding-proxy/mysql/packet"
+	"github.com/acorndb/prism/mysql"
+	"github.com/acorndb/prism/mysql/auth"
+	"github.com/acorndb/prism/mysql/packet"
 )
 
 // UserProvider looks up plaintext passwords for handshake (M1 local user table).
@@ -50,7 +50,7 @@ func NewConn(raw net.Conn, users UserProvider) (*Conn, error) {
 
 	hs := &auth.HandshakeV10{
 		ProtocolVersion: 10,
-		ServerVersion:   "8.0.36-sharding-proxy",
+		ServerVersion:   "8.0.36-prism",
 		ConnectionID:    1,
 		AuthPluginData:  scramble,
 		Capability: mysql.ClientProtocol41 | mysql.ClientSecureConnection |
