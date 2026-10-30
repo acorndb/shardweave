@@ -71,7 +71,8 @@ func minimalConfig(listen string) *config.Config {
 	return &config.Config{
 		Listen: listen,
 		Users:  []config.User{{Name: "app", Password: "p1"}},
-		Backend: config.Backend{
+		BackendServer: config.BackendServer{
+			Mode:     config.ModeSingle,
 			Address:  "127.0.0.1:3306",
 			User:     "app",
 			Password: "p1",
@@ -86,7 +87,7 @@ func writeConfig(t *testing.T, cfg *config.Config) string {
 	path := filepath.Join(dir, "prism.yaml")
 	body := "listen: \"" + cfg.Listen + "\"\n" +
 		"users:\n  - name: app\n    password: p1\n" +
-		"backend:\n  address: \"127.0.0.1:3306\"\n  user: app\n  password: p1\n"
+		"backend_server:\n  mode: single\n  address: \"127.0.0.1:3306\"\n  user: app\n  password: p1\n"
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 	return path
 }

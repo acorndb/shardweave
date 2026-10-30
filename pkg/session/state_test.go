@@ -12,6 +12,8 @@ func TestState_Defaults(t *testing.T) {
 	require.Equal(t, "", s.Database())
 	require.False(t, s.InTx())
 	require.False(t, s.Reserved())
+	require.True(t, s.Autocommit(), "handshake default AC=1 (kingshard/Gaea)")
+	require.False(t, s.IsInTransaction())
 }
 
 func TestState_SetDatabase(t *testing.T) {
@@ -41,6 +43,21 @@ func TestState_NeedsSticky(t *testing.T) {
 	require.True(t, s.NeedsSticky())
 }
 
+// A5/A6/A7: kingshard/Gaea isInTransaction = IN_TRANS || !autocommit
+func TestState_AutocommitForcesTransactionSemantics(t *testing.T) {
+	s := session.NewState()
+	s.SetAutocommit(false)
+	require.False(t, s.InTx())
+	require.True(t, s.IsInTransaction(), "AC=0 alone is in-transaction for routing")
+	require.True(t, s.NeedsSticky())
+
+	s.SetInTx(true)
+	s.SetAutocommit(true) // K/G: AC=1 clears IN_TRANS
+	require.False(t, s.InTx())
+	require.True(t, s.Autocommit())
+	require.False(t, s.IsInTransaction())
+}
+
 func TestState_Reset(t *testing.T) {
 	s := session.NewState()
 	s.SetDatabase("app")
@@ -48,12 +65,14 @@ func TestState_Reset(t *testing.T) {
 	s.SetInTx(true)
 	s.MarkReserved()
 
+	s.SetAutocommit(false)
 	s.Reset()
 
 	require.Equal(t, "app", s.Database(), "COM_RESET_CONNECTION preserves current database")
 	require.Equal(t, "", s.Charset())
 	require.False(t, s.InTx())
 	require.False(t, s.Reserved())
+	require.True(t, s.Autocommit(), "reset restores autocommit")
 	require.False(t, s.NeedsSticky())
 }
 

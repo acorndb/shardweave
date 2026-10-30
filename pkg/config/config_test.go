@@ -9,13 +9,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLoadFile_OK(t *testing.T) {
+func TestLoadFile_OK_Single(t *testing.T) {
 	path := writeYAML(t, `
 listen: "127.0.0.1:3307"
 users:
   - name: app
     password: secret
-backend:
+backend_server:
+  mode: single
   address: "127.0.0.1:3306"
   user: app
   password: secret
@@ -32,16 +33,75 @@ termination_drain: 2s
 	require.NoError(t, err)
 	require.Equal(t, "127.0.0.1:3307", cfg.Listen)
 	require.Len(t, cfg.Users, 1)
-	require.Equal(t, "app", cfg.Users[0].Name)
-	require.Equal(t, "secret", cfg.Users[0].Password)
-	require.Equal(t, "127.0.0.1:3306", cfg.Backend.Address)
-	require.Equal(t, "app", cfg.Backend.User)
-	require.Equal(t, "appdb", cfg.Backend.Database)
+	require.Equal(t, ModeSingle, cfg.BackendServer.Mode)
+	ep, err := cfg.BackendServer.Primary()
+	require.NoError(t, err)
+	require.Equal(t, "127.0.0.1:3306", ep.Address)
+	require.Equal(t, "app", ep.User)
+	require.Equal(t, "appdb", ep.Database)
 	require.Equal(t, 2, cfg.Pool.Capacity)
 	require.Equal(t, 8, cfg.Pool.MaxCapacity)
 	require.Equal(t, 3*time.Second, cfg.Pool.GetTimeout)
 	require.Equal(t, "info", cfg.Log.Level)
 	require.Equal(t, 2*time.Second, cfg.TerminationDrain)
+}
+
+func TestLoadFile_ModeDefaultSingle(t *testing.T) {
+	path := writeYAML(t, `
+listen: "127.0.0.1:3307"
+users:
+  - name: app
+    password: secret
+backend_server:
+  address: "127.0.0.1:3306"
+  user: app
+  password: secret
+`)
+	cfg, err := LoadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, ModeSingle, cfg.BackendServer.Mode)
+}
+
+func TestLoadFile_OK_RWSplit(t *testing.T) {
+	path := writeYAML(t, `
+listen: "127.0.0.1:3307"
+users:
+  - name: app
+    password: secret
+backend_server:
+  mode: rwsplit
+  master:
+    address: "127.0.0.1:3306"
+    user: app
+    password: secret
+  slaves:
+    - address: "127.0.0.1:3307"
+      user: app
+      password: secret
+  load_balance: round_robin
+`)
+	cfg, err := LoadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, ModeRWSplit, cfg.BackendServer.Mode)
+	require.Equal(t, "127.0.0.1:3306", cfg.BackendServer.Master.Address)
+	require.Len(t, cfg.BackendServer.Slaves, 1)
+	require.Equal(t, "round_robin", cfg.BackendServer.LoadBalance)
+}
+
+func TestLoadFile_RejectOldBackendKey(t *testing.T) {
+	path := writeYAML(t, `
+listen: "127.0.0.1:3307"
+users:
+  - name: app
+    password: secret
+backend:
+  address: "127.0.0.1:3306"
+  user: app
+  password: secret
+`)
+	_, err := LoadFile(path)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "backend")
 }
 
 func TestLoadFile_RejectUnknownField(t *testing.T) {
@@ -50,7 +110,8 @@ listen: "127.0.0.1:3307"
 users:
   - name: app
     password: secret
-backend:
+backend_server:
+  mode: single
   address: "127.0.0.1:3306"
   user: app
   password: secret
@@ -61,36 +122,43 @@ not_a_real_field: true
 	require.Contains(t, err.Error(), "not_a_real_field")
 }
 
-func TestValidate_RequiresListenUsersBackend(t *testing.T) {
+func TestValidate_RejectShardingAndUnknownMode(t *testing.T) {
+	base := validSingle()
+	base.BackendServer.Mode = ModeSharding
+	require.Error(t, Validate(base))
+
+	base = validSingle()
+	base.BackendServer.Mode = "weird"
+	require.Error(t, Validate(base))
+}
+
+func TestValidate_RWSplitRequiresMaster(t *testing.T) {
+	cfg := validSingle()
+	cfg.BackendServer = BackendServer{Mode: ModeRWSplit}
+	require.Error(t, Validate(cfg))
+
+	cfg.BackendServer.Master = &BackendEndpoint{Address: "127.0.0.1:3306", User: "a", Password: "b"}
+	require.NoError(t, Validate(cfg))
+}
+
+func TestValidate_SingleRejectsMasterBlock(t *testing.T) {
+	cfg := validSingle()
+	cfg.BackendServer.Master = &BackendEndpoint{Address: "x", User: "a"}
+	require.Error(t, Validate(cfg))
+}
+
+func TestValidate_RequiresListenUsersBackendServer(t *testing.T) {
 	err := Validate(&Config{})
 	require.Error(t, err)
 
-	err = Validate(&Config{
-		Listen: "127.0.0.1:3307",
-		Users:  []User{{Name: "a", Password: "b"}},
-		Backend: Backend{
-			Address:  "127.0.0.1:3306",
-			User:     "a",
-			Password: "b",
-		},
-	})
-	require.NoError(t, err)
+	require.NoError(t, Validate(validSingle()))
 }
 
 func TestRuntime_ReloadUsers(t *testing.T) {
-	base := &Config{
-		Listen: "127.0.0.1:3307",
-		Users:  []User{{Name: "a", Password: "old"}},
-		Backend: Backend{
-			Address:  "127.0.0.1:3306",
-			User:     "a",
-			Password: "b",
-		},
-		Log: Log{Level: "info"},
-	}
+	base := validSingle()
+	base.Users = []User{{Name: "a", Password: "old"}}
 	rt := NewRuntime(base)
-	cur := rt.Load()
-	require.Equal(t, "old", cur.Users[0].Password)
+	require.Equal(t, "old", rt.Load().Users[0].Password)
 
 	next := cloneConfig(base)
 	next.Users = []User{{Name: "a", Password: "new"}}
@@ -99,15 +167,7 @@ func TestRuntime_ReloadUsers(t *testing.T) {
 }
 
 func TestRuntime_RejectListenChange(t *testing.T) {
-	base := &Config{
-		Listen: "127.0.0.1:3307",
-		Users:  []User{{Name: "a", Password: "x"}},
-		Backend: Backend{
-			Address:  "127.0.0.1:3306",
-			User:     "a",
-			Password: "b",
-		},
-	}
+	base := validSingle()
 	rt := NewRuntime(base)
 	next := cloneConfig(base)
 	next.Listen = "127.0.0.1:3308"
@@ -117,22 +177,14 @@ func TestRuntime_RejectListenChange(t *testing.T) {
 	require.Equal(t, "127.0.0.1:3307", rt.Load().Listen)
 }
 
-func TestRuntime_RejectBackendChange(t *testing.T) {
-	base := &Config{
-		Listen: "127.0.0.1:3307",
-		Users:  []User{{Name: "a", Password: "x"}},
-		Backend: Backend{
-			Address:  "127.0.0.1:3306",
-			User:     "a",
-			Password: "b",
-		},
-	}
+func TestRuntime_RejectBackendServerChange(t *testing.T) {
+	base := validSingle()
 	rt := NewRuntime(base)
 	next := cloneConfig(base)
-	next.Backend.Address = "10.0.0.1:3306"
+	next.BackendServer.Address = "10.0.0.1:3306"
 	err := rt.Apply(next)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "backend")
+	require.Contains(t, err.Error(), "backend_server")
 }
 
 func TestRuntime_ReloadFile(t *testing.T) {
@@ -143,7 +195,8 @@ listen: "127.0.0.1:3307"
 users:
   - name: app
     password: p1
-backend:
+backend_server:
+  mode: single
   address: "127.0.0.1:3306"
   user: app
   password: p1
@@ -157,7 +210,8 @@ listen: "127.0.0.1:3307"
 users:
   - name: app
     password: p2
-backend:
+backend_server:
+  mode: single
   address: "127.0.0.1:3306"
   user: app
   password: p1
@@ -171,19 +225,11 @@ backend:
 }
 
 func TestRuntime_UserProvider(t *testing.T) {
-	rt := NewRuntime(&Config{
-		Listen: "127.0.0.1:3307",
-		Users:  []User{{Name: "app", Password: "p1"}},
-		Backend: Backend{
-			Address:  "127.0.0.1:3306",
-			User:     "app",
-			Password: "p1",
-		},
-	})
+	rt := NewRuntime(validSingle())
 	users := rt.UserProvider()
 	pass, ok := users.Password("app")
 	require.True(t, ok)
-	require.Equal(t, "p1", pass)
+	require.Equal(t, "secret", pass)
 
 	next := rt.Load().Clone()
 	next.Users = []User{{Name: "app", Password: "p2"}}
@@ -191,6 +237,21 @@ func TestRuntime_UserProvider(t *testing.T) {
 	pass, ok = users.Password("app")
 	require.True(t, ok)
 	require.Equal(t, "p2", pass)
+}
+
+func validSingle() *Config {
+	return &Config{
+		Listen: "127.0.0.1:3307",
+		Users:  []User{{Name: "app", Password: "secret"}},
+		BackendServer: BackendServer{
+			Mode:     ModeSingle,
+			Address:  "127.0.0.1:3306",
+			User:     "app",
+			Password: "secret",
+			Database: "appdb",
+		},
+		Log: Log{Level: "info"},
+	}
 }
 
 func writeYAML(t *testing.T, body string) string {

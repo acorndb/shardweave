@@ -16,7 +16,7 @@ M1 透传进行中。P0–P2 已可用：协议握手、后端池、`COM_QUERY` 
 - `pkg/mysql/packet`：长度编码 + 帧读写（对齐 go-mysql `WritePacket` 前 4 字节 header）
 - `pkg/mysql/auth` + `server`/`client`：HandshakeV10 / native-password 内存闭环
 - `pkg/sql/parser`：tidb/parser 包装（panic→error）
-- `pkg/pool` + `pkg/session`：单后端池、reserved 粘性骨架
+- `pkg/backend_server` + `pkg/session`：后端连接池叶子、reserved 粘性骨架；`pkg/router` 负责 single/rwsplit 选源
 - `pkg/proxy`：命令循环透传；`ForwardResponse` / `ForwardPrepareResponse`
 - `pkg/config` + `cmd/prism`：YAML `-config`、Accept 循环、简单 `SIGUSR1` 热更
 

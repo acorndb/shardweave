@@ -12,16 +12,17 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/acorndb/prism/pkg/backend_server"
 	"github.com/acorndb/prism/pkg/config"
-	"github.com/acorndb/prism/pkg/pool"
 	"github.com/acorndb/prism/pkg/proxy"
+	"github.com/acorndb/prism/pkg/router"
 )
 
-// Server is one proxy process: listen address + backend pool + live config.
+// Server is one proxy process: listen address + backend group + live config.
 type Server struct {
-	path string
-	rt   *config.Runtime
-	pool *pool.Pool
+	path  string
+	rt    *config.Runtime
+	group *router.Group
 
 	listener net.Listener
 	running  atomic.Bool
@@ -42,14 +43,14 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 	}
 
 	rt := config.NewRuntime(cfg)
-	p := pool.New(toPoolConfig(cfg.Pool), func(ctx context.Context) (pool.Backend, error) {
-		b := rt.Load().Backend
-		return pool.DialMySQL(ctx, b.Address, b.User, b.Password, b.Database)
-	})
+	group, err := newBackendGroup(rt, cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
-		_ = p.Close()
+		_ = group.Close()
 		return nil, fmt.Errorf("server: listen %s: %w", cfg.Listen, err)
 	}
 
@@ -57,13 +58,56 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 	s := &Server{
 		path:     configPath,
 		rt:       rt,
-		pool:     p,
+		group:    group,
 		listener: ln,
 		ctx:      ctx,
 		cancel:   cancel,
 	}
 	s.running.Store(true)
 	return s, nil
+}
+
+func newBackendGroup(rt *config.Runtime, cfg *config.Config) (*router.Group, error) {
+	pcfg := toPoolConfig(cfg.Pool)
+	bs := cfg.BackendServer
+	mode := bs.Mode
+	if mode == "" {
+		mode = config.ModeSingle
+	}
+
+	open := func(ep config.BackendEndpoint) backend_server.OpenFunc {
+		return func(ctx context.Context) (backend_server.Backend, error) {
+			return backend_server.DialMySQL(ctx, ep.Address, ep.User, ep.Password, ep.Database)
+		}
+	}
+
+	switch mode {
+	case config.ModeSingle:
+		ep, err := bs.Primary()
+		if err != nil {
+			return nil, err
+		}
+		return &router.Group{Master: backend_server.New(pcfg, open(ep))}, nil
+	case config.ModeRWSplit:
+		if bs.Master == nil {
+			return nil, fmt.Errorf("server: rwsplit master required")
+		}
+		g := &router.Group{
+			Master:      backend_server.New(pcfg, open(*bs.Master)),
+			LoadBalance: bs.LoadBalance,
+		}
+		if g.LoadBalance == "" {
+			g.LoadBalance = router.LBRoundRobin
+		}
+		for i := range bs.Slaves {
+			ep := bs.Slaves[i]
+			g.Slaves = append(g.Slaves, backend_server.New(pcfg, open(ep)))
+		}
+		_ = rt // pools dial from cfg snapshot at open; address reload still rejected
+		return g, nil
+	default:
+		return nil, fmt.Errorf("server: unsupported backend_server.mode %q", mode)
+	}
 }
 
 // Addr returns the bound listen address.
@@ -112,17 +156,17 @@ func (s *Server) onConn(c net.Conn) {
 
 	_ = proxy.Serve(s.ctx, c, proxy.SessionConfig{
 		Users: s.rt.UserProvider(),
-		Pool:  s.pool,
+		Group: s.group,
 	})
 }
 
 // UpdateConfig applies an already-parsed config (kingshard UpdateConfig).
-// listen / backend identity changes are rejected by config.Runtime.Apply.
+// listen / backend_server identity changes are rejected by config.Runtime.Apply.
 func (s *Server) UpdateConfig(cfg *config.Config) error {
 	return s.rt.Apply(cfg)
 }
 
-// Close stops Accept and releases the pool (kingshard/Gaea Close).
+// Close stops Accept and releases pools (kingshard/Gaea Close).
 func (s *Server) Close() {
 	s.closeOnce.Do(func() {
 		s.running.Store(false)
@@ -132,14 +176,14 @@ func (s *Server) Close() {
 		if s.listener != nil {
 			_ = s.listener.Close()
 		}
-		if s.pool != nil {
-			_ = s.pool.Close()
+		if s.group != nil {
+			_ = s.group.Close()
 		}
 	})
 }
 
-func toPoolConfig(c config.Pool) pool.Config {
-	return pool.Config{
+func toPoolConfig(c config.Pool) backend_server.Config {
+	return backend_server.Config{
 		Capacity:    c.Capacity,
 		MaxCapacity: c.MaxCapacity,
 		IdleTimeout: c.IdleTimeout,

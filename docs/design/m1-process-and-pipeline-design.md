@@ -116,8 +116,8 @@ InLocalTransaction / ConnectionClose / GetPreFilters…
 |---|---|
 | **Listener（协议）与 Executor（转发/计划）解耦**；cmd 里按名装配 | etcd 分布式事务、Filter 全家桶、多 AppID mesh |
 | `termination_drain_duration` 二次信号语义 | 后端走 `database/sql`/connector 为主（我们坚持 raw `mysql/client`） |
-| Executor mode 演进空间（sdb→未来 shard） | Cobra 非必须（`flag` 足够）；probe 端口可后置 |
-| 配置 Normalize 校验；**`pkg/` 伞（prism 跟此目录习惯）** | JSON marshal 往返解析 executor 子配置；Filter/DT 全家桶 |
+| **配置面三种后端模式** `single`（≈sdb）/ `rws` / `sharding`（≈shd）——见 **E10** | **不**复制三套互斥大 Executor 类；mode 只装配 Router，数据面仍 Plan→Dispatch→Merge |
+| 配置 Normalize 校验；**`pkg/` 伞（prism 跟此目录习惯）** | Cobra；probe 端口可后置；JSON 往返解析子配置；Filter/DT 全家桶 |
 
 ---
 
@@ -279,7 +279,8 @@ prism/
 └── test/                      # 仍在根：differential / handshake / passthrough
 ```
 
-**刻意不做**：不把 `pool` 改名为 `backend`；不把 Plan/Merge 塞进 `pkg/proxy`；不建 `models/etcd` / `cc/`；M1 不强制再套一层 `internal/`。
+**刻意不做**：不把 Plan/Merge 塞进 `pkg/proxy`；不建 `models/etcd` / `cc/`；M1 不强制再套一层 `internal/`。  
+**已改名**：叶子连接池包为 **`pkg/backend_server`**（原 `pkg/pool`），与配置段 `backend_server` 对齐；类型仍用 `Pool`/`Backend` 表示池叶子。
 
 ### 4.1 `cmd/prism` 伪流程（源码对照后）
 
@@ -340,6 +341,21 @@ on shutdown: cancel; ln.Close; TerminationDrain; pool.Close
 | **E7** | 明确不做 | 多租户 namespace/cc、DT/etcd 配置中心、全量 merge、topo | Gaea cc；dbpack DT；kingshard merge |
 | **E8** | 配置热加载 | `SIGUSR1` + 本地 YAML；字段分级 §4.3 | kingshard `UpdateConfig`；Gaea 静态项对照 |
 | **E9** | 目录形态 | **`cmd/` + `pkg/`**；库代码均在 `pkg/`；N0 迁现有根包 | dbpack；Go 常见可导入库布局 |
+| **E10** | 后端拓扑产品语义 | 顶层 **`backend_server.mode`**：`single` / `rwsplit` / `sharding`；学 dbpack 三 mode 叙事；选源规则对照 kingshard/Gaea 移植 | 详设：[backend-server-single-rwsplit-design.md](backend-server-single-rwsplit-design.md) |
+
+### E10 细则（后端模式）
+
+**对人（YAML）**：顶层段名 `backend_server`，`mode: single | rwsplit | sharding`。一种 mode 一种后端形状。
+
+| mode | 后端形状 | Router 行为（实现） | 何时落地 |
+|---|---|---|---|
+| `single` | 一个 `backend_server` 地址一池 | 恒返回 1 目标 | **当前 → 迁配置键** |
+| `rwsplit` | `master` + `slaves[]`（每地址一池） | 开源规则 + **事务/sticky 优先** 选 1 目标 | **本切片** |
+| `sharding` | 分片 → 多目标 | 返回 N + Merge | 后置；Validate 拒绝 |
+
+**对代码**：mode 只装配 Router；协议与 `Plan→Dispatch→Merge` 不按 mode 复制。`rwsplit` **直接搬** kingshard/Gaea 启发规则，并严守事务状态（事务内禁止读从）。
+
+**配置纪律**：未实现 mode/字段 Load 时拒绝；禁止静默忽略。
 
 ---
 
@@ -350,10 +366,11 @@ on shutdown: cancel; ln.Close; TerminationDrain; pool.Close
 | 实现顺序 | **`cmd/prism` + `pkg/config`（含简单热更）**；库代码均在 `pkg/`（N0 已迁）；executor / EXPLAIN 再后 |
 | 热更边界 | listen / backend 变更 → reload **失败须重启**；users / log.level 热更生效（简单版） |
 | 目录 | **已定 `cmd/` + `pkg/`**；现有库包已迁入 `pkg/` |
+| 后端拓扑 | **已定学 dbpack 三 mode（E10）**；M1 仅 `single`；rws/sharding 未实现前配置拒绝 |
 | EXPLAIN 形态 | **继续调研**，本切片不实现、不定死 JSON |
 | Prometheus | **再靠后**（原 N4 继续后置） |
 
-下一步：TDD 实现 `pkg/config` → `cmd/prism` → 简单 `SIGUSR1` Reload。
+下一步：按 [backend-server-single-rwsplit-plan.md](backend-server-single-rwsplit-plan.md) 执行 **P1→P5**（`backend_server` single+rwsplit）；N2 executor 可并行或紧随。
 
 ---
 

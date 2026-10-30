@@ -13,7 +13,7 @@ test-unit:
 	$(GO) test -race -short -count=1 ./...
 
 test-integration:
-	$(GO) test -race -count=1 -timeout 20m -v ./test/differential/ -run 'TestNullProxyCalibration|TestPassthroughDifferential'
+	$(GO) test -race -count=1 -timeout 20m -v ./test/differential/ -run 'TestNullProxyCalibration|TestPassthroughDifferential|TestPassthroughQueryScenarios'
 	$(GO) test -race -count=1 -timeout 20m -v ./test/handshake/ -run TestClientDial_RealMySQL
 	$(GO) test -race -count=1 -timeout 20m -v ./test/passthrough/ -run TestPassthrough_Select1
 

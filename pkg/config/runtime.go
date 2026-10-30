@@ -32,7 +32,7 @@ func (rt *Runtime) ReloadFile(path string) error {
 }
 
 // Apply swaps in next after validating reload constraints.
-// listen and backend identity changes are rejected (require restart).
+// listen and backend_server identity changes are rejected (require restart).
 func (rt *Runtime) Apply(next *Config) error {
 	if err := Validate(next); err != nil {
 		return err
@@ -41,11 +41,8 @@ func (rt *Runtime) Apply(next *Config) error {
 	if next.Listen != cur.Listen {
 		return fmt.Errorf("config: listen change requires restart (%q -> %q)", cur.Listen, next.Listen)
 	}
-	if next.Backend.Address != cur.Backend.Address ||
-		next.Backend.User != cur.Backend.User ||
-		next.Backend.Password != cur.Backend.Password ||
-		next.Backend.Database != cur.Backend.Database {
-		return fmt.Errorf("config: backend change requires restart")
+	if !next.BackendServer.SameIdentity(cur.BackendServer) {
+		return fmt.Errorf("config: backend_server change requires restart")
 	}
 	rt.cur.Store(next.Clone())
 	return nil

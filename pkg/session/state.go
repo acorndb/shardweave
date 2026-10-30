@@ -7,14 +7,15 @@ import (
 
 // State holds frontend session fields that affect backend connection reuse.
 type State struct {
-	database string
-	inTx     bool
-	reserved bool
-	charset  string
+	database   string
+	inTx       bool
+	autocommit bool
+	reserved   bool
+	charset    string
 }
 
-// NewState returns an empty session state.
-func NewState() *State { return &State{} }
+// NewState returns a session state with MySQL-default autocommit=ON.
+func NewState() *State { return &State{autocommit: true} }
 
 func (s *State) Database() string { return s.database }
 func (s *State) SetDatabase(db string) {
@@ -24,6 +25,22 @@ func (s *State) SetDatabase(db string) {
 func (s *State) InTx() bool { return s.inTx }
 func (s *State) SetInTx(v bool) {
 	s.inTx = v
+}
+
+// Autocommit reports SESSION autocommit (default true after handshake).
+func (s *State) Autocommit() bool { return s.autocommit }
+
+// SetAutocommit updates autocommit. Setting true clears InTx (kingshard/Gaea handleSetAutoCommit).
+func (s *State) SetAutocommit(v bool) {
+	s.autocommit = v
+	if v {
+		s.inTx = false
+	}
+}
+
+// IsInTransaction matches kingshard/Gaea: IN_TRANS || !autocommit.
+func (s *State) IsInTransaction() bool {
+	return s.inTx || !s.autocommit
 }
 
 func (s *State) Reserved() bool { return s.reserved }
@@ -40,13 +57,15 @@ func (s *State) SetCharset(cs string) {
 // Current database is preserved (MySQL COM_RESET_CONNECTION semantics).
 func (s *State) Reset() {
 	s.inTx = false
+	s.autocommit = true
 	s.reserved = false
 	s.charset = ""
 }
 
 // NeedsSticky reports whether the session must keep the same backend connection.
+// Includes !autocommit (design §5.9 / kingshard isInTransaction).
 func (s *State) NeedsSticky() bool {
-	return s.inTx || s.reserved
+	return s.IsInTransaction() || s.reserved
 }
 
 // DetectReservedSQL heuristically flags statements that pin a backend connection

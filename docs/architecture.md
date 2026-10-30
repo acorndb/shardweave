@@ -92,7 +92,7 @@ client ──▶ pkg/mysql/server + pkg/session        （协议层前端）
   最小解析直接转发          pkg/sql/parser → pkg/router → pkg/sql/rewrite
       │                        │
       ▼                        ▼
-  pkg/pool 后端连接 ◀──── pkg/executor/dispatch（并行多分片）
+  pkg/backend_server 连接池叶子 ◀──── pkg/executor/dispatch（并行多分片）
       │                        │
       └──▶ pkg/executor/merge（流式 k 路归并）◀──┘
                  │
@@ -102,7 +102,7 @@ client ◀── pkg/mysql/server（响应编码）
 ## 5. 依赖规则（强制）
 
 - `pkg/mysql` 不允许 import `pkg/router`、`pkg/executor`、`pkg/config` 之外的任何上层——协议层必须可在透传模式下独立运行与差分测试。
-- 依赖方向：`pkg/mysql` ← `pkg/session`/`pkg/pool` ← `pkg/sql`/`pkg/router` ← `pkg/executor`；`pkg/config` 被装配与读快照方引用；`pkg/obs`/`pkg/admin` 横切。
+- 依赖方向：`pkg/mysql` ← `pkg/session`/`pkg/backend_server` ← `pkg/sql`/`pkg/router` ← `pkg/executor`；`pkg/config` 被装配与读快照方引用；`pkg/obs`/`pkg/admin` 横切。
 - `pkg/admin` 只读内部状态、下发控制指令，不参与数据面路径。
 - 每个顶层包对外只暴露小接口（Go 惯例：接口定义在消费方）。
 
@@ -114,7 +114,7 @@ client ◀── pkg/mysql/server（响应编码）
 | pkg/sql/* | 改写变换 | 改写幂等、parser 不 panic | — | 改写后语义对比 | 聚合拆分 |
 | pkg/router/* | 规则→分片 | 路由确定性 | — | — | 不均匀分片 |
 | pkg/executor/* | 归并堆 | — | 多分片下发 | — | **分片 vs 单库** |
-| pkg/pool/* | 粘性状态机 | — | 故障注入（杀容器） | — | — |
+| pkg/backend_server/* | 粘性状态机 | — | 故障注入（杀容器） | — | — |
 | pkg/config/* | 校验/dry-run | — | 热加载不中断 | — | — |
 
 ## 7. v1 明确不做
@@ -123,7 +123,7 @@ client ◀── pkg/mysql/server（响应编码）
 
 ## 8. 里程碑
 
-1. **M1 透传**：`pkg/mysql` + `pkg/pool` + `pkg/session` + `pkg/config` + `cmd/prism`，差分 harness 跑通（协议保真度开始被验证）。
+1. **M1 透传**：`pkg/mysql` + `pkg/backend_server` + `pkg/session` + `pkg/config` + `cmd/prism`，差分 harness 跑通（协议保真度开始被验证）。
 2. **M2 单分片**：parser + router + plan 三态判定 + explain route。
 3. **M3 跨分片**：dispatch + merge，变形 harness 上线。
 4. **M4 生产化**：粘性矩阵完整、故障注入通过、性能门禁、发布认证。

@@ -12,9 +12,11 @@ const (
 	ComQuit             = 0x01
 	ComInitDB           = 0x02
 	ComQuery            = 0x03
+	ComFieldList        = 0x04
 	ComPing             = 0x0e
 	ComStmtPrepare      = 0x16
 	ComStmtExecute      = 0x17
+	ComStmtSendLongData = 0x18
 	ComStmtClose        = 0x19
 	ComStmtReset        = 0x1a
 	ComResetConnection  = 0x1f

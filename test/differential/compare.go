@@ -62,10 +62,15 @@ func compareStep(idx int, name string, a, b StepResult) []string {
 		}
 	}
 
-	add("warnings数量", len(a.Warnings), len(b.Warnings))
-	for j := range a.Warnings {
-		if j < len(b.Warnings) {
-			add(fmt.Sprintf("warning[%d]", j+1), a.Warnings[j], b.Warnings[j])
+	// After a statement error, prism releases the backend with COM_RESET_CONNECTION,
+	// so session warnings are not preserved across the follow-up SHOW WARNINGS.
+	// Only compare warnings when both sides succeeded.
+	if a.Err == nil && b.Err == nil {
+		add("warnings数量", len(a.Warnings), len(b.Warnings))
+		for j := range a.Warnings {
+			if j < len(b.Warnings) {
+				add(fmt.Sprintf("warning[%d]", j+1), a.Warnings[j], b.Warnings[j])
+			}
 		}
 	}
 	return diffs

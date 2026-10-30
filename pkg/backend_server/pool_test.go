@@ -1,4 +1,4 @@
-package pool_test
+package backend_server_test
 
 import (
 	"context"
@@ -7,16 +7,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acorndb/prism/pkg/pool"
+	"github.com/acorndb/prism/pkg/backend_server"
 	"github.com/stretchr/testify/require"
 )
 
 type stubBackend struct {
-	id          int
-	resetCalls  atomic.Int32
-	closeCalls  atomic.Int32
-	resetErr    error
-	closed      atomic.Bool
+	id         int
+	resetCalls atomic.Int32
+	closeCalls atomic.Int32
+	resetErr   error
+	closed     atomic.Bool
 }
 
 func (s *stubBackend) Reset(context.Context) error {
@@ -32,7 +32,7 @@ func (s *stubBackend) Close() error {
 
 func TestPool_AcquireReleaseReuse(t *testing.T) {
 	var n atomic.Int32
-	p := pool.New(pool.Config{Capacity: 1, MaxCapacity: 2, GetTimeout: time.Second}, func(ctx context.Context) (pool.Backend, error) {
+	p := backend_server.New(backend_server.Config{Capacity: 1, MaxCapacity: 2, GetTimeout: time.Second}, func(ctx context.Context) (backend_server.Backend, error) {
 		id := int(n.Add(1))
 		return &stubBackend{id: id}, nil
 	})
@@ -55,7 +55,7 @@ func TestPool_AcquireReleaseReuse(t *testing.T) {
 
 func TestPool_ReleaseResetFailureDiscards(t *testing.T) {
 	var n atomic.Int32
-	p := pool.New(pool.Config{Capacity: 1, MaxCapacity: 2, GetTimeout: time.Second}, func(ctx context.Context) (pool.Backend, error) {
+	p := backend_server.New(backend_server.Config{Capacity: 1, MaxCapacity: 2, GetTimeout: time.Second}, func(ctx context.Context) (backend_server.Backend, error) {
 		id := int(n.Add(1))
 		return &stubBackend{id: id, resetErr: errors.New("reset failed")}, nil
 	})
@@ -76,7 +76,7 @@ func TestPool_ReleaseResetFailureDiscards(t *testing.T) {
 
 func TestPool_DiscardFreesCapacity(t *testing.T) {
 	var n atomic.Int32
-	p := pool.New(pool.Config{Capacity: 0, MaxCapacity: 1, GetTimeout: 50 * time.Millisecond}, func(ctx context.Context) (pool.Backend, error) {
+	p := backend_server.New(backend_server.Config{Capacity: 0, MaxCapacity: 1, GetTimeout: 50 * time.Millisecond}, func(ctx context.Context) (backend_server.Backend, error) {
 		return &stubBackend{id: int(n.Add(1))}, nil
 	})
 	t.Cleanup(func() { _ = p.Close() })
@@ -95,7 +95,7 @@ func TestPool_DiscardFreesCapacity(t *testing.T) {
 
 func TestPool_MaxCapacity(t *testing.T) {
 	var n atomic.Int32
-	p := pool.New(pool.Config{Capacity: 0, MaxCapacity: 1, GetTimeout: 50 * time.Millisecond}, func(ctx context.Context) (pool.Backend, error) {
+	p := backend_server.New(backend_server.Config{Capacity: 0, MaxCapacity: 1, GetTimeout: 50 * time.Millisecond}, func(ctx context.Context) (backend_server.Backend, error) {
 		return &stubBackend{id: int(n.Add(1))}, nil
 	})
 	t.Cleanup(func() { _ = p.Close() })

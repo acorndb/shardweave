@@ -10,8 +10,9 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 
-	"github.com/acorndb/prism/pkg/pool"
+	"github.com/acorndb/prism/pkg/backend_server"
 	"github.com/acorndb/prism/pkg/proxy"
+	"github.com/acorndb/prism/pkg/router"
 	"github.com/stretchr/testify/require"
 	mysqltc "github.com/testcontainers/testcontainers-go/modules/mysql"
 )
@@ -47,9 +48,9 @@ func TestPassthrough_Select1(t *testing.T) {
 	require.NoError(t, err)
 	mysqlAddr := net.JoinHostPort(host, port.Port())
 
-	p := pool.New(pool.Config{Capacity: 1, MaxCapacity: 4, GetTimeout: 5 * time.Second},
-		func(ctx context.Context) (pool.Backend, error) {
-			return pool.DialMySQL(ctx, mysqlAddr, "smoke", "smoke-pass", "smoke")
+	p := backend_server.New(backend_server.Config{Capacity: 1, MaxCapacity: 4, GetTimeout: 5 * time.Second},
+		func(ctx context.Context) (backend_server.Backend, error) {
+			return backend_server.DialMySQL(ctx, mysqlAddr, "smoke", "smoke-pass", "smoke")
 		})
 	t.Cleanup(func() { _ = p.Close() })
 
@@ -68,7 +69,7 @@ func TestPassthrough_Select1(t *testing.T) {
 			go func(c net.Conn) {
 				_ = proxy.Serve(serveCtx, c, proxy.SessionConfig{
 					Users: mapUsers{"smoke": "smoke-pass"},
-					Pool:  p,
+					Group: &router.Group{Master: p},
 				})
 				_ = c.Close()
 			}(c)

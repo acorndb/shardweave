@@ -4,16 +4,24 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"go.yaml.in/yaml/v3"
+)
+
+// Topology modes (backend_server.mode).
+const (
+	ModeSingle   = "single"
+	ModeRWSplit  = "rwsplit"
+	ModeSharding = "sharding"
 )
 
 // Config is the process configuration snapshot.
 type Config struct {
 	Listen           string        `yaml:"listen"`
 	Users            []User        `yaml:"users"`
-	Backend          Backend       `yaml:"backend"`
+	BackendServer    BackendServer `yaml:"backend_server"`
 	Pool             Pool          `yaml:"pool"`
 	Log              Log           `yaml:"log"`
 	TerminationDrain time.Duration `yaml:"termination_drain"`
@@ -25,15 +33,31 @@ type User struct {
 	Password string `yaml:"password"`
 }
 
-// Backend is the single MySQL target for M1 passthrough.
-type Backend struct {
+// BackendServer is the top-level backend topology (single / rwsplit / sharding).
+type BackendServer struct {
+	Mode string `yaml:"mode"`
+
+	// single: endpoint fields inline
+	Address  string `yaml:"address,omitempty"`
+	User     string `yaml:"user,omitempty"`
+	Password string `yaml:"password,omitempty"`
+	Database string `yaml:"database,omitempty"`
+
+	// rwsplit
+	Master      *BackendEndpoint  `yaml:"master,omitempty"`
+	Slaves      []BackendEndpoint `yaml:"slaves,omitempty"`
+	LoadBalance string            `yaml:"load_balance,omitempty"`
+}
+
+// BackendEndpoint is one MySQL address (one pool leaf).
+type BackendEndpoint struct {
 	Address  string `yaml:"address"`
 	User     string `yaml:"user"`
 	Password string `yaml:"password"`
 	Database string `yaml:"database"`
 }
 
-// Pool maps to pool.Config fields.
+// Pool maps to backend_server.Config fields.
 type Pool struct {
 	Capacity    int           `yaml:"capacity"`
 	MaxCapacity int           `yaml:"max_capacity"`
@@ -67,7 +91,7 @@ func LoadFile(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// Validate checks required fields for M1 passthrough.
+// Validate checks required fields for backend_server modes.
 func Validate(cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config: nil")
@@ -83,13 +107,117 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("config: users[%d].name is required", i)
 		}
 	}
-	if cfg.Backend.Address == "" {
-		return fmt.Errorf("config: backend.address is required")
+	return validateBackendServer(&cfg.BackendServer)
+}
+
+func validateBackendServer(bs *BackendServer) error {
+	mode := strings.TrimSpace(bs.Mode)
+	if mode == "" {
+		mode = ModeSingle
+		bs.Mode = ModeSingle
 	}
-	if cfg.Backend.User == "" {
-		return fmt.Errorf("config: backend.user is required")
+	switch mode {
+	case ModeSingle:
+		if bs.Master != nil || len(bs.Slaves) > 0 {
+			return fmt.Errorf("config: backend_server.mode=single must not set master/slaves")
+		}
+		if bs.Address == "" {
+			return fmt.Errorf("config: backend_server.address is required")
+		}
+		if bs.User == "" {
+			return fmt.Errorf("config: backend_server.user is required")
+		}
+		return nil
+	case ModeRWSplit:
+		if bs.Address != "" || bs.User != "" || bs.Password != "" || bs.Database != "" {
+			return fmt.Errorf("config: backend_server.mode=rwsplit must use master/slaves, not top-level address")
+		}
+		if bs.Master == nil {
+			return fmt.Errorf("config: backend_server.master is required for rwsplit")
+		}
+		if err := validateEndpoint("backend_server.master", bs.Master); err != nil {
+			return err
+		}
+		for i := range bs.Slaves {
+			if err := validateEndpoint(fmt.Sprintf("backend_server.slaves[%d]", i), &bs.Slaves[i]); err != nil {
+				return err
+			}
+		}
+		switch bs.LoadBalance {
+		case "", "round_robin", "random":
+		default:
+			return fmt.Errorf("config: backend_server.load_balance %q unsupported", bs.LoadBalance)
+		}
+		return nil
+	case ModeSharding:
+		return fmt.Errorf("config: backend_server.mode=sharding is not implemented")
+	default:
+		return fmt.Errorf("config: backend_server.mode %q unsupported (want single|rwsplit|sharding)", mode)
+	}
+}
+
+func validateEndpoint(prefix string, ep *BackendEndpoint) error {
+	if ep.Address == "" {
+		return fmt.Errorf("config: %s.address is required", prefix)
+	}
+	if ep.User == "" {
+		return fmt.Errorf("config: %s.user is required", prefix)
 	}
 	return nil
+}
+
+// Primary returns the writable/primary endpoint for single or rwsplit.
+func (bs BackendServer) Primary() (BackendEndpoint, error) {
+	mode := bs.Mode
+	if mode == "" {
+		mode = ModeSingle
+	}
+	switch mode {
+	case ModeSingle:
+		return BackendEndpoint{
+			Address:  bs.Address,
+			User:     bs.User,
+			Password: bs.Password,
+			Database: bs.Database,
+		}, nil
+	case ModeRWSplit:
+		if bs.Master == nil {
+			return BackendEndpoint{}, fmt.Errorf("config: rwsplit master missing")
+		}
+		return *bs.Master, nil
+	default:
+		return BackendEndpoint{}, fmt.Errorf("config: primary unsupported for mode %q", mode)
+	}
+}
+
+// SameIdentity reports whether topology endpoints/credentials are unchanged (reload gate).
+func (bs BackendServer) SameIdentity(other BackendServer) bool {
+	if strings.TrimSpace(bs.Mode) == "" {
+		bs.Mode = ModeSingle
+	}
+	if strings.TrimSpace(other.Mode) == "" {
+		other.Mode = ModeSingle
+	}
+	if bs.Mode != other.Mode || bs.LoadBalance != other.LoadBalance {
+		return false
+	}
+	a, errA := bs.Primary()
+	b, errB := other.Primary()
+	if errA != nil || errB != nil {
+		return false
+	}
+	if a != b {
+		return false
+	}
+	if len(bs.Slaves) != len(other.Slaves) {
+		return false
+	}
+	for i := range bs.Slaves {
+		if bs.Slaves[i] != other.Slaves[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Clone returns a deep copy suitable for mutation before Apply.
@@ -101,5 +229,19 @@ func (c *Config) Clone() *Config {
 	if c.Users != nil {
 		out.Users = append([]User(nil), c.Users...)
 	}
+	out.BackendServer = c.BackendServer.Clone()
 	return &out
+}
+
+// Clone deep-copies BackendServer.
+func (bs BackendServer) Clone() BackendServer {
+	out := bs
+	if bs.Master != nil {
+		m := *bs.Master
+		out.Master = &m
+	}
+	if bs.Slaves != nil {
+		out.Slaves = append([]BackendEndpoint(nil), bs.Slaves...)
+	}
+	return out
 }

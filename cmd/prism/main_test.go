@@ -17,5 +17,7 @@ func TestExampleConfigLoads(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "0.0.0.0:3307", cfg.Listen)
 	require.NotEmpty(t, cfg.Users)
-	require.NotEmpty(t, cfg.Backend.Address)
+	ep, err := cfg.BackendServer.Primary()
+	require.NoError(t, err)
+	require.NotEmpty(t, ep.Address)
 }
