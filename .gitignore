@@ -5,3 +5,6 @@ coverage.txt
 
 # superpowers / agent 过程产物，不入仓
 docs/superpowers/
+docs/design/
+# SDD / agent scratch (never commit)
+.superpowers/

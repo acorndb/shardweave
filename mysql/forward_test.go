@@ -1,0 +1,183 @@
+package mysql_test
+
+import (
+	"net"
+	"testing"
+
+	"github.com/acorndb/prism/mysql"
+	"github.com/acorndb/prism/mysql/packet"
+	"github.com/stretchr/testify/require"
+)
+
+func pipePair(t *testing.T) (src, dst, backendWriter, frontReader *packet.Conn) {
+	t.Helper()
+	bw, br := net.Pipe()
+	t.Cleanup(func() { _ = bw.Close(); _ = br.Close() })
+	fw, fr := net.Pipe()
+	t.Cleanup(func() { _ = fw.Close(); _ = fr.Close() })
+	return packet.NewConn(br), packet.NewConn(fw), packet.NewConn(bw), packet.NewConn(fr)
+}
+
+func writePackets(t *testing.T, w *packet.Conn, packets [][]byte) <-chan error {
+	t.Helper()
+	ch := make(chan error, 1)
+	go func() {
+		for _, p := range packets {
+			buf := make([]byte, 4+len(p))
+			copy(buf[4:], p)
+			if err := w.WritePacket(buf); err != nil {
+				ch <- err
+				return
+			}
+		}
+		ch <- nil
+	}()
+	return ch
+}
+
+func drainFront(t *testing.T, r *packet.Conn, n int) <-chan [][]byte {
+	t.Helper()
+	ch := make(chan [][]byte, 1)
+	go func() {
+		out := make([][]byte, 0, n)
+		for i := 0; i < n; i++ {
+			d, err := r.ReadPacket()
+			if err != nil {
+				ch <- nil
+				return
+			}
+			out = append(out, d)
+		}
+		ch <- out
+	}()
+	return ch
+}
+
+func TestForwardResponse_OK(t *testing.T) {
+	src, dst, bw, fr := pipePair(t)
+	ok := mysql.EncodeOK(1, 0, 2, 0)
+	werr := writePackets(t, bw, [][]byte{ok})
+	front := drainFront(t, fr, 1)
+
+	require.NoError(t, mysql.ForwardResponse(dst, src, true))
+	require.NoError(t, <-werr)
+	got := <-front
+	require.Equal(t, [][]byte{ok}, got)
+}
+
+func TestForwardResponse_ERR(t *testing.T) {
+	src, dst, bw, fr := pipePair(t)
+	er := mysql.EncodeERR(1064, "42000", "You have an error")
+	werr := writePackets(t, bw, [][]byte{er})
+	front := drainFront(t, fr, 1)
+
+	require.NoError(t, mysql.ForwardResponse(dst, src, true))
+	require.NoError(t, <-werr)
+	got := <-front
+	require.Equal(t, [][]byte{er}, got)
+}
+
+func TestForwardResponse_ResultsetDeprecateEOF(t *testing.T) {
+	src, dst, bw, fr := pipePair(t)
+
+	// Real MySQL 8 + CLIENT_DEPRECATE_EOF for SELECT 1:
+	// colcount, coldef, row, then 0xfe OK-replacing-EOF (no intermediate marker).
+	colCount := []byte{0x01}
+	colDef := []byte{
+		0x03, 'd', 'e', 'f',
+		0x00, 0x00, 0x00,
+		0x01, '1',
+		0x00,
+		0x0c,
+		0x3f, 0x00,
+		0x01, 0x00, 0x00, 0x00,
+		0x08,
+		0x00, 0x00,
+		0x00,
+		0x00, 0x00,
+	}
+	row := []byte{0x01, '1'}
+	eofOK := []byte{0xfe, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00}
+	packets := [][]byte{colCount, colDef, row, eofOK}
+
+	werr := writePackets(t, bw, packets)
+	front := drainFront(t, fr, len(packets))
+
+	require.NoError(t, mysql.ForwardResponse(dst, src, true))
+	require.NoError(t, <-werr)
+	got := <-front
+	require.Equal(t, packets, got)
+}
+
+func TestForwardPrepareResponse(t *testing.T) {
+	src, dst, bw, fr := pipePair(t)
+
+	// COM_STMT_PREPARE_OK: 1 param, 1 column; deprecateEOF → no intermediate EOFs.
+	prepareOK := []byte{
+		0x00,                   // OK
+		0x01, 0x00, 0x00, 0x00, // statement_id=1
+		0x01, 0x00,             // num_columns=1
+		0x01, 0x00,             // num_params=1
+		0x00,                   // reserved
+		0x00, 0x00,             // warnings
+	}
+	paramDef := []byte{0x03, 'd', 'e', 'f', 0x00, 0x00, 0x00, 0x01, '?', 0x00, 0x0c,
+		0x3f, 0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00}
+	colDef := []byte{0x03, 'd', 'e', 'f', 0x00, 0x00, 0x00, 0x01, '1', 0x00, 0x0c,
+		0x3f, 0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00}
+	packets := [][]byte{prepareOK, paramDef, colDef}
+
+	werr := writePackets(t, bw, packets)
+	front := drainFront(t, fr, len(packets))
+
+	require.NoError(t, mysql.ForwardPrepareResponse(dst, src, true))
+	require.NoError(t, <-werr)
+	require.Equal(t, packets, <-front)
+}
+
+func TestForwardResponse_MultiResult(t *testing.T) {
+	src, dst, bw, fr := pipePair(t)
+
+	// Two OK packets; first has SERVER_MORE_RESULTS_EXISTS.
+	okMore := mysql.EncodeOK(0, 0, mysql.ServerStatusAutocommit|mysql.ServerMoreResultsExists, 0)
+	okDone := mysql.EncodeOK(0, 0, mysql.ServerStatusAutocommit, 0)
+	packets := [][]byte{okMore, okDone}
+
+	werr := writePackets(t, bw, packets)
+	front := drainFront(t, fr, len(packets))
+
+	require.NoError(t, mysql.ForwardResponse(dst, src, true))
+	require.NoError(t, <-werr)
+	require.Equal(t, packets, <-front)
+}
+
+func TestForwardResponse_ResultsetClassicEOF(t *testing.T) {
+	src, dst, bw, fr := pipePair(t)
+
+	colCount := []byte{0x01}
+	colDef := []byte{
+		0x03, 'd', 'e', 'f',
+		0x00, 0x00, 0x00,
+		0x01, '1',
+		0x00,
+		0x0c,
+		0x3f, 0x00,
+		0x01, 0x00, 0x00, 0x00,
+		0x08,
+		0x00, 0x00,
+		0x00,
+		0x00, 0x00,
+	}
+	eofCols := []byte{0xfe, 0x00, 0x00, 0x02, 0x00}
+	row := []byte{0x01, '1'}
+	eofRows := []byte{0xfe, 0x00, 0x00, 0x02, 0x00}
+	packets := [][]byte{colCount, colDef, eofCols, row, eofRows}
+
+	werr := writePackets(t, bw, packets)
+	front := drainFront(t, fr, len(packets))
+
+	require.NoError(t, mysql.ForwardResponse(dst, src, false))
+	require.NoError(t, <-werr)
+	got := <-front
+	require.Equal(t, packets, got)
+}

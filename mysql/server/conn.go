@@ -56,8 +56,9 @@ func NewConn(raw net.Conn, users UserProvider) (*Conn, error) {
 		Capability: mysql.ClientProtocol41 | mysql.ClientSecureConnection |
 			mysql.ClientPluginAuth | mysql.ClientTransactions |
 			mysql.ClientMultiStatements | mysql.ClientMultiResults |
-			mysql.ClientDeprecateEOF | mysql.ClientSessionTrack |
-			mysql.ClientConnectWithDB | mysql.ClientPluginAuthLenEncClientData,
+			mysql.ClientPSMultiResults | mysql.ClientDeprecateEOF |
+			mysql.ClientSessionTrack | mysql.ClientConnectWithDB |
+			mysql.ClientPluginAuthLenEncClientData,
 		Collation:      255,
 		Status:         0x0002, // SERVER_STATUS_AUTOCOMMIT
 		AuthPluginName: auth.NativePasswordPlugin,

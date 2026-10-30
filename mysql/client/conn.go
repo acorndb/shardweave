@@ -48,7 +48,8 @@ func Dial(raw net.Conn, user, password, database string) (*Conn, error) {
 		Capability: hs.Capability & (mysql.ClientProtocol41 | mysql.ClientSecureConnection |
 			mysql.ClientPluginAuth | mysql.ClientPluginAuthLenEncClientData |
 			mysql.ClientConnectWithDB | mysql.ClientTransactions |
-			mysql.ClientMultiResults | mysql.ClientDeprecateEOF),
+			mysql.ClientMultiStatements | mysql.ClientMultiResults |
+			mysql.ClientPSMultiResults | mysql.ClientDeprecateEOF),
 		Collation:      hs.Collation,
 		Username:       user,
 		AuthResponse:   authResp,
