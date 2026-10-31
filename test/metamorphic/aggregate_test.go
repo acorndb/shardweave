@@ -103,6 +103,8 @@ func TestShardedAggregateOracle(t *testing.T) {
 		"SELECT COUNT(*), AVG(amount) FROM orders",
 		"SELECT COUNT(*), AVG(amount) FROM orders WHERE user_id IN (1, 2, 3, 4)",
 		"SELECT AVG(amount) FROM orders WHERE amount > 0",
+		"SELECT amount FROM orders ORDER BY user_id, id",
+		"SELECT amount FROM orders ORDER BY user_id DESC, id DESC",
 	}
 	for _, query := range queries {
 		t.Run(query, func(t *testing.T) {

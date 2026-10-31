@@ -255,6 +255,49 @@ func TestDispatch_Ordered(t *testing.T) {
 	require.Equal(t, 1, tr1.last(t).resets)
 }
 
+func TestDispatch_OrderedHiddenProjection(t *testing.T) {
+	tr0, tr1 := &tracker{}, &tracker{}
+	fields := []result.Field{
+		{Name: "amount", OrgName: "amount", Type: result.TypeLong, Charset: 63},
+		{Name: "__sw_order_0", OrgName: "user_id", Type: result.TypeLong, Charset: 63},
+	}
+	p := newMultiPipeline(t, tr0, tr1,
+		func(c *fakeConn) {
+			c.fields = fields
+			c.rows = []result.Row{{[]byte("200"), []byte("1")}}
+		},
+		func(c *fakeConn) {
+			c.fields = fields
+			c.rows = []result.Row{{[]byte("50"), []byte("2")}}
+		})
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	_, err := p.executePlan(context.Background(), rt, query("SELECT amount FROM orders ORDER BY user_id"),
+		&plan.Plan{
+			Kind:    plan.MultiShard,
+			Targets: multiTargets(),
+			Merge: plan.MergeSpec{
+				OrderBy: []plan.OrderKey{{Column: 1}},
+				Output:  []int{0},
+			},
+		})
+	require.NoError(t, err)
+
+	pkts := collect()
+	require.Len(t, pkts, 1+1+2+1, "header + 1 projected column + 2 rows + terminator")
+	first, err := mysql.DecodeTextRow(pkts[2], 1)
+	require.NoError(t, err)
+	second, err := mysql.DecodeTextRow(pkts[3], 1)
+	require.NoError(t, err)
+	require.Equal(t, "200", string(first[0]))
+	require.Equal(t, "50", string(second[0]))
+	require.Empty(t, rt.leases)
+	require.Equal(t, 1, tr0.last(t).resets)
+	require.Equal(t, 1, tr1.last(t).resets)
+}
+
 func TestDispatch_OrderedLimit(t *testing.T) {
 	tr0, tr1 := &tracker{}, &tracker{}
 	p := newMultiPipeline(t, tr0, tr1,

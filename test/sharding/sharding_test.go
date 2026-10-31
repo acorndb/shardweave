@@ -159,7 +159,12 @@ func TestSingleShardRouting(t *testing.T) {
 		[]string{"1"})
 	requireOrderedColumn(t, ctx, conn, "SELECT user_id FROM orders ORDER BY user_id LIMIT 1 OFFSET 1",
 		[]string{"2"})
-	assertReject(t, ctx, conn, "SELECT amount FROM orders ORDER BY user_id")
+	requireOrderedColumn(t, ctx, conn, "SELECT amount FROM orders ORDER BY user_id",
+		[]string{"50", "200"})
+	requireOrderedColumn(t, ctx, conn, "SELECT amount FROM orders ORDER BY user_id DESC",
+		[]string{"200", "50"})
+	requireOrderedColumn(t, ctx, conn, "SELECT amount FROM orders ORDER BY user_id LIMIT 1 OFFSET 1",
+		[]string{"200"})
 	assertReject(t, ctx, conn, "SELECT user_id FROM orders ORDER BY user_id + 1")
 	// String ORDER BY needs collation-aware comparison; reject instead of
 	// returning a byte-order result that may differ from MySQL.
@@ -210,6 +215,8 @@ func TestSingleShardRouting(t *testing.T) {
 	requireProfiles(t, ctx, conn, "SELECT name, score FROM profiles",
 		map[string]int{"alice": 1, "bob": 2})
 	require.Equal(t, 2, connScalar(t, ctx, conn, "SELECT COUNT(*) AS c FROM profiles"))
+	requireOrderedColumn(t, ctx, conn, "SELECT name FROM profiles ORDER BY score",
+		[]string{"alice", "bob"})
 	var profileAvg float64
 	require.NoError(t, conn.QueryRowContext(ctx, "SELECT AVG(score) FROM profiles").Scan(&profileAvg))
 	require.Equal(t, 1.5, profileAvg)

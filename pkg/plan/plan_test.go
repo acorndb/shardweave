@@ -208,7 +208,7 @@ func TestBuilder_MultiShard(t *testing.T) {
 			selectStmt(t, "SELECT id, amount FROM orders ORDER BY id DESC"))
 		require.NoError(t, err)
 		require.Equal(t, plan.MultiShard, p.Kind)
-		require.Equal(t, []plan.OrderKey{{Kind: plan.OrderByName, Name: "id", Desc: true}}, p.Merge.OrderBy)
+		require.Equal(t, []plan.OrderKey{{Kind: plan.OrderByPosition, Column: 0, Desc: true}}, p.Merge.OrderBy)
 	})
 
 	t.Run("order_by_position", func(t *testing.T) {
@@ -217,6 +217,62 @@ func TestBuilder_MultiShard(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, plan.MultiShard, p.Kind)
 		require.Equal(t, []plan.OrderKey{{Column: 1, Desc: true}}, p.Merge.OrderBy)
+	})
+
+	t.Run("order_by_hidden_column", func(t *testing.T) {
+		st := selectStmt(t, "SELECT amount FROM orders ORDER BY user_id DESC")
+		p, err := b.Build(context.Background(), session.NewState(), st)
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.OrderKey{{Kind: plan.OrderByPosition, Column: 1, Desc: true}}, p.Merge.OrderBy)
+		require.Equal(t, []int{0}, p.Merge.Output)
+		require.Len(t, p.Targets, 2)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			sel := res.Stmts[0].(*ast.SelectStmt)
+			require.Len(t, sel.Fields.Fields, 2, "hidden ORDER BY column is appended")
+		}
+		orig := st.AST.(*ast.SelectStmt)
+		require.Len(t, orig.Fields.Fields, 1, "caller AST must be restored")
+	})
+
+	t.Run("order_by_hidden_limit", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT amount FROM orders ORDER BY user_id LIMIT 1 OFFSET 1"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []int{0}, p.Merge.Output)
+		require.NotNil(t, p.Merge.Limit)
+		require.Equal(t, int64(1), p.Merge.Limit.Offset)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			sel := res.Stmts[0].(*ast.SelectStmt)
+			require.Len(t, sel.Fields.Fields, 2)
+			offset, count, ok := sql.ParseLimit(sel.Limit)
+			require.True(t, ok)
+			require.Zero(t, offset)
+			require.Equal(t, int64(2), count)
+		}
+	})
+
+	t.Run("order_by_projected_alias", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT amount AS a FROM orders ORDER BY a"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Empty(t, p.Merge.Output)
+		require.Equal(t, []plan.OrderKey{{Kind: plan.OrderByPosition, Column: 0}}, p.Merge.OrderBy)
+	})
+
+	t.Run("order_by_wildcard", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT * FROM orders ORDER BY user_id"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Empty(t, p.Merge.Output)
+		require.Equal(t, []plan.OrderKey{{Kind: plan.OrderByName, Name: "user_id"}}, p.Merge.OrderBy)
 	})
 
 	t.Run("order_by_limit", func(t *testing.T) {

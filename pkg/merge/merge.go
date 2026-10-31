@@ -15,7 +15,7 @@ import (
 // Validate checks merge features independently of streams/fields, so execute
 // can reject unsupported plans before acquiring backends.
 func Validate(spec plan.MergeSpec) error {
-	if len(spec.GroupBy) > 0 || spec.Distinct || len(spec.Output) > 0 {
+	if len(spec.GroupBy) > 0 || spec.Distinct {
 		return errs.Unsupported("multi-shard merge shape is not supported")
 	}
 	if len(spec.Aggregates) > 0 && len(spec.OrderBy) > 0 {
@@ -47,10 +47,62 @@ func Merge(streams []result.Stream, fields []result.Field, spec plan.MergeSpec) 
 	default:
 		out = Concat(streams)
 	}
+	if len(spec.Output) > 0 {
+		projected, err := project(out, spec.Output)
+		if err != nil {
+			return nil, err
+		}
+		out = projected
+	}
 	if spec.Limit != nil {
 		out = Limit(out, spec.Limit.Offset, spec.Limit.Count)
 	}
 	return out, nil
+}
+
+// project drops hidden columns while preserving the requested output order.
+func project(upstream result.Stream, columns []int) (result.Stream, error) {
+	fields := upstream.Fields()
+	out := make([]result.Field, len(columns))
+	for i, col := range columns {
+		if col < 0 || col >= len(fields) {
+			return nil, errs.Unsupported("multi-shard output column %d is out of range", col)
+		}
+		out[i] = fields[col]
+	}
+	return &projectStream{upstream: upstream, fields: out, columns: columns}, nil
+}
+
+type projectStream struct {
+	upstream result.Stream
+	fields   []result.Field
+	columns  []int
+	closed   bool
+}
+
+func (p *projectStream) Fields() []result.Field { return p.fields }
+
+func (p *projectStream) Next() (result.Row, error) {
+	row, err := p.upstream.Next()
+	if err != nil {
+		return nil, err
+	}
+	out := make(result.Row, len(p.columns))
+	for i, col := range p.columns {
+		if col >= len(row) {
+			return nil, errs.Unsupported("multi-shard output column %d exceeds row width %d", col, len(row))
+		}
+		out[i] = row[col]
+	}
+	return out, nil
+}
+
+func (p *projectStream) Close() error {
+	if p.closed {
+		return nil
+	}
+	p.closed = true
+	return p.upstream.Close()
 }
 
 // Concat streams the shard results in order, skipping nil streams.

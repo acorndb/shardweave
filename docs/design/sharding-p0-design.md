@@ -362,8 +362,8 @@ route → []Target
 
 - 触发条件：分片表 SELECT 没有可证明的单片键约束（无 WHERE、范围、
   非键列 OR、跨片 `IN` 等），或键值映射到多个 slice；
-- 支持 `ORDER BY` 列名/位置（多列、ASC/DESC），由 k 路堆归并；字符串列、
-  表达式、未投影列显式 1235；
+- 支持 `ORDER BY` 列名/位置（多列、ASC/DESC），由 k 路堆归并；未投影的
+  简单列通过隐藏列下推，`Output` 投影去掉隐藏列；字符串列/表达式 1235；
 - 支持 `COUNT/SUM/MIN/MAX/AVG`（无 GROUP BY）；
 - 不支持 `GROUP BY / HAVING / DISTINCT / 窗口函数 / 聚合 DISTINCT / INTO /
   锁定读 / SQL_CALC_FOUND_ROWS`；
@@ -510,11 +510,11 @@ route → []Target
   （日期按规范文本）；NULL 按 MySQL 语义 ASC 在前、DESC 在后；
 - 字符串/二进制/JSON 等 collation 相关类型显式 1235，避免字节序与 MySQL
   排序不一致；
-- ORDER BY 列必须出现在结果集中（按输出名或 OrgName 解析）；未投影列、
-  表达式（`ORDER BY a+1`）1235；类型/列校验在写列头前完成；
+- ORDER BY 未投影的简单列会自动补隐藏列并投影掉；表达式（`ORDER BY a+1`）、
+  字符串类型 1235；类型/列校验在写列头前完成；
 - `ORDER BY ... LIMIT n OFFSET m` 可用：per-shard 改写成 `LIMIT m+n`，
   有序归并后全局跳过 m 行；
-- e2e：ASC/DESC/位置/LIMIT、隐藏列/表达式/字符串排序的显式拒绝。
+- e2e：ASC/DESC/位置/LIMIT、未投影列排序、表达式/字符串排序的显式拒绝。
 
 已落地（B1.6，无 GROUP BY 聚合，2026-10-31）：
 
@@ -598,7 +598,7 @@ B1.4（已落地，多分片 LIMIT）：
 B1.5（已落地，多分片 ORDER BY）：
 
 - 列名/位置的 ASC/DESC、多列排序；整数/无符号/浮点/DECIMAL/日期文本；
-- 字符串/二进制/JSON、表达式、未投影列 1235；
+- 未投影的简单列自动补隐藏列；字符串/二进制/JSON、表达式 1235；
 - `ORDER BY ... LIMIT n OFFSET m` 可用（per-shard `LIMIT m+n` + 全局跳过）。
 
 B1.6（已落地，无 GROUP BY 聚合）：
@@ -616,7 +616,7 @@ DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代�
   `hash_mod_str` 下的 `1`）；
 - 分片表上需要归并的 SELECT（GROUP BY/HAVING/DISTINCT/窗口/INTO/锁定读/
   SQL_CALC_FOUND_ROWS）；子查询；聚合 DISTINCT、聚合与非聚合投影混合、
-  聚合 + ORDER BY；字符串/表达式/未投影列的 ORDER BY；
+  聚合 + ORDER BY；字符串/表达式列 1235；
 - 事务 / `autocommit=0` / reserved / prepared pin 会话中的多分片语句；
 - 跨片/多表 JOIN、schema 限定表；
 - prepared 参数化分片键、prepared DML、prepared 多分片；

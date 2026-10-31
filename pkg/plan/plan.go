@@ -204,19 +204,26 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 			return MergeSpec{}, errs.Unsupported("multi-shard aggregate with ORDER BY is not supported")
 		}
 		spec.Aggregates = aggs
-	} else {
-		keys, rej := orderKeys(sel)
-		if rej != nil {
-			return MergeSpec{}, rej
-		}
-		spec.OrderBy = keys
+		return applyRewrite(sel, targets, spec, extras, nil)
 	}
-	return applyRewrite(sel, targets, spec, extras)
+	keys, orderFields, output, rej := orderSpec(sel)
+	if rej != nil {
+		return MergeSpec{}, rej
+	}
+	spec.OrderBy = keys
+	spec.Output = output
+	return applyRewrite(sel, targets, spec, nil, orderFields)
 }
 
 // applyRewrite parses LIMIT and rewrites per-shard SQL when OFFSET or hidden
 // aggregate columns (AVG's SUM/COUNT) require it.
-func applyRewrite(sel *ast.SelectStmt, targets []route.Target, spec MergeSpec, extras []rewrite.ExtraAggregate) (MergeSpec, *errs.MySQL) {
+func applyRewrite(
+	sel *ast.SelectStmt,
+	targets []route.Target,
+	spec MergeSpec,
+	extras []rewrite.ExtraAggregate,
+	orderFields []rewrite.ExtraField,
+) (MergeSpec, *errs.MySQL) {
 	var perShard *int64
 	if sel.Limit != nil {
 		offset, count, ok := sql.ParseLimit(sel.Limit)
@@ -232,12 +239,13 @@ func applyRewrite(sel *ast.SelectStmt, targets []route.Target, spec MergeSpec, e
 		}
 		spec.Limit = &Limit{Offset: offset, Count: count}
 	}
-	if perShard == nil && len(extras) == 0 {
+	if perShard == nil && len(extras) == 0 && len(orderFields) == 0 {
 		return spec, nil
 	}
 	sqlText, err := rewrite.Select(sel, rewrite.Spec{
 		PerShardLimit:   perShard,
 		ExtraAggregates: extras,
+		ExtraFields:     orderFields,
 	})
 	if err != nil {
 		return MergeSpec{}, errs.Unsupported("multi-shard rewrite failed: %v", err)
@@ -315,25 +323,68 @@ func aggregateSpecs(sel *ast.SelectStmt) ([]AggregateSpec, []rewrite.ExtraAggreg
 	return specs, extras, nil
 }
 
-func orderKeys(sel *ast.SelectStmt) ([]OrderKey, *errs.MySQL) {
+func orderSpec(sel *ast.SelectStmt) ([]OrderKey, []rewrite.ExtraField, []int, *errs.MySQL) {
 	if sel.OrderBy == nil {
-		return nil, nil
+		return nil, nil, nil, nil
 	}
-	keys := make([]OrderKey, 0, len(sel.OrderBy.Items))
-	for _, item := range sel.OrderBy.Items {
-		switch e := item.Expr.(type) {
-		case *ast.ColumnNameExpr:
-			keys = append(keys, OrderKey{Kind: OrderByName, Name: e.Name.Name.L, Desc: item.Desc})
-		case *ast.PositionExpr:
-			if e.N < 1 {
-				return nil, errs.Unsupported("multi-shard ORDER BY position must be >= 1")
-			}
-			keys = append(keys, OrderKey{Kind: OrderByPosition, Column: e.N - 1, Desc: item.Desc})
-		default:
-			return nil, errs.Unsupported("multi-shard ORDER BY supports column names or positions only")
+	base := len(sel.Fields.Fields)
+	hasWildcard := false
+	for _, field := range sel.Fields.Fields {
+		if field.WildCard != nil {
+			hasWildcard = true
+			break
 		}
 	}
-	return keys, nil
+	var keys []OrderKey
+	var extras []rewrite.ExtraField
+	var output []int
+	for _, item := range sel.OrderBy.Items {
+		switch e := item.Expr.(type) {
+		case *ast.PositionExpr:
+			if e.N < 1 || e.N > base {
+				return nil, nil, nil, errs.Unsupported("multi-shard ORDER BY position %d is out of range", e.N)
+			}
+			keys = append(keys, OrderKey{Kind: OrderByPosition, Column: e.N - 1, Desc: item.Desc})
+		case *ast.ColumnNameExpr:
+			if hasWildcard {
+				keys = append(keys, OrderKey{Kind: OrderByName, Name: e.Name.Name.L, Desc: item.Desc})
+				continue
+			}
+			if idx := selectFieldIndex(sel, e.Name.Name.L); idx >= 0 {
+				keys = append(keys, OrderKey{Kind: OrderByPosition, Column: idx, Desc: item.Desc})
+				continue
+			}
+			if output == nil {
+				output = make([]int, base)
+				for i := range output {
+					output[i] = i
+				}
+			}
+			alias := fmt.Sprintf("__sw_order_%d", len(extras))
+			extras = append(extras, rewrite.ExtraField{Expr: e, Alias: alias})
+			keys = append(keys, OrderKey{
+				Kind: OrderByPosition, Column: base + len(extras) - 1, Desc: item.Desc,
+			})
+		default:
+			return nil, nil, nil, errs.Unsupported("multi-shard ORDER BY supports column names or positions only")
+		}
+	}
+	return keys, extras, output, nil
+}
+
+func selectFieldIndex(sel *ast.SelectStmt, name string) int {
+	for i, field := range sel.Fields.Fields {
+		if field.WildCard != nil || field.Expr == nil {
+			continue
+		}
+		if field.AsName.L == name {
+			return i
+		}
+		if c, ok := field.Expr.(*ast.ColumnNameExpr); ok && strings.EqualFold(c.Name.Name.L, name) {
+			return i
+		}
+	}
+	return -1
 }
 
 // multiShardRejectReason lists session states where routing one statement to

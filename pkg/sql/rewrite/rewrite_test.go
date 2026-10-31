@@ -75,3 +75,19 @@ func TestSelect_ExtraAggregates(t *testing.T) {
 	require.Equal(t, "__sw_avg_count_0", got.Fields.Fields[2].AsName.L)
 	require.Len(t, sel.Fields.Fields, 1, "caller AST must be restored")
 }
+
+func TestSelect_ExtraFields(t *testing.T) {
+	sel := parseSelect(t, "SELECT amount FROM orders ORDER BY user_id")
+	order := sel.OrderBy.Items[0].Expr.(*ast.ColumnNameExpr)
+	out, err := rewrite.Select(sel, rewrite.Spec{ExtraFields: []rewrite.ExtraField{{
+		Expr: order, Alias: "__sw_order_0",
+	}}})
+	require.NoError(t, err)
+
+	res, err := sqlparser.Parse(out)
+	require.NoError(t, err)
+	got := res.Stmts[0].(*ast.SelectStmt)
+	require.Len(t, got.Fields.Fields, 2)
+	require.Equal(t, "__sw_order_0", got.Fields.Fields[1].AsName.L)
+	require.Len(t, sel.Fields.Fields, 1, "caller AST must be restored")
+}

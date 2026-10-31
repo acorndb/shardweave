@@ -163,7 +163,6 @@ func TestMerge_Factory(t *testing.T) {
 	cases := []plan.MergeSpec{
 		{GroupBy: []int{0}},
 		{Distinct: true},
-		{Output: []int{0}},
 		{
 			Aggregates: []plan.AggregateSpec{{Func: plan.AggCount, Column: 0, Output: 0}},
 			OrderBy:    []plan.OrderKey{{Column: 0}},
@@ -185,11 +184,33 @@ func TestValidate(t *testing.T) {
 	for _, spec := range []plan.MergeSpec{
 		{GroupBy: []int{0}},
 		{Distinct: true},
-		{Output: []int{0}},
 		{Aggregates: []plan.AggregateSpec{{Func: plan.AggCount}}, OrderBy: []plan.OrderKey{{Column: 0}}},
 	} {
 		var me *errs.MySQL
 		require.ErrorAs(t, merge.Validate(spec), &me)
 		require.Equal(t, uint16(1235), me.Number)
 	}
+}
+
+func TestMerge_Projection(t *testing.T) {
+	fields := []result.Field{
+		{Name: "amount", OrgName: "amount", Type: 0x03},
+		{Name: "__sw_order_0", OrgName: "user_id", Type: 0x03},
+	}
+	streams := []result.Stream{
+		&scriptStream{fields: fields, rows: []result.Row{{[]byte("200"), []byte("1")}}},
+		&scriptStream{fields: fields, rows: []result.Row{{[]byte("50"), []byte("2")}}},
+	}
+	s, err := merge.Merge(streams, fields, plan.MergeSpec{
+		OrderBy: []plan.OrderKey{{Column: 1}},
+		Output:  []int{0},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []result.Field{fields[0]}, s.Fields())
+	require.Equal(t, [][]string{{"200"}, {"50"}}, collectValues(t, s))
+
+	_, err = merge.Merge(streams, fields, plan.MergeSpec{Output: []int{9}})
+	var me *errs.MySQL
+	require.ErrorAs(t, err, &me)
+	require.Equal(t, uint16(1235), me.Number)
 }

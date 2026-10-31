@@ -18,15 +18,23 @@ type ExtraAggregate struct {
 	Alias string
 }
 
+// ExtraField appends a plain hidden projection column (ORDER BY keys that are
+// not selected).
+type ExtraField struct {
+	Expr  ast.ExprNode
+	Alias string
+}
+
 // Spec describes the per-shard SQL changes for one statement.
 type Spec struct {
 	// PerShardLimit, when non-nil, replaces LIMIT with this count. Callers use
 	// offset+count for multi-shard LIMIT/OFFSET so each shard returns enough
 	// rows for the global merge to skip the offset.
 	PerShardLimit *int64
-	// ExtraAggregates are appended to the SELECT list after the original
-	// fields. Hidden-column positions are therefore len(original)+2*i, +1.
+	// ExtraAggregates are appended first, then ExtraFields. Hidden-column
+	// positions are therefore len(original)+2*i, +1 for AVG.
 	ExtraAggregates []ExtraAggregate
+	ExtraFields     []ExtraField
 }
 
 // Select restores sel with spec applied. The caller's AST is restored before
@@ -40,9 +48,10 @@ func Select(sel *ast.SelectStmt, spec Spec) (string, error) {
 	if spec.PerShardLimit != nil {
 		sel.Limit = &ast.Limit{Count: ast.NewValueExpr(*spec.PerShardLimit, "", "")}
 	}
-	if len(spec.ExtraAggregates) > 0 {
+	if len(spec.ExtraAggregates) > 0 || len(spec.ExtraFields) > 0 {
 		original := sel.Fields.Fields
-		fields := make([]*ast.SelectField, len(original), len(original)+len(spec.ExtraAggregates))
+		capacity := len(original) + len(spec.ExtraAggregates) + len(spec.ExtraFields)
+		fields := make([]*ast.SelectField, len(original), capacity)
 		for i, field := range original {
 			fields[i] = preserveLabel(field)
 		}
@@ -51,6 +60,13 @@ func Select(sel *ast.SelectStmt, spec Spec) (string, error) {
 				F:    extra.Func,
 				Args: []ast.ExprNode{extra.Expr},
 			}}
+			if extra.Alias != "" {
+				field.AsName = ast.NewCIStr(extra.Alias)
+			}
+			fields = append(fields, field)
+		}
+		for _, extra := range spec.ExtraFields {
+			field := &ast.SelectField{Expr: extra.Expr}
 			if extra.Alias != "" {
 				field.AsName = ast.NewCIStr(extra.Alias)
 			}
