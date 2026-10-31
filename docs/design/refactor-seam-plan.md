@@ -211,7 +211,7 @@ type Statement struct {
 | 新增 | `pkg/result/result.go` |
 | 新增 | `pkg/backend/stream.go`（rawStream / noReplyStream） |
 | `pkg/backend/conn.go` | `Conn` 加 `Exec/Align`；`MySQLConn.Exec` |
-| `pkg/proxy/session.go` | 用 `execute.Runtime` / `Executor` |
+| `pkg/proxy/serve.go` | 用 `execute.Runtime` / `Executor` |
 | `pkg/server/server.go` | 按 mode 选 `plan.Builder`，再 `execute.New` |
 
 接口草案：

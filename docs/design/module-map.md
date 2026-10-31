@@ -66,7 +66,7 @@
 | `pkg/config` | YAML schema、严格校验、默认值、快照/热更门禁 | `Config`、`BackendConfig`、`Runtime` | 建池、import 运行时模块 | `constant`、yaml |
 | `pkg/backend` | 后端资源层：连接、池、Slice、Cluster | `Conn`、`Pool`、`Slice`、`Cluster`、`PoolConfig` | 解析 SQL、认识分片规则、持有 session | `mysql`、`result`、`constant` |
 | `pkg/session` | 前端会话意图与 prepared statement 表 | `State`、`StmtTable`、`Stmt` | 持有连接/lease、路由、执行 | `constant` |
-| `pkg/sql` | 语句理解：parser 包装、`Statement`、分类 | `Statement`、`Kind`、`Parse` | 认识拓扑/规则/连接 | tidb parser |
+| `pkg/sql` | 语句理解：parser 包装、`Statement`、分类、reserved 检测 | `Statement`、`Kind`、`Parse`、`DetectReservedSQL` | 认识拓扑/规则/连接 | tidb parser |
 | `pkg/sql/rewrite` | 纯 AST/SQL 改写：LIMIT、隐藏列（后续） | `Spec`、`Select` | 执行、连接、路由 | parser ast/format |
 | `pkg/route` | 纯路由：目标集合 | `Target`、`Router`、`source`、`shard` | acquire、执行、持有池、改写结果 | `sql`、`session`、`constant`、`errs` |
 | `pkg/plan` | 计划：三态 + 每目标 SQL + 归并提示 | `Plan`、`Kind`、`Builder`、`MergeSpec`、`Explain` | 执行、持有池 | `sql`、`sql/rewrite`、`route`、`session`、`errs` |
@@ -113,8 +113,8 @@
    pkg/proxy     pkg/execute        pkg/config     pkg/backend
         │              │
         │              ├──► pkg/plan ──► pkg/route ──► pkg/sql
-        │              │        │            │
-        │              │        └────────────┴──► pkg/session
+        │              │        ├──► pkg/sql/rewrite
+        │              │        └──► pkg/session
         │              ├──► pkg/merge ──► pkg/result
         │              └──► pkg/result
         └──► pkg/mysql/server
@@ -624,7 +624,7 @@ PR 级拆分、文件动作、测试迁移与回滚方式见
 | `pkg/executor/forward.go` | `pkg/execute/forward.go` + `pkg/backend/conn.go` |
 | `pkg/session/state.go` | `pkg/session/state.go` + `stmt.go` |
 | `pkg/sql/parser/parser.go` | 保留；新增 `pkg/sql/statement.go` |
-| `pkg/proxy/session.go` | 保留 COM 循环；USE/SET 解析移到 `pkg/sql` |
+| `pkg/proxy/serve.go` | 保留 COM 循环；USE/SET 解析移到 `pkg/sql` |
 | `pkg/config/config.go` | `pkg/config/config.go`（`BackendConfig`） |
 | `pkg/server/server.go` | 保留；装配逻辑改为 Cluster/Router/Builder/Executor |
 | `test/differential` | 保留 |

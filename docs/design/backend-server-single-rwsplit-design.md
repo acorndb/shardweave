@@ -165,7 +165,7 @@ Target = 某个 pool.Pool（一地址一池）
 | Gaea | `backend/slice.go` `GetConn` | 从库失败可回落 master（配置项） |
 | dbpack | `pkg/executor/read_write_splitting.go` | AST 分支：写→Master，Select→Slave，tx map 优先；`SET autocommit=0` 开事务 |
 | dbpack | `pkg/group/group.go` `pick` | Slave 空 → 回落 master |
-| shardweave | `pkg/session/state.go` / `pkg/proxy/session.go` | 已有 sticky、`SetInTx(status&IN_TRANS)`、`Align`；**须补齐 autocommit** |
+| shardweave | `pkg/session/state.go` / `pkg/proxy/serve.go` | 已有 sticky、`SetInTx(status&IN_TRANS)`、`Align`；**须补齐 autocommit** |
 
 ---
 
@@ -667,7 +667,7 @@ READ:  SELECT SHOW EXPLAIN DESCRIBE DESC
 | dbpack | `pkg/executor/read_write_splitting.go`，`misc.go`（`shouldStartTransaction`），`pkg/group/group.go`，`docker/conf/config_{sdb,rws}.yaml` |
 | kingshard | `proxy/server/conn_query.go`（`getBackendConn`/`handleExec`），`conn_select.go`（`/*master*/`），`conn_tx.go`，`conn_set.go`，`backend/node.go` |
 | Gaea | `proxy/server/executor.go`（`isInTransaction`、`checkExecuteFromSlave`、`handleBegin`），`executor_handle.go`（`handleSet*`），`backend/slice.go`（`GetConn` 回落） |
-| shardweave | `pkg/session/state.go`，`pkg/pool/backend.go`（`Align`），`pkg/proxy/session.go`（`SetInTx`） |
+| shardweave | `pkg/session/state.go`，`pkg/pool/backend.go`（`Align`），`pkg/proxy/serve.go`（`SetInTx`） |
 
 规则正文以 **§5–§5.12** 与 **附录 A（全文件通读纪要）** 为准。实现 PR 必须：
 

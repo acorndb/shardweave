@@ -77,10 +77,10 @@
 | `deprecateEOF` 硬编码 true | `pkg/backend/stream.go:20-25` | 客户端未协商 `CLIENT_DEPRECATE_EOF` 时结果集分帧错误 |
 | 服务端声明 `CLIENT_SESSION_TRACK` 但不解析 | `server/conn.go:59-60` | 会话状态仍靠猜；跟踪能力形同虚设 |
 | 无按连接保存的能力位 | `server.Conn` 不暴露 capability | 无法按客户端协商结果转发/编码 |
-| 命令覆盖不全 | `pkg/proxy/session.go:75-111` | `COM_FIELD_LIST`、`COM_STMT_SEND_LONG_DATA`、`COM_CHANGE_USER`、`COM_SET_OPTION`、`COM_STATISTICS`、`COM_PROCESS_KILL` 等直接 1047 |
+| 命令覆盖不全 | `pkg/proxy/serve.go:75-111` | `COM_FIELD_LIST`、`COM_STMT_SEND_LONG_DATA`、`COM_CHANGE_USER`、`COM_SET_OPTION`、`COM_STATISTICS`、`COM_PROCESS_KILL` 等直接 1047 |
 | `COM_FIELD_LIST` / `SEND_LONG_DATA` 路由分支不可达 | `pkg/route/source/pick.go:16-20` vs `proxy` 默认 ERR | 代码与行为不一致；驱动兼容性差 |
 | 连接 ID 固定 1、server status 固定 0x0002 | `server/conn.go:54,63` | 客户端诊断/事务状态不可信 |
-| PING 返回固定 autocommit status | `pkg/proxy/session.go:78-80` | 事务中 PING 状态错误 |
+| PING 返回固定 autocommit status | `pkg/proxy/serve.go:78-80` | 事务中 PING 状态错误 |
 | 包大小无上限 | 已补 `max_allowed_packet`（逻辑包上限，默认 64 MiB） | 前端超限回 1153；后端响应超限断开 |
 | 无 LOCAL INFILE 处理 | `pkg/mysql/forward.go` 返回错误 | 客户端 LOAD DATA LOCAL 场景断连 |
 
