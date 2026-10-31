@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/pingcap/tidb/pkg/parser/ast"
+
 	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/route"
 	"github.com/acorndb/shardweave/pkg/session"
@@ -159,8 +161,30 @@ func (b Builder) Build(ctx context.Context, st *session.State, stmt *sql.Stateme
 				Reject: errs.Unsupported("%s", reason),
 			}, nil
 		}
-		return &Plan{Kind: MultiShard, Targets: targets, Tx: TxNone}, nil
+		merge, rej := multiShardMerge(stmt)
+		if rej != nil {
+			return &Plan{Kind: Reject, Reject: rej}, nil
+		}
+		return &Plan{Kind: MultiShard, Targets: targets, Tx: TxNone, Merge: merge}, nil
 	}
+}
+
+// multiShardMerge extracts merge hints that need no SQL rewrite. LIMIT without
+// ORDER BY is safe after concat (each shard already applied the same LIMIT);
+// OFFSET needs per-shard rewriting and is rejected until D5.1.
+func multiShardMerge(stmt *sql.Statement) (MergeSpec, *errs.MySQL) {
+	sel, ok := stmt.AST.(*ast.SelectStmt)
+	if !ok || sel.Limit == nil {
+		return MergeSpec{}, nil
+	}
+	offset, count, ok := sql.ParseLimit(sel.Limit)
+	if !ok {
+		return MergeSpec{}, errs.Unsupported("multi-shard LIMIT must be literal integers")
+	}
+	if offset != 0 {
+		return MergeSpec{}, errs.Unsupported("multi-shard LIMIT with OFFSET is not supported")
+	}
+	return MergeSpec{Limit: &Limit{Offset: offset, Count: count}}, nil
 }
 
 // multiShardRejectReason lists session states where routing one statement to

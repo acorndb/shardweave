@@ -139,6 +139,15 @@ func TestSingleShardRouting(t *testing.T) {
 	requireColumns(t, ctx, conn, "SELECT id, user_id, amount FROM orders",
 		[]string{"id", "user_id", "amount"})
 
+	// LIMIT without ORDER BY is safe to apply after concat: each shard applies
+	// the same LIMIT and the merge truncates to the final count.
+	requireRowCount(t, ctx, conn, "SELECT user_id, amount FROM orders LIMIT 1", 1)
+	requireRowCount(t, ctx, conn, "SELECT user_id, amount FROM orders LIMIT 0", 0)
+	requireRowCount(t, ctx, conn, "SELECT user_id, amount FROM orders WHERE user_id IN (1, 2) LIMIT 1", 1)
+	requireRowCount(t, ctx, conn, "SELECT user_id, amount FROM orders LIMIT 100", 2)
+	require.Equal(t, 1, connScalar(t, ctx, conn, "SELECT 1"), "limit must not break the session")
+	assertReject(t, ctx, conn, "SELECT user_id, amount FROM orders LIMIT 1 OFFSET 1")
+
 	// hash_mod accepts quoted numeric literals as the same integer key.
 	var quotedAmount int
 	require.NoError(t, conn.QueryRowContext(ctx,
@@ -175,9 +184,8 @@ func TestSingleShardRouting(t *testing.T) {
 	requireShardRows(t, ctx, conn, "SELECT user_id, amount FROM orders",
 		map[int]int{1: 50, 2: 200})
 
-	// Merge clauses and aggregates are explicit 1235 until D5/D6 land.
+	// ORDER BY/aggregates/DISTINCT still need the merge engine (D5/D6).
 	assertReject(t, ctx, conn, "SELECT * FROM orders ORDER BY id")
-	assertReject(t, ctx, conn, "SELECT * FROM orders LIMIT 1")
 	assertReject(t, ctx, conn, "SELECT COUNT(*) FROM orders")
 	assertReject(t, ctx, conn, "SELECT DISTINCT user_id FROM orders")
 
@@ -289,6 +297,19 @@ func requireShardRows(t *testing.T, ctx context.Context, conn *sql.Conn, query s
 	require.NoError(t, rows.Err())
 	require.Equal(t, len(want), n, "行数不一致: %s", query)
 	require.Equal(t, want, got, query)
+}
+
+func requireRowCount(t *testing.T, ctx context.Context, conn *sql.Conn, query string, want int) {
+	t.Helper()
+	rows, err := conn.QueryContext(ctx, query)
+	require.NoErrorf(t, err, "查询失败: %s", query)
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		n++
+	}
+	require.NoError(t, rows.Err())
+	require.Equalf(t, want, n, "行数不一致: %s", query)
 }
 
 func requireProfiles(t *testing.T, ctx context.Context, conn *sql.Conn, query string, want map[string]int) {

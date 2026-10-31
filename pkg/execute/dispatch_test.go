@@ -205,7 +205,7 @@ func TestDispatch_Rejects(t *testing.T) {
 		_, err := p.executePlan(ctx, newRuntime(), query("SELECT * FROM orders"), &plan.Plan{
 			Kind:    plan.MultiShard,
 			Targets: multiTargets(),
-			Merge:   plan.MergeSpec{Limit: &plan.Limit{Count: 1}},
+			Merge:   plan.MergeSpec{OrderBy: []plan.OrderKey{{Column: 0}}},
 		})
 		var rej *errs.MySQL
 		require.ErrorAs(t, err, &rej)
@@ -216,6 +216,71 @@ func TestDispatch_Rejects(t *testing.T) {
 		_, err := p.executePlan(ctx, newRuntime(), query("SELECT * FROM orders"), &plan.Plan{Kind: plan.MultiShard})
 		require.ErrorContains(t, err, "no targets")
 	})
+}
+
+func TestDispatch_Limit(t *testing.T) {
+	tr0, tr1 := &tracker{}, &tracker{}
+	p := newMultiPipeline(t, tr0, tr1,
+		func(c *fakeConn) {
+			c.fields = orderFields("id")
+			c.rows = []result.Row{{[]byte("1"), []byte("10")}, {[]byte("2"), []byte("20")}}
+		},
+		func(c *fakeConn) {
+			c.fields = orderFields("id")
+			c.rows = []result.Row{{[]byte("3"), []byte("30")}, {[]byte("4"), []byte("40")}}
+		})
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	_, err := p.executePlan(context.Background(), rt, query("SELECT id FROM orders LIMIT 3"), &plan.Plan{
+		Kind:    plan.MultiShard,
+		Targets: multiTargets(),
+		Merge:   plan.MergeSpec{Limit: &plan.Limit{Count: 3}},
+	})
+	require.NoError(t, err)
+
+	pkts := collect()
+	require.Len(t, pkts, 1+2+3+1, "column count + 2 columns + 3 rows + terminator")
+	var got []string
+	for _, pkt := range pkts[3:6] {
+		cells, err := mysql.DecodeTextRow(pkt, 2)
+		require.NoError(t, err)
+		got = append(got, string(cells[0]))
+	}
+	require.Equal(t, []string{"1", "2", "3"}, got)
+	require.Empty(t, rt.leases)
+	require.True(t, tr0.last(t).closed, "limit may leave unread rows; discard the lease")
+	require.True(t, tr1.last(t).closed)
+	require.Equal(t, int64(-1), rt.State.RowCount())
+}
+
+func TestDispatch_LimitZero(t *testing.T) {
+	tr0, tr1 := &tracker{}, &tracker{}
+	p := newMultiPipeline(t, tr0, tr1,
+		func(c *fakeConn) {
+			c.fields = orderFields("id")
+			c.rows = []result.Row{{[]byte("1"), []byte("10")}}
+		},
+		func(c *fakeConn) {
+			c.fields = orderFields("id")
+			c.rows = []result.Row{{[]byte("2"), []byte("20")}}
+		})
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	_, err := p.executePlan(context.Background(), rt, query("SELECT id FROM orders LIMIT 0"), &plan.Plan{
+		Kind:    plan.MultiShard,
+		Targets: multiTargets(),
+		Merge:   plan.MergeSpec{Limit: &plan.Limit{Count: 0}},
+	})
+	require.NoError(t, err)
+	pkts := collect()
+	require.Len(t, pkts, 1+2+1, "header + terminator only")
+	require.Empty(t, rt.leases)
+	require.True(t, tr0.last(t).closed)
+	require.True(t, tr1.last(t).closed)
 }
 
 func TestDispatch_NoColumns(t *testing.T) {

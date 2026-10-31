@@ -12,11 +12,20 @@ import (
 	"github.com/acorndb/shardweave/pkg/route/source"
 	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/acorndb/shardweave/pkg/sql"
+	sqlparser "github.com/acorndb/shardweave/pkg/sql/parser"
 	"github.com/stretchr/testify/require"
 )
 
 func stmt(raw string) *sql.Statement {
 	return &sql.Statement{Cmd: mysql.ComQuery, Raw: raw}
+}
+
+func selectStmt(t *testing.T, raw string) *sql.Statement {
+	t.Helper()
+	res, err := sqlparser.Parse(raw)
+	require.NoError(t, err)
+	require.Len(t, res.Stmts, 1)
+	return &sql.Statement{Cmd: mysql.ComQuery, Raw: raw, AST: res.Stmts[0]}
 }
 
 func TestBuilder_AllMaster(t *testing.T) {
@@ -138,6 +147,31 @@ func TestBuilder_MultiShard(t *testing.T) {
 		require.Equal(t, plan.Reject, p.Kind)
 		require.Equal(t, uint16(1235), p.Reject.Number)
 		require.Contains(t, p.Reject.Message, "autocommit")
+	})
+
+	t.Run("limit_pushed", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(), selectStmt(t, "SELECT * FROM orders LIMIT 5"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.NotNil(t, p.Merge.Limit)
+		require.Equal(t, int64(0), p.Merge.Limit.Offset)
+		require.Equal(t, int64(5), p.Merge.Limit.Count)
+	})
+
+	t.Run("limit_zero", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(), selectStmt(t, "SELECT * FROM orders LIMIT 0"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.NotNil(t, p.Merge.Limit)
+		require.Zero(t, p.Merge.Limit.Count)
+	})
+
+	t.Run("limit_offset_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(), selectStmt(t, "SELECT * FROM orders LIMIT 2, 3"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Equal(t, uint16(1235), p.Reject.Number)
+		require.Contains(t, p.Reject.Message, "OFFSET")
 	})
 }
 

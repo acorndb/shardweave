@@ -96,6 +96,8 @@ func TestRouter_MultiShardSelect(t *testing.T) {
 		{"in_same_slice", "SELECT * FROM orders WHERE user_id IN (1, 3)", []string{"s1"}},
 		{"keyed_single", "SELECT * FROM orders WHERE user_id = 2", []string{"s0"}},
 		{"keyed_single_order_by", "SELECT * FROM orders WHERE user_id = 2 ORDER BY id", []string{"s0"}},
+		{"scatter_limit", "SELECT * FROM orders LIMIT 3", []string{"s0", "s1"}},
+		{"in_limit", "SELECT * FROM orders WHERE user_id IN (1, 2) LIMIT 1", []string{"s0", "s1"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -215,7 +217,6 @@ func TestRouter_Rejects(t *testing.T) {
 		{"cross_shard_group_by", "SELECT user_id, SUM(amount) FROM orders GROUP BY user_id", mysql.ComQuery},
 		{"cross_shard_distinct", "SELECT DISTINCT user_id FROM orders", mysql.ComQuery},
 		{"cross_shard_order_by", "SELECT * FROM orders ORDER BY id", mysql.ComQuery},
-		{"cross_shard_limit", "SELECT * FROM orders LIMIT 1", mysql.ComQuery},
 		{"cross_shard_window", "SELECT ROW_NUMBER() OVER (ORDER BY id) FROM orders", mysql.ComQuery},
 		{"cross_shard_calc_found_rows", "SELECT SQL_CALC_FOUND_ROWS * FROM orders", mysql.ComQuery},
 		{"cross_shard_for_update", "SELECT * FROM orders FOR UPDATE", mysql.ComQuery},

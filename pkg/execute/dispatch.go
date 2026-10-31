@@ -8,6 +8,7 @@ import (
 
 	"github.com/acorndb/shardweave/pkg/backend"
 	"github.com/acorndb/shardweave/pkg/errs"
+	"github.com/acorndb/shardweave/pkg/merge"
 	"github.com/acorndb/shardweave/pkg/mysql"
 	"github.com/acorndb/shardweave/pkg/mysql/packet"
 	"github.com/acorndb/shardweave/pkg/plan"
@@ -30,7 +31,7 @@ func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statemen
 	if stmt.Cmd != mysql.ComQuery {
 		return false, rejectMulti("multi-shard command %d is not supported", stmt.Cmd)
 	}
-	if !emptyMerge(pl.Merge) {
+	if !supportedMerge(pl.Merge) {
 		return false, rejectMulti("multi-shard merge is not implemented")
 	}
 	if len(pl.Targets) == 0 {
@@ -91,34 +92,41 @@ func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statemen
 		cleanup(true)
 		return false, err
 	}
+	streams := make([]result.Stream, 0, len(opened))
 	for _, o := range opened {
-		for {
-			row, err := o.stream.Next()
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			if err != nil {
-				cleanup(true)
-				return false, fmt.Errorf("execute: shard %s: %w", o.slice, err)
-			}
-			cells, err := encodeCells(row, len(fields))
-			if err != nil {
-				cleanup(true)
-				return false, err
-			}
-			if err := writeFrontPayload(rt.Front, mysql.EncodeTextRow(cells)); err != nil {
-				cleanup(true)
-				return false, err
-			}
+		streams = append(streams, o.stream)
+	}
+	merged := merge.Concat(streams)
+	if pl.Merge.Limit != nil {
+		merged = merge.Limit(merged, pl.Merge.Limit.Offset, pl.Merge.Limit.Count)
+	}
+	for {
+		row, err := merged.Next()
+		if errors.Is(err, io.EOF) {
+			break
 		}
-		_ = o.stream.Close()
+		if err != nil {
+			cleanup(true)
+			return false, fmt.Errorf("execute: merge: %w", err)
+		}
+		cells, err := encodeCells(row, len(fields))
+		if err != nil {
+			cleanup(true)
+			return false, err
+		}
+		if err := writeFrontPayload(rt.Front, mysql.EncodeTextRow(cells)); err != nil {
+			cleanup(true)
+			return false, err
+		}
 	}
 	if err := writeFrontPayload(rt.Front, mysql.EncodeEOF(frontendDeprecateEOF, mysql.ServerStatusAutocommit, 0)); err != nil {
 		cleanup(true)
 		return false, err
 	}
 
-	cleanup(false)
+	// With LIMIT the merge may stop before every shard stream reaches EOF;
+	// unread packets make the connection unsafe to reuse, so discard.
+	cleanup(pl.Merge.Limit != nil)
 	rt.State.SetRowCount(-1)
 	return true, nil
 }
@@ -188,8 +196,11 @@ func sameFields(a, b []result.Field) bool {
 	return true
 }
 
-func emptyMerge(m plan.MergeSpec) bool {
-	return m.Limit == nil && len(m.OrderBy) == 0 && len(m.Aggregates) == 0 &&
+// supportedMerge reports merge features the current concat path can honor.
+// LIMIT is applied after concat; ORDER BY/aggregate/group/distinct need the
+// ordered/aggregate operators and are rejected by the router today.
+func supportedMerge(m plan.MergeSpec) bool {
+	return len(m.OrderBy) == 0 && len(m.Aggregates) == 0 &&
 		len(m.GroupBy) == 0 && !m.Distinct && len(m.Output) == 0
 }
 
