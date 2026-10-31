@@ -9,8 +9,13 @@ import (
 	"github.com/acorndb/prism/pkg/constant"
 	"github.com/acorndb/prism/pkg/mysql"
 	"github.com/acorndb/prism/pkg/session"
+	"github.com/acorndb/prism/pkg/sql"
 	"github.com/stretchr/testify/require"
 )
+
+func stmt(raw string) *sql.Statement {
+	return &sql.Statement{Cmd: mysql.ComQuery, Raw: raw}
+}
 
 type recordingConn struct {
 	resets int
@@ -64,7 +69,7 @@ func TestNew_Modes(t *testing.T) {
 func TestSharding_HandleUnimplemented(t *testing.T) {
 	e, err := New(constant.ModeSharding, &backend.Slice{})
 	require.NoError(t, err)
-	err = e.Handle(context.Background(), &Conn{State: session.NewState()}, Request{Cmd: mysql.ComQuery, SQL: "SELECT 1"})
+	err = e.Handle(context.Background(), &Conn{State: session.NewState()}, stmt("SELECT 1"))
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrShardingNotImplemented))
 }
@@ -81,7 +86,7 @@ func TestSingle_SelectUsesMasterOnly(t *testing.T) {
 
 	c := &Conn{State: session.NewState()}
 	var gotTag string
-	require.NoError(t, pt.withBackend(context.Background(), c, Request{Cmd: mysql.ComQuery, SQL: "SELECT 1"}, func(b backend.Conn) error {
+	require.NoError(t, pt.withBackend(context.Background(), c, stmt("SELECT 1"), func(b backend.Conn) error {
 		gotTag = b.(*recordingConn).tag
 		return nil
 	}))
@@ -103,7 +108,7 @@ func TestRWSplit_SelectUsesSlave(t *testing.T) {
 
 	c := &Conn{State: session.NewState()}
 	var gotTag string
-	require.NoError(t, pt.withBackend(context.Background(), c, Request{Cmd: mysql.ComQuery, SQL: "SELECT 1"}, func(b backend.Conn) error {
+	require.NoError(t, pt.withBackend(context.Background(), c, stmt("SELECT 1"), func(b backend.Conn) error {
 		gotTag = b.(*recordingConn).tag
 		return nil
 	}))
@@ -145,7 +150,7 @@ func TestRWSplit_RouteSmoke(t *testing.T) {
 			ctx := context.Background()
 
 			if tc.setupSticky {
-				require.NoError(t, pt.withBackend(ctx, c, Request{Cmd: mysql.ComQuery, SQL: "BEGIN"}, func(backend.Conn) error {
+				require.NoError(t, pt.withBackend(ctx, c, stmt("BEGIN"), func(backend.Conn) error {
 					c.State.SetInTx(true)
 					return nil
 				}))
@@ -154,7 +159,7 @@ func TestRWSplit_RouteSmoke(t *testing.T) {
 			}
 
 			var gotTag string
-			require.NoError(t, pt.withBackend(ctx, c, Request{Cmd: mysql.ComQuery, SQL: tc.sql}, func(b backend.Conn) error {
+			require.NoError(t, pt.withBackend(ctx, c, stmt(tc.sql), func(b backend.Conn) error {
 				gotTag = b.(*recordingConn).tag
 				return nil
 			}))
@@ -177,7 +182,7 @@ func TestRWSplit_TxSelectStaysSticky(t *testing.T) {
 	pt := e.(*passthrough)
 	c := &Conn{State: session.NewState()}
 
-	require.NoError(t, pt.withBackend(context.Background(), c, Request{Cmd: mysql.ComQuery, SQL: "BEGIN"}, func(backend.Conn) error {
+	require.NoError(t, pt.withBackend(context.Background(), c, stmt("BEGIN"), func(backend.Conn) error {
 		c.State.SetInTx(true)
 		return nil
 	}))
@@ -185,7 +190,7 @@ func TestRWSplit_TxSelectStaysSticky(t *testing.T) {
 	require.Equal(t, 1, masterOpens)
 	require.Equal(t, 0, slaveOpens)
 
-	require.NoError(t, pt.withBackend(context.Background(), c, Request{Cmd: mysql.ComQuery, SQL: "SELECT 1"}, func(backend.Conn) error {
+	require.NoError(t, pt.withBackend(context.Background(), c, stmt("SELECT 1"), func(backend.Conn) error {
 		return nil
 	}))
 	require.Equal(t, 1, masterOpens)

@@ -10,8 +10,10 @@ import (
 	"github.com/acorndb/prism/pkg/constant"
 	"github.com/acorndb/prism/pkg/mysql"
 	"github.com/acorndb/prism/pkg/mysql/packet"
+	"github.com/acorndb/prism/pkg/plan"
 	"github.com/acorndb/prism/pkg/route/source"
 	"github.com/acorndb/prism/pkg/session"
+	"github.com/acorndb/prism/pkg/sql"
 )
 
 // ErrShardingNotImplemented is returned by ShardingExecutor.Handle.
@@ -25,17 +27,10 @@ type Conn struct {
 	StickyPool *backend.Pool
 }
 
-// Request is one frontend command for Handle.
-type Request struct {
-	Cmd     byte
-	Payload []byte
-	SQL     string
-}
-
 // Executor is the process-shared strategy (dbpack-style three modes).
 type Executor interface {
 	Mode() string
-	Handle(ctx context.Context, c *Conn, req Request) error
+	Handle(ctx context.Context, c *Conn, stmt *sql.Statement) error
 	ReleaseSticky(c *Conn, discard bool) error
 	Close() error
 }
@@ -51,20 +46,18 @@ func New(mode string, g *backend.Slice) (Executor, error) {
 			return nil, fmt.Errorf("executor: single requires master pool")
 		}
 		return &passthrough{
-			mode:  constant.ModeSingle,
-			group: g,
-			pick: func(*session.State, byte, string) constant.Role {
-				return constant.RoleMaster
-			},
+			mode:    constant.ModeSingle,
+			group:   g,
+			builder: plan.Builder{Router: source.AllMaster{}},
 		}, nil
 	case constant.ModeRWSplit:
 		if g == nil || g.Master == nil {
 			return nil, fmt.Errorf("executor: rwsplit requires master pool")
 		}
 		return &passthrough{
-			mode:  constant.ModeRWSplit,
-			group: g,
-			pick:  source.Pick,
+			mode:    constant.ModeRWSplit,
+			group:   g,
+			builder: plan.Builder{Router: source.Pick{}},
 		}, nil
 	case constant.ModeSharding:
 		return &shardingExecutor{}, nil
@@ -74,9 +67,9 @@ func New(mode string, g *backend.Slice) (Executor, error) {
 }
 
 type passthrough struct {
-	mode  string
-	group *backend.Slice
-	pick  func(*session.State, byte, string) constant.Role
+	mode    string
+	group   *backend.Slice
+	builder plan.Builder
 }
 
 func (p *passthrough) Mode() string { return p.mode }
@@ -101,22 +94,25 @@ func (p *passthrough) ReleaseSticky(c *Conn, discard bool) error {
 	return p.group.Release(pool, b)
 }
 
-func (p *passthrough) Handle(ctx context.Context, c *Conn, req Request) error {
+func (p *passthrough) Handle(ctx context.Context, c *Conn, stmt *sql.Statement) error {
 	if c == nil || c.State == nil {
 		return fmt.Errorf("executor: nil conn state")
 	}
-	switch req.Cmd {
+	if stmt == nil {
+		return fmt.Errorf("executor: nil statement")
+	}
+	switch stmt.Cmd {
 	case mysql.ComStmtClose:
-		return p.withBackend(ctx, c, req, func(b backend.Conn) error {
-			return writeBackend(b, req.Payload)
+		return p.withBackend(ctx, c, stmt, func(b backend.Conn) error {
+			return writeBackend(b, stmt.Payload)
 		})
 	case mysql.ComStmtPrepare:
-		return p.withBackend(ctx, c, req, func(b backend.Conn) error {
-			return execCommand(c.Front, b, c.State, req.Payload, true)
+		return p.withBackend(ctx, c, stmt, func(b backend.Conn) error {
+			return execCommand(c.Front, b, c.State, stmt.Payload, true)
 		})
 	default:
-		return p.withBackend(ctx, c, req, func(b backend.Conn) error {
-			return execCommand(c.Front, b, c.State, req.Payload, false)
+		return p.withBackend(ctx, c, stmt, func(b backend.Conn) error {
+			return execCommand(c.Front, b, c.State, stmt.Payload, false)
 		})
 	}
 }
@@ -124,19 +120,24 @@ func (p *passthrough) Handle(ctx context.Context, c *Conn, req Request) error {
 func (p *passthrough) withBackend(
 	ctx context.Context,
 	c *Conn,
-	req Request,
+	stmt *sql.Statement,
 	fn func(backend.Conn) error,
 ) error {
+	pl, err := p.builder.Build(ctx, c.State, stmt)
+	if err != nil {
+		return err
+	}
+	if pl.Kind == plan.Reject {
+		return pl.Reject
+	}
+
 	var b backend.Conn
 	var pool *backend.Pool
-	var err error
-
 	if c.Sticky != nil {
 		b = c.Sticky
 		pool = c.StickyPool
 	} else {
-		role := p.pick(c.State, req.Cmd, req.SQL)
-		b, pool, err = p.group.Acquire(ctx, role)
+		b, pool, err = p.group.Acquire(ctx, pl.Targets[0].Role)
 		if err != nil {
 			return err
 		}
@@ -166,7 +167,7 @@ type shardingExecutor struct{}
 
 func (s *shardingExecutor) Mode() string { return constant.ModeSharding }
 
-func (s *shardingExecutor) Handle(context.Context, *Conn, Request) error {
+func (s *shardingExecutor) Handle(context.Context, *Conn, *sql.Statement) error {
 	return ErrShardingNotImplemented
 }
 

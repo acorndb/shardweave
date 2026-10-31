@@ -6,9 +6,9 @@ import (
 	"github.com/acorndb/prism/pkg/session"
 )
 
-// Pick chooses master vs slave intent for one command (design §5.10).
+// PickRole chooses master vs slave intent for one command (design §5.10).
 // Session Layer A overrides statement Layer B.
-func Pick(st *session.State, cmd byte, sql string) constant.Role {
+func PickRole(st *session.State, cmd byte, sql string) constant.Role {
 	if st != nil && st.NeedsSticky() {
 		return constant.RoleMaster
 	}

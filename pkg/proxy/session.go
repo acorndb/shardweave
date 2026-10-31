@@ -11,6 +11,7 @@ import (
 	"github.com/acorndb/prism/pkg/mysql/packet"
 	"github.com/acorndb/prism/pkg/mysql/server"
 	"github.com/acorndb/prism/pkg/session"
+	"github.com/acorndb/prism/pkg/sql"
 )
 
 // SessionConfig wires frontend auth and backend executor for passthrough.
@@ -56,11 +57,19 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 		}
 
 		cmd := data[0]
-		sql := ""
-		if cmd == mysql.ComQuery && len(data) > 1 {
-			sql = string(data[1:])
+		stmt := &sql.Statement{Cmd: cmd, Payload: data}
+		if len(data) > 1 {
+			switch cmd {
+			case mysql.ComQuery:
+				stmt.Raw = string(data[1:])
+				stmt.Kind = sql.KindQuery
+			case mysql.ComInitDB:
+				stmt.Raw = string(data[1:])
+				stmt.Kind = sql.KindUse
+			case mysql.ComStmtPrepare:
+				stmt.Raw = string(data[1:])
+			}
 		}
-		req := executor.Request{Cmd: cmd, Payload: data, SQL: sql}
 
 		switch cmd {
 		case mysql.ComQuit:
@@ -71,32 +80,32 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 			}
 		case mysql.ComInitDB:
 			st.SetDatabase(string(data[1:]))
-			if err := cfg.Exec.Handle(ctx, ec, req); err != nil {
+			if err := cfg.Exec.Handle(ctx, ec, stmt); err != nil {
 				return err
 			}
 		case mysql.ComQuery:
-			if session.DetectReservedSQL(sql) {
+			if session.DetectReservedSQL(stmt.Raw) {
 				st.MarkReserved()
 			}
-			if db, ok := parseUse(sql); ok {
+			if db, ok := parseUse(stmt.Raw); ok {
 				st.SetDatabase(db)
 			}
-			if cs, ok := parseSetNames(sql); ok {
+			if cs, ok := parseSetNames(stmt.Raw); ok {
 				st.SetCharset(cs)
 			}
-			if v, ok := parseSetAutocommit(sql); ok {
+			if v, ok := parseSetAutocommit(stmt.Raw); ok {
 				st.SetAutocommit(v)
 			}
-			if err := cfg.Exec.Handle(ctx, ec, req); err != nil {
+			if err := cfg.Exec.Handle(ctx, ec, stmt); err != nil {
 				return err
 			}
 		case mysql.ComStmtPrepare:
 			st.MarkReserved()
-			if err := cfg.Exec.Handle(ctx, ec, req); err != nil {
+			if err := cfg.Exec.Handle(ctx, ec, stmt); err != nil {
 				return err
 			}
 		case mysql.ComStmtExecute, mysql.ComStmtReset, mysql.ComStmtClose:
-			if err := cfg.Exec.Handle(ctx, ec, req); err != nil {
+			if err := cfg.Exec.Handle(ctx, ec, stmt); err != nil {
 				return err
 			}
 		case mysql.ComResetConnection:
