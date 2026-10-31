@@ -430,6 +430,9 @@ grep -rn "ModeSingle\|ModeRWSplit\|ModeSharding" \
 
 ## 9. 后续
 
+测试硬化、差分 case 化、MTR/RQG 试点与随机/变形测试的计划见
+[test-infrastructure.md](test-infrastructure.md)。
+
 R6 完成后，目标形状已就位，进入 P3：
 
 1. 先写 [sharding-p0-design.md](sharding-p0-design.md)；

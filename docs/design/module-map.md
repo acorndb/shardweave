@@ -543,6 +543,8 @@ PR 级拆分、文件动作、测试迁移与回滚方式见
 - `execute` 的测试不依赖真实 MySQL；fake backend 返回脚本化 Stream。
 - 每个阶段结束都跑变更包聚焦测试；P1/P2 必须保持现有差分全绿。
 - P4 前先把变形 harness 建好，再写跨分片功能。
+- 测试分层、MTR/RQG 评估与落地顺序见
+  [test-infrastructure.md](test-infrastructure.md)。
 
 ## 10. 决策记录
 
