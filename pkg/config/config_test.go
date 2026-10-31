@@ -446,6 +446,7 @@ func writeYAML(t *testing.T, body string) string {
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 	return path
 }
+
 func validSharding() *Config {
 	cfg := validSingle()
 	cfg.Backend = BackendConfig{

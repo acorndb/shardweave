@@ -77,11 +77,11 @@ func TestSingleShardRouting(t *testing.T) {
 	require.Equal(t, 1, connScalar(t, ctx, conn, "SELECT 1"))
 
 	// Unsupported shapes are explicit 1235, not silent wrong results.
-	assertErrno(t, ctx, conn, 1235, "SELECT * FROM orders WHERE user_id IN (1, 2)")
-	assertErrno(t, ctx, conn, 1235, "SELECT * FROM orders")
-	assertErrno(t, ctx, conn, 1235, "SELECT * FROM users WHERE id = 1")
-	assertErrno(t, ctx, conn, 1235, "CREATE TABLE t (id INT)")
-	assertErrno(t, ctx, conn, 1235, "BEGIN")
+	assertReject(t, ctx, conn, "SELECT * FROM orders WHERE user_id IN (1, 2)")
+	assertReject(t, ctx, conn, "SELECT * FROM orders")
+	assertReject(t, ctx, conn, "SELECT * FROM users WHERE id = 1")
+	assertReject(t, ctx, conn, "CREATE TABLE t (id INT)")
+	assertReject(t, ctx, conn, "BEGIN")
 
 	db := openDB(t, proxy.DSN())
 	_, err = db.PrepareContext(ctx, "SELECT amount FROM orders WHERE user_id = ?")
@@ -108,10 +108,10 @@ func openDB(t *testing.T, dsn string) *sql.DB {
 	return db
 }
 
-func shardCount(t *testing.T, ctx context.Context, s *harness.Instance, query string, args ...any) int {
+func shardCount(t *testing.T, ctx context.Context, s *harness.Instance, query string) int {
 	t.Helper()
 	var n int
-	require.NoErrorf(t, s.DB.QueryRowContext(ctx, query, args...).Scan(&n), "查询失败: %s", query)
+	require.NoErrorf(t, s.DB.QueryRowContext(ctx, query).Scan(&n), "查询失败: %s", query)
 	return n
 }
 
@@ -122,10 +122,10 @@ func connScalar(t *testing.T, ctx context.Context, conn *sql.Conn, query string)
 	return n
 }
 
-func assertErrno(t *testing.T, ctx context.Context, conn *sql.Conn, want uint16, query string) {
+func assertReject(t *testing.T, ctx context.Context, conn *sql.Conn, query string) {
 	t.Helper()
 	_, err := conn.ExecContext(ctx, query)
 	var me *drivermysql.MySQLError
-	require.ErrorAsf(t, err, &me, "期望 %d: %s", want, query)
-	require.Equal(t, want, me.Number, query)
+	require.ErrorAsf(t, err, &me, "期望 1235: %s", query)
+	require.Equal(t, uint16(1235), me.Number, query)
 }

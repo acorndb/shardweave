@@ -170,6 +170,7 @@ func writeConfig(t *testing.T, cfg *config.Config) string {
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 	return path
 }
+
 func testEndpoint(addr string) config.BackendEndpoint {
 	return config.BackendEndpoint{Address: addr, User: "app", Password: "p1"}
 }
