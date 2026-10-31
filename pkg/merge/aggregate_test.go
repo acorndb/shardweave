@@ -262,6 +262,109 @@ func TestAggregate_DistinctEmpty(t *testing.T) {
 	require.Equal(t, [][]string{{"0", "<nil>", "<nil>"}}, collectValues(t, s))
 }
 
+func TestAggregate_DistinctMultipleArgs(t *testing.T) {
+	fields := []result.Field{
+		{Name: "COUNT(*)", OrgName: "COUNT(*)", Type: result.TypeLongLong},
+		{Name: "COUNT(DISTINCT amount)", OrgName: "COUNT(DISTINCT amount)", Type: result.TypeLongLong},
+		{Name: "SUM(DISTINCT price)", OrgName: "SUM(DISTINCT price)", Type: typeNewDec, Decimals: 2},
+		{Name: "__sw_distinct_0", OrgName: "amount", Type: typeLong},
+		{Name: "__sw_distinct_1", OrgName: "price", Type: typeNewDec, Decimals: 2},
+	}
+	specs := []plan.AggregateSpec{
+		{Func: plan.AggCount, Column: 0, Output: 0},
+		{Func: plan.AggCount, Column: 3, Output: 1, Distinct: true},
+		{Func: plan.AggSum, Column: 4, Output: 2, Distinct: true},
+	}
+	streams := []result.Stream{
+		&scriptStream{fields: fields, rows: []result.Row{
+			{[]byte("1"), []byte("1"), []byte("10.00"), []byte("10"), []byte("10.00")},
+			{[]byte("1"), []byte("1"), []byte("20.00"), []byte("10"), []byte("20.00")},
+		}},
+		&scriptStream{fields: fields, rows: []result.Row{
+			{[]byte("1"), []byte("1"), []byte("10.00"), []byte("10"), []byte("20.00")},
+			{[]byte("1"), []byte("1"), []byte("30.00"), []byte("20"), []byte("30.00")},
+		}},
+	}
+	s, err := merge.Aggregate(streams, fields, specs)
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"4", "2", "60.00"}}, collectValues(t, s))
+}
+
+func TestAggregate_DistinctFloatAndUnsignedCanonical(t *testing.T) {
+	floatFields := []result.Field{
+		{Name: "SUM(DISTINCT score)", OrgName: "SUM(DISTINCT score)", Type: result.TypeDouble},
+		{Name: "__sw_distinct_0", OrgName: "score", Type: result.TypeDouble},
+	}
+	floatStreams := []result.Stream{
+		&scriptStream{fields: floatFields, rows: []result.Row{
+			{[]byte("0"), []byte("0")},
+			{[]byte("1.5"), []byte("1.5")},
+		}},
+		&scriptStream{fields: floatFields, rows: []result.Row{
+			{[]byte("-0"), []byte("-0")},
+		}},
+	}
+	s, err := merge.Aggregate(floatStreams, floatFields, []plan.AggregateSpec{{
+		Func: plan.AggSum, Column: 1, Output: 0, Distinct: true,
+	}})
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"1.5"}}, collectValues(t, s))
+
+	uintFields := []result.Field{
+		{Name: "COUNT(DISTINCT qty)", OrgName: "COUNT(DISTINCT qty)", Type: result.TypeLongLong},
+		{Name: "__sw_distinct_0", OrgName: "qty", Type: result.TypeLongLong, Flags: result.FlagUnsigned},
+	}
+	uintStreams := []result.Stream{
+		&scriptStream{fields: uintFields, rows: []result.Row{
+			{[]byte("1"), []byte("18446744073709551615")},
+			{[]byte("1"), []byte("0")},
+		}},
+		&scriptStream{fields: uintFields, rows: []result.Row{
+			{[]byte("1"), []byte("18446744073709551615")},
+		}},
+	}
+	s, err = merge.Aggregate(uintStreams, uintFields, []plan.AggregateSpec{{
+		Func: plan.AggCount, Column: 1, Output: 0, Distinct: true,
+	}})
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"2"}}, collectValues(t, s))
+}
+
+func TestAggregate_DistinctDate(t *testing.T) {
+	fields := []result.Field{
+		{Name: "COUNT(DISTINCT d)", OrgName: "COUNT(DISTINCT d)", Type: result.TypeLongLong},
+		{Name: "__sw_distinct_0", OrgName: "d", Type: result.TypeDate},
+	}
+	streams := []result.Stream{
+		&scriptStream{fields: fields, rows: []result.Row{
+			{[]byte("1"), []byte("2026-10-31")},
+			{[]byte("1"), []byte("2026-11-01")},
+		}},
+		&scriptStream{fields: fields, rows: []result.Row{
+			{[]byte("1"), []byte("2026-10-31")},
+			{[]byte("0"), nil},
+		}},
+	}
+	s, err := merge.Aggregate(streams, fields, []plan.AggregateSpec{{
+		Func: plan.AggCount, Column: 1, Output: 0, Distinct: true,
+	}})
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"2"}}, collectValues(t, s))
+}
+
+func TestAggregate_DistinctAllNull(t *testing.T) {
+	fields := distinctAggFields()
+	streams := []result.Stream{
+		&scriptStream{fields: fields, rows: []result.Row{
+			{nil, nil, nil, nil, nil, nil},
+			{nil, nil, nil, nil, nil, nil},
+		}},
+	}
+	s, err := merge.Aggregate(streams, fields, distinctAggSpecs())
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"0", "<nil>", "<nil>"}}, collectValues(t, s))
+}
+
 func TestAggregate_DistinctRejectsUnsupported(t *testing.T) {
 	var me *errs.MySQL
 	strFields := []result.Field{

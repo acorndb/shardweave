@@ -210,6 +210,55 @@ func TestGroup_DistinctHaving(t *testing.T) {
 	require.Equal(t, [][]string{{"1", "2"}}, collectValues(t, s))
 }
 
+func TestGroup_DistinctWithAvgHavingOrderLimit(t *testing.T) {
+	fields := []result.Field{
+		{Name: "user_id", OrgName: "user_id", Type: result.TypeLong},
+		{Name: "AVG(amount)", OrgName: "AVG(amount)", Type: result.TypeNewDecimal, Decimals: 4},
+		{Name: "SUM(DISTINCT price)", OrgName: "SUM(DISTINCT price)", Type: result.TypeNewDecimal, Decimals: 2},
+		{Name: "__sw_avg_sum_0", OrgName: "SUM(amount)", Type: result.TypeNewDecimal},
+		{Name: "__sw_avg_count_0", OrgName: "COUNT(amount)", Type: result.TypeLongLong},
+		{Name: "__sw_distinct_0", OrgName: "price", Type: result.TypeNewDecimal, Decimals: 2},
+	}
+	specs := []plan.AggregateSpec{
+		{Func: plan.AggAvg, Column: 3, CountColumn: 4, Output: 1},
+		{Func: plan.AggSum, Column: 5, Output: 2, Distinct: true},
+	}
+	streams := []result.Stream{
+		&scriptStream{fields: fields, rows: []result.Row{
+			{[]byte("1"), []byte("10.0000"), []byte("10.00"), []byte("20"), []byte("2"), []byte("10.00")},
+			{[]byte("1"), []byte("10.0000"), []byte("20.00"), []byte("20"), []byte("2"), []byte("20.00")},
+		}},
+		&scriptStream{fields: fields, rows: []result.Row{
+			{[]byte("1"), []byte("20.0000"), []byte("20.00"), []byte("40"), []byte("2"), []byte("20.00")},
+			{[]byte("2"), []byte("100.0000"), []byte("10.00"), []byte("100"), []byte("1"), []byte("10.00")},
+		}},
+	}
+	s, err := merge.Merge(streams, fields, plan.MergeSpec{
+		GroupBy:    []int{0},
+		Aggregates: specs,
+		Output:     []int{0, 1, 2},
+		Having:     []plan.HavingPredicate{{Column: 2, Op: plan.HavingGT, Value: "20"}},
+		OrderBy:    []plan.OrderKey{{Kind: plan.OrderByPosition, Column: 2, Desc: true}},
+		Limit:      &plan.Limit{Count: 1},
+	})
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"1", "13.3333", "30.00"}}, collectValues(t, s))
+}
+
+func TestGroup_DistinctRejectsString(t *testing.T) {
+	fields := []result.Field{
+		{Name: "name", OrgName: "name", Type: typeVarStr},
+		{Name: "COUNT(DISTINCT name)", OrgName: "COUNT(DISTINCT name)", Type: result.TypeLongLong},
+		{Name: "__sw_distinct_0", OrgName: "name", Type: typeVarStr},
+	}
+	var me *errs.MySQL
+	_, err := merge.Group(nil, fields, []int{0}, []plan.AggregateSpec{{
+		Func: plan.AggCount, Column: 2, Output: 1, Distinct: true,
+	}}, []int{0, 1})
+	require.ErrorAs(t, err, &me)
+	require.Equal(t, uint16(1235), me.Number)
+}
+
 func TestGroup_ValidationErrors(t *testing.T) {
 	fields := groupFields()
 	var me *errs.MySQL

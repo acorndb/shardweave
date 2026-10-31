@@ -152,6 +152,28 @@ func TestSelect_ExtraGroupByEmptyAlias(t *testing.T) {
 	require.Nil(t, sel.GroupBy, "caller AST must be restored on error")
 }
 
+func TestSelect_ExtraGroupByWithRemoveLimitAndHaving(t *testing.T) {
+	sel := parseSelect(t, "SELECT user_id, COUNT(DISTINCT amount) FROM orders GROUP BY user_id HAVING COUNT(DISTINCT amount) > 1 LIMIT 2")
+	arg := sel.Fields.Fields[1].Expr.(*ast.AggregateFuncExpr).Args[0]
+	out, err := rewrite.Select(sel, rewrite.Spec{
+		ExtraFields:  []rewrite.ExtraField{{Expr: arg, Alias: "__sw_distinct_0"}},
+		ExtraGroupBy: []string{"__sw_distinct_0"},
+		RemoveLimit:  true,
+		RemoveHaving: true,
+	})
+	require.NoError(t, err)
+	res, err := sqlparser.Parse(out)
+	require.NoError(t, err)
+	got := res.Stmts[0].(*ast.SelectStmt)
+	require.Nil(t, got.Limit)
+	require.Nil(t, got.Having)
+	require.Len(t, got.Fields.Fields, 3)
+	require.Len(t, got.GroupBy.Items, 2)
+	require.NotNil(t, sel.Limit, "caller AST must be restored")
+	require.NotNil(t, sel.Having, "caller AST must be restored")
+	require.Len(t, sel.Fields.Fields, 2, "caller AST must be restored")
+}
+
 func TestSelect_ExtraGroupByKeepsExistingItems(t *testing.T) {
 	sel := parseSelect(t, "SELECT user_id, COUNT(DISTINCT amount) FROM orders GROUP BY user_id")
 	arg := sel.Fields.Fields[1].Expr.(*ast.AggregateFuncExpr).Args[0]

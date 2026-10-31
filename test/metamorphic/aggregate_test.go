@@ -118,8 +118,10 @@ func TestShardedAggregateOracle(t *testing.T) {
 		require.NoError(t, slice.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM orders").Scan(&n))
 		require.Greater(t, n, 0, "every configured slice must hold data")
 	}
-	requireRouteCount(t, ctx, pc, "EXPLAIN ROUTE SELECT COUNT(*) FROM orders", 4)
-	requireRouteCount(t, ctx, pc, "EXPLAIN ROUTE SELECT amount, COUNT(*) FROM orders GROUP BY amount", 4)
+	requireFourShardRoute(t, ctx, pc, "EXPLAIN ROUTE SELECT COUNT(*) FROM orders")
+	requireFourShardRoute(t, ctx, pc, "EXPLAIN ROUTE SELECT amount, COUNT(*) FROM orders GROUP BY amount")
+	requireFourShardRoute(t, ctx, pc, "EXPLAIN ROUTE SELECT COUNT(DISTINCT amount) FROM orders")
+	requireFourShardRoute(t, ctx, pc, "EXPLAIN ROUTE SELECT user_id, COUNT(DISTINCT amount) FROM orders GROUP BY user_id")
 
 	queries := []struct {
 		query     string
@@ -141,6 +143,12 @@ func TestShardedAggregateOracle(t *testing.T) {
 		{query: "SELECT COUNT(DISTINCT amount), SUM(DISTINCT amount), AVG(DISTINCT amount) FROM orders WHERE id < 0"},
 		{query: "SELECT COUNT(DISTINCT amount) FROM orders WHERE amount IS NULL"},
 		{query: "SELECT COUNT(DISTINCT amount), SUM(DISTINCT amount), AVG(DISTINCT amount) FROM orders WHERE amount IS NULL"},
+		{query: "SELECT MIN(DISTINCT amount), MAX(DISTINCT amount) FROM orders"},
+		{query: "SELECT COUNT(DISTINCT amount + 1), SUM(DISTINCT amount * 2) FROM orders"},
+		{query: "SELECT COUNT(DISTINCT 1) FROM orders"},
+		{query: "SELECT COUNT(*), COUNT(DISTINCT amount), SUM(DISTINCT price), AVG(DISTINCT score) FROM orders"},
+		{query: "SELECT COUNT(DISTINCT amount) FROM orders LIMIT 1"},
+		{query: "SELECT COUNT(DISTINCT amount) FROM orders LIMIT 1 OFFSET 1"},
 		{query: "SELECT COUNT(*), SUM(amount) FROM orders WHERE user_id IN (1, 2, 3, 4)"},
 		{query: "SELECT COUNT(*), SUM(amount) FROM orders WHERE amount > 0"},
 		{query: "SELECT COUNT(*), SUM(amount) FROM orders WHERE user_id > 5"},
@@ -156,6 +164,10 @@ func TestShardedAggregateOracle(t *testing.T) {
 		{query: "SELECT user_id, COUNT(DISTINCT amount), SUM(DISTINCT price), AVG(DISTINCT price) FROM orders GROUP BY user_id ORDER BY user_id"},
 		{query: "SELECT amount, COUNT(*), COUNT(DISTINCT user_id) FROM orders GROUP BY amount ORDER BY amount"},
 		{query: "SELECT user_id, COUNT(DISTINCT amount) AS c FROM orders GROUP BY user_id HAVING c > 1 ORDER BY user_id"},
+		{query: "SELECT user_id, COUNT(DISTINCT amount) AS c, SUM(DISTINCT price) AS s FROM orders GROUP BY user_id HAVING s > 0 ORDER BY user_id"},
+		{query: "SELECT user_id, AVG(amount), COUNT(DISTINCT price) FROM orders GROUP BY user_id ORDER BY user_id"},
+		{query: "SELECT amount, COUNT(DISTINCT user_id) FROM orders GROUP BY amount ORDER BY amount LIMIT 5 OFFSET 2"},
+		{query: "SELECT user_id, amount, COUNT(DISTINCT price) FROM orders GROUP BY user_id, amount ORDER BY user_id, amount"},
 		{query: "SELECT user_id, COUNT(DISTINCT amount) FROM orders GROUP BY user_id ORDER BY user_id DESC LIMIT 3"},
 		{query: "SELECT amount, COUNT(*), SUM(user_id) FROM orders GROUP BY amount", unordered: true},
 		{query: "SELECT user_id, COUNT(*) FROM orders WHERE amount > 0 GROUP BY user_id", unordered: true},
@@ -203,7 +215,7 @@ func TestShardedAggregateOracle(t *testing.T) {
 	rng := rand.New(rand.NewSource(seed))
 	t.Logf("random 4-shard differential: seed=%d queries=%d", seed, iterations)
 	for i := 0; i < iterations; i++ {
-		query := randomShardQuery(rng)
+		query := randomShardQuery(rng, i%8)
 		proxyCols, proxyRows := queryRows(t, ctx, pc, query)
 		oracleCols, oracleRows := queryRows(t, ctx, oracle.DB, query)
 		requireSameRows(t, fmt.Sprintf("seed=%d query=%s", seed, query),
@@ -231,9 +243,9 @@ func requireSameRows(
 	}
 }
 
-func randomShardQuery(r *rand.Rand) string {
+func randomShardQuery(r *rand.Rand, shape int) string {
 	where := randomWhere(r)
-	switch r.Intn(7) {
+	switch shape {
 	case 0:
 		return fmt.Sprintf("SELECT id, user_id, amount, price, qty, score FROM orders %s ORDER BY id LIMIT %d OFFSET %d",
 			where, r.Intn(11), r.Intn(6))
@@ -249,10 +261,31 @@ func randomShardQuery(r *rand.Rand) string {
 		return fmt.Sprintf("SELECT DISTINCT user_id, amount FROM orders %s ORDER BY user_id, amount LIMIT %d OFFSET %d",
 			where, 1+r.Intn(8), r.Intn(4))
 	case 5:
-		return fmt.Sprintf("SELECT COUNT(DISTINCT amount), SUM(DISTINCT price), AVG(DISTINCT score) FROM orders %s", where)
+		return fmt.Sprintf("SELECT COUNT(DISTINCT amount), SUM(DISTINCT price), AVG(DISTINCT score) FROM orders %s",
+			randomScatterWhere(r))
+	case 6:
+		return fmt.Sprintf("SELECT user_id, COUNT(*), COUNT(DISTINCT amount), SUM(DISTINCT price) FROM orders %s GROUP BY user_id ORDER BY user_id LIMIT %d OFFSET %d",
+			randomScatterWhere(r), 1+r.Intn(8), r.Intn(4))
 	default:
-		return fmt.Sprintf("SELECT user_id, COUNT(*), COUNT(DISTINCT amount) FROM orders %s GROUP BY user_id ORDER BY user_id LIMIT %d OFFSET %d",
-			where, 1+r.Intn(8), r.Intn(4))
+		return fmt.Sprintf("SELECT user_id, COUNT(DISTINCT amount) AS c FROM orders %s GROUP BY user_id HAVING c > %d ORDER BY user_id LIMIT %d",
+			randomScatterWhere(r), r.Intn(4), 1+r.Intn(6))
+	}
+}
+
+// randomScatterWhere keeps random DISTINCT aggregate queries on the multi-shard
+// path (no equality/IN on the shard key) so the merge layer is exercised.
+func randomScatterWhere(r *rand.Rand) string {
+	switch r.Intn(5) {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf("WHERE amount > %d", r.Intn(80)-20)
+	case 2:
+		return "WHERE amount IS NULL"
+	case 3:
+		return fmt.Sprintf("WHERE price IS NOT NULL AND score > %g", float64(r.Intn(30))/2-4)
+	default:
+		return fmt.Sprintf("WHERE id %% 3 = %d", r.Intn(3))
 	}
 }
 
@@ -289,10 +322,10 @@ func envInt(t *testing.T, key string, def int) int {
 	return n
 }
 
-func requireRouteCount(t *testing.T, ctx context.Context, q querier, query string, want int) {
+func requireFourShardRoute(t *testing.T, ctx context.Context, q querier, query string) {
 	t.Helper()
 	_, rows := queryRows(t, ctx, q, query)
-	require.Len(t, rows, want, "%s should route to all shards", query)
+	require.Len(t, rows, 4, "%s should route to all four shards", query)
 }
 
 func sortRows(rows [][]sql.NullString) {

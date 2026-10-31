@@ -201,6 +201,15 @@ func TestSingleShardRouting(t *testing.T) {
 		"SELECT COUNT(DISTINCT user_id) FROM orders", [][]string{{"2"}})
 	requireRowValues(t, ctx, conn,
 		"SELECT AVG(DISTINCT amount) FROM orders", [][]string{{"125.0000"}})
+	requireRowValues(t, ctx, conn,
+		"SELECT MIN(DISTINCT amount), MAX(DISTINCT amount) FROM orders", [][]string{{"50", "200"}})
+	requireRowValues(t, ctx, conn,
+		"SELECT COUNT(DISTINCT amount + 1), COUNT(DISTINCT 1) FROM orders", [][]string{{"2", "1"}})
+	requireRowCount(t, ctx, conn, "SELECT COUNT(DISTINCT amount) FROM orders LIMIT 0", 0)
+	requireRowCount(t, ctx, conn, "SELECT COUNT(DISTINCT amount) FROM orders LIMIT 1 OFFSET 1", 0)
+	requireRouteSlices(t, ctx, conn, "EXPLAIN ROUTE SELECT COUNT(DISTINCT amount) FROM orders",
+		[]string{"s0", "s1"})
+	assertReject(t, ctx, conn, "SELECT COUNT(DISTINCT amount, id) FROM orders")
 	assertReject(t, ctx, conn, "SELECT COUNT(DISTINCT name) FROM profiles")
 	assertReject(t, ctx, conn, "SELECT COUNT(*), amount FROM orders")
 	assertReject(t, ctx, conn, "SELECT COUNT(*) FROM orders ORDER BY 1")
@@ -299,7 +308,25 @@ func TestSingleShardRouting(t *testing.T) {
 	requireRowValues(t, ctx, conn,
 		"SELECT user_id, COUNT(DISTINCT amount) AS c FROM orders GROUP BY user_id ORDER BY c DESC LIMIT 1",
 		[][]string{{"2", "2"}})
+	requireRowValues(t, ctx, conn,
+		"SELECT user_id, AVG(amount), COUNT(DISTINCT amount) FROM orders GROUP BY user_id ORDER BY user_id",
+		[][]string{{"1", "50.0000", "1"}, {"2", "125.0000", "2"}})
+	requireRowValues(t, ctx, conn,
+		"SELECT user_id, COUNT(DISTINCT amount) AS c FROM orders GROUP BY user_id ORDER BY 2 DESC, 1",
+		[][]string{{"2", "2"}, {"1", "1"}})
+	requireRowValues(t, ctx, conn,
+		"SELECT user_id, COUNT(DISTINCT amount) AS c, SUM(DISTINCT amount) AS s FROM orders GROUP BY user_id HAVING s > 100 ORDER BY user_id",
+		[][]string{{"2", "2", "250"}})
+	requireRowValues(t, ctx, conn,
+		"SELECT amount, COUNT(DISTINCT user_id) FROM orders GROUP BY amount ORDER BY amount LIMIT 1 OFFSET 1",
+		[][]string{{"200", "1"}})
+	requireRowValues(t, ctx, conn,
+		"SELECT user_id, amount, COUNT(DISTINCT user_id) FROM orders GROUP BY user_id, amount ORDER BY user_id, amount",
+		[][]string{{"1", "50", "1"}, {"2", "50", "1"}, {"2", "200", "1"}})
+	requireRowCount(t, ctx, conn, "SELECT user_id, COUNT(DISTINCT amount) FROM orders GROUP BY user_id LIMIT 0", 0)
 	assertReject(t, ctx, conn, "SELECT COUNT(*) FROM orders GROUP BY user_id")
+	assertReject(t, ctx, conn, "SELECT COUNT(*) AS c FROM orders GROUP BY c")
+	assertReject(t, ctx, conn, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id WITH ROLLUP")
 	assertReject(t, ctx, conn, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id ORDER BY COUNT(*)")
 	assertReject(t, ctx, conn, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id HAVING COUNT(*) > 1 OR user_id = 1")
 	assertReject(t, ctx, conn, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id HAVING COUNT(*) > '1'")

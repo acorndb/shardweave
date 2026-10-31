@@ -18,6 +18,11 @@ DECIMAL/UNSIGNED/DOUBLE。验证：plan/rewrite/merge/execute 聚焦 `-race -sho
 全绿；4 Slice + single-DB oracle 约 47s；分片/复制 e2e 约 71s；
 golangci-lint v2.15.0（Go 1.27.3）0 issues。
 
+追加加固（2026-10-31）：随机查询按 8 种形态轮转，DISTINCT 形态使用 scatter-only
+WHERE 确保进入归并路径；oracle 增加表达式/常量/日期/极值/多 DISTINCT 参数/
+AVG+聚合 DISTINCT/空集与 NULL 集；e2e 增加 EXPLAIN ROUTE、位置排序、OFFSET、
+LIMIT 0、ROLLUP 与聚合别名拒绝。最终 oracle 约 47.3s、sharding e2e 约 69.2s。
+
 ## Must Fix
 
 ### 跨片重复值不能靠局部聚合求和

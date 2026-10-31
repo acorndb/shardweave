@@ -377,6 +377,59 @@ func TestBuilder_MultiShard(t *testing.T) {
 		}
 	})
 
+	t.Run("aggregate_distinct_expressions", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT COUNT(DISTINCT amount + 1), SUM(DISTINCT price * 2) FROM orders"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.AggregateSpec{
+			{Func: plan.AggCount, Column: 2, Output: 0, Distinct: true},
+			{Func: plan.AggSum, Column: 3, Output: 1, Distinct: true},
+		}, p.Merge.Aggregates)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			sel := res.Stmts[0].(*ast.SelectStmt)
+			require.Len(t, sel.Fields.Fields, 4)
+			require.Len(t, sel.GroupBy.Items, 2)
+		}
+	})
+
+	t.Run("aggregate_distinct_constant", func(t *testing.T) {
+		st := selectStmt(t, "SELECT COUNT(DISTINCT 1) FROM orders")
+		p, err := b.Build(context.Background(), session.NewState(), st)
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.AggregateSpec{
+			{Func: plan.AggCount, Column: 1, Output: 0, Distinct: true},
+		}, p.Merge.Aggregates)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			sel := res.Stmts[0].(*ast.SelectStmt)
+			require.Len(t, sel.Fields.Fields, 2)
+			require.Len(t, sel.GroupBy.Items, 1)
+		}
+	})
+
+	t.Run("group_by_avg_and_distinct_positions", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT user_id, AVG(amount), COUNT(DISTINCT price) FROM orders GROUP BY user_id"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.AggregateSpec{
+			{Func: plan.AggAvg, Column: 3, CountColumn: 4, Output: 1},
+			{Func: plan.AggCount, Column: 5, Output: 2, Distinct: true},
+		}, p.Merge.Aggregates)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			sel := res.Stmts[0].(*ast.SelectStmt)
+			require.Len(t, sel.Fields.Fields, 6)
+			require.Len(t, sel.GroupBy.Items, 2)
+		}
+	})
+
 	t.Run("group_by_rollup_rejected", func(t *testing.T) {
 		p, err := b.Build(context.Background(), session.NewState(),
 			selectStmt(t, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id WITH ROLLUP"))
