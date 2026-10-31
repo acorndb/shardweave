@@ -1,6 +1,7 @@
 package rewrite_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/acorndb/shardweave/pkg/sql"
@@ -49,4 +50,28 @@ func TestSelect_NoSpec(t *testing.T) {
 
 	_, err = rewrite.Select(nil, rewrite.Spec{})
 	require.Error(t, err)
+}
+
+func TestSelect_ExtraAggregates(t *testing.T) {
+	sel := parseSelect(t, "SELECT AVG(amount) FROM orders")
+	avg := sel.Fields.Fields[0].Expr.(*ast.AggregateFuncExpr)
+	out, err := rewrite.Select(sel, rewrite.Spec{ExtraAggregates: []rewrite.ExtraAggregate{
+		{Func: "sum", Expr: avg.Args[0], Alias: "__sw_avg_sum_0"},
+		{Func: "count", Expr: avg.Args[0], Alias: "__sw_avg_count_0"},
+	}})
+	require.NoError(t, err)
+
+	res, err := sqlparser.Parse(out)
+	require.NoError(t, err)
+	got := res.Stmts[0].(*ast.SelectStmt)
+	require.Len(t, got.Fields.Fields, 3)
+	for i, want := range []string{"avg", "sum", "count"} {
+		agg, ok := got.Fields.Fields[i].Expr.(*ast.AggregateFuncExpr)
+		require.True(t, ok)
+		require.Equal(t, want, strings.ToLower(agg.F))
+	}
+	require.Equal(t, "AVG(amount)", got.Fields.Fields[0].AsName.O, "original label is preserved")
+	require.Equal(t, "__sw_avg_sum_0", got.Fields.Fields[1].AsName.L)
+	require.Equal(t, "__sw_avg_count_0", got.Fields.Fields[2].AsName.L)
+	require.Len(t, sel.Fields.Fields, 1, "caller AST must be restored")
 }

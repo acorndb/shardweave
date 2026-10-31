@@ -99,8 +99,8 @@
 | 表名/库名改写 | 否 | 同库同名；`Target.DB` 只影响 `USE` |
 | `INSERT` 分片键缺失检查 | 是 | 缺键或一行多片 → Reject |
 | `LIMIT/OFFSET` 下推 | 是 | OFFSET=0 原样；OFFSET>0 时 per-shard 改写为 `offset+limit` |
-| 聚合改写（`AVG`→`SUM/COUNT` 等） | 否 | P1 |
-| `COUNT/SUM/MIN/MAX` 归并 | 否 | P1 |
+| 聚合改写（`AVG`→`SUM/COUNT` 隐藏列） | 是 | 保留原输出列名/scale |
+| `COUNT/SUM/MIN/MAX/AVG` 归并 | 是 | 无 GROUP BY |
 | `ORDER BY`/`GROUP BY` 列补齐 | 否 | P1 |
 | 分片键更新保护 | 是 | `UPDATE` 改分片键 → Reject |
 
@@ -364,10 +364,9 @@ route → []Target
   非键列 OR、跨片 `IN` 等），或键值映射到多个 slice；
 - 支持 `ORDER BY` 列名/位置（多列、ASC/DESC），由 k 路堆归并；字符串列、
   表达式、未投影列显式 1235；
-- 支持无 GROUP BY 的 `COUNT/SUM/MIN/MAX` 聚合折叠；AVG/聚合 DISTINCT 仍 1235；
-- 支持 `COUNT/SUM/MIN/MAX`（无 GROUP BY）；
-- 不支持 `GROUP BY / HAVING / DISTINCT / 窗口函数 / AVG / 聚合 DISTINCT /
-  INTO / 锁定读 / SQL_CALC_FOUND_ROWS`；
+- 支持 `COUNT/SUM/MIN/MAX/AVG`（无 GROUP BY）；
+- 不支持 `GROUP BY / HAVING / DISTINCT / 窗口函数 / 聚合 DISTINCT / INTO /
+  锁定读 / SQL_CALC_FOUND_ROWS`；
 - `LIMIT n` / `LIMIT n OFFSET m`：OFFSET>0 时 per-shard 改写成 `LIMIT m+n`，
   归并后由 `Limit` 截断/跳过；
 - 每个 target 顺序执行（D7 再并发）；先解码全部列元数据并校验一致，再写
@@ -519,15 +518,16 @@ route → []Target
 
 已落地（B1.6，无 GROUP BY 聚合，2026-10-31）：
 
-- `COUNT(*)` / `COUNT(expr)` / `SUM` / `MIN` / `MAX` 的多分片归并：每片返回
-  一个部分聚合行，`pkg/merge.Aggregate` 折叠为最终行；
+- `COUNT(*)` / `COUNT(expr)` / `SUM` / `MIN` / `MAX` / `AVG` 的多分片归并：
+  每片返回部分聚合行，`pkg/merge.Aggregate` 折叠为最终行；AVG 通过改写注入
+  隐藏 `SUM/COUNT` 列，按输出列的 DECIMAL scale 计算；
 - 支持聚合别名与多聚合投影；COUNT 求和，SUM 用 big.Rat/float 累加，
   MIN/MAX 用与 ORDER BY 相同的类型比较；全 NULL/空输入按 MySQL 语义返回
   NULL（COUNT 为 0）；
 - 新增 `pkg/sql/rewrite` 承接 per-shard SQL 改写（LIMIT OFFSET 已迁入）；
   `pkg/merge.Merge` 统一装配 Concat/Ordered/Aggregate/Limit，execute 不再选算子；
-- 仍 1235：`AVG`（需 SUM/COUNT 隐藏列改写）、`COUNT(DISTINCT ...)`、
-  聚合与其他投影混合、聚合 + ORDER BY、GROUP BY/HAVING/DISTINCT。
+- 仍 1235：`COUNT(DISTINCT ...)`、聚合与其他投影混合、聚合 + ORDER BY、
+  GROUP BY/HAVING/DISTINCT。
 
 未落地（B1.2）：
 
@@ -603,8 +603,9 @@ B1.5（已落地，多分片 ORDER BY）：
 
 B1.6（已落地，无 GROUP BY 聚合）：
 
-- `COUNT/SUM/MIN/MAX` 多分片归并；`pkg/merge.Aggregate`；
-- `AVG`、聚合 DISTINCT、混合投影、聚合 + ORDER BY 仍 1235。
+- `COUNT/SUM/MIN/MAX/AVG` 多分片归并；`pkg/merge.Aggregate`；
+- AVG 注入隐藏 SUM/COUNT 列，保留原输出列名/scale；
+- 聚合 DISTINCT、混合投影、聚合 + ORDER BY 仍 1235。
 
 DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代理始终显式 Reject。
 
@@ -614,7 +615,7 @@ DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代�
 - 分片键字面量类型与算法值域不匹配（如 `hash_mod` 下的 `'abc'`、
   `hash_mod_str` 下的 `1`）；
 - 分片表上需要归并的 SELECT（GROUP BY/HAVING/DISTINCT/窗口/INTO/锁定读/
-  SQL_CALC_FOUND_ROWS）；子查询；AVG、聚合 DISTINCT、聚合与非聚合投影混合、
+  SQL_CALC_FOUND_ROWS）；子查询；聚合 DISTINCT、聚合与非聚合投影混合、
   聚合 + ORDER BY；字符串/表达式/未投影列的 ORDER BY；
 - 事务 / `autocommit=0` / reserved / prepared pin 会话中的多分片语句；
 - 跨片/多表 JOIN、schema 限定表；

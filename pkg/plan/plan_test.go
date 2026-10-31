@@ -267,13 +267,43 @@ func TestBuilder_MultiShard(t *testing.T) {
 		require.Contains(t, p.Reject.Message, "DISTINCT")
 	})
 
-	t.Run("aggregate_avg_rejected", func(t *testing.T) {
+	t.Run("aggregate_avg", func(t *testing.T) {
+		st := selectStmt(t, "SELECT AVG(amount) FROM orders")
+		p, err := b.Build(context.Background(), session.NewState(), st)
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.AggregateSpec{{
+			Func: plan.AggAvg, Column: 1, CountColumn: 2, Output: 0,
+		}}, p.Merge.Aggregates)
+		require.Len(t, p.Targets, 2)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			sel := res.Stmts[0].(*ast.SelectStmt)
+			require.Len(t, sel.Fields.Fields, 3, "AVG needs hidden SUM/COUNT")
+		}
+		orig := st.AST.(*ast.SelectStmt)
+		require.Len(t, orig.Fields.Fields, 1, "caller AST must be restored")
+	})
+
+	t.Run("aggregate_avg_multi", func(t *testing.T) {
 		p, err := b.Build(context.Background(), session.NewState(),
-			selectStmt(t, "SELECT AVG(amount) FROM orders"))
+			selectStmt(t, "SELECT COUNT(*), AVG(amount) FROM orders"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.AggregateSpec{
+			{Func: plan.AggCount, Column: 0, Output: 0},
+			{Func: plan.AggAvg, Column: 2, CountColumn: 3, Output: 1},
+		}, p.Merge.Aggregates)
+	})
+
+	t.Run("aggregate_avg_distinct_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT AVG(DISTINCT amount) FROM orders"))
 		require.NoError(t, err)
 		require.Equal(t, plan.Reject, p.Kind)
 		require.Equal(t, uint16(1235), p.Reject.Number)
-		require.Contains(t, p.Reject.Message, "AVG")
+		require.Contains(t, p.Reject.Message, "DISTINCT")
 	})
 
 	t.Run("aggregate_mixed_rejected", func(t *testing.T) {

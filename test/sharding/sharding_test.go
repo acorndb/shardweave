@@ -172,13 +172,22 @@ func TestSingleShardRouting(t *testing.T) {
 		"SELECT COUNT(*), SUM(amount), MIN(amount), MAX(amount) FROM orders").
 		Scan(&count, &sum, &min, &max))
 	require.Equal(t, []int{2, 250, 50, 200}, []int{count, sum, min, max})
+	var avg float64
+	require.NoError(t, conn.QueryRowContext(ctx, "SELECT AVG(amount) FROM orders").Scan(&avg))
+	require.Equal(t, 125.0, avg)
+	var count2 int
+	var avg2 float64
+	require.NoError(t, conn.QueryRowContext(ctx, "SELECT COUNT(*), AVG(amount) FROM orders").
+		Scan(&count2, &avg2))
+	require.Equal(t, 2, count2)
+	require.Equal(t, 125.0, avg2)
 	require.Equal(t, 2, connScalar(t, ctx, conn, "SELECT COUNT(*) FROM orders WHERE user_id IN (1, 2)"))
 	requireRowCount(t, ctx, conn, "SELECT COUNT(*) FROM orders LIMIT 1", 1)
 	requireRowCount(t, ctx, conn, "SELECT COUNT(*) FROM orders LIMIT 0", 0)
 	require.Equal(t, 1, connScalar(t, ctx, conn, "SELECT 1"), "aggregate must not break the session")
 
 	assertReject(t, ctx, conn, "SELECT COUNT(DISTINCT user_id) FROM orders")
-	assertReject(t, ctx, conn, "SELECT AVG(amount) FROM orders")
+	assertReject(t, ctx, conn, "SELECT AVG(DISTINCT amount) FROM orders")
 	assertReject(t, ctx, conn, "SELECT COUNT(*), amount FROM orders")
 	assertReject(t, ctx, conn, "SELECT COUNT(*) FROM orders ORDER BY 1")
 	assertReject(t, ctx, conn, "SELECT * FROM orders WHERE user_id IN (SELECT user_id FROM orders)")
@@ -201,6 +210,9 @@ func TestSingleShardRouting(t *testing.T) {
 	requireProfiles(t, ctx, conn, "SELECT name, score FROM profiles",
 		map[string]int{"alice": 1, "bob": 2})
 	require.Equal(t, 2, connScalar(t, ctx, conn, "SELECT COUNT(*) AS c FROM profiles"))
+	var profileAvg float64
+	require.NoError(t, conn.QueryRowContext(ctx, "SELECT AVG(score) FROM profiles").Scan(&profileAvg))
+	require.Equal(t, 1.5, profileAvg)
 	assertRoute(t, ctx, conn, "EXPLAIN ROUTE SELECT score FROM profiles WHERE name = 'alice'",
 		"SingleShard", "s1")
 	requireRouteSlices(t, ctx, conn, "EXPLAIN ROUTE SELECT name, score FROM profiles",

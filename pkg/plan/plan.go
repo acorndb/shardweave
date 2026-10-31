@@ -104,6 +104,8 @@ type AggregateSpec struct {
 	Column   int
 	Output   int
 	Distinct bool
+	// CountColumn is the hidden COUNT column for AVG; zero for other funcs.
+	CountColumn int
 }
 
 // MergeSpec is the pure merge description for MultiShard plans. Column indexes
@@ -192,7 +194,7 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 	if !ok {
 		return MergeSpec{}, nil
 	}
-	aggs, rej := aggregateSpecs(sel)
+	aggs, extras, rej := aggregateSpecs(sel)
 	if rej != nil {
 		return MergeSpec{}, rej
 	}
@@ -209,57 +211,68 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 		}
 		spec.OrderBy = keys
 	}
-	return attachLimit(sel, targets, spec)
+	return applyRewrite(sel, targets, spec, extras)
 }
 
-// attachLimit parses LIMIT and rewrites per-shard SQL when OFFSET is used.
-func attachLimit(sel *ast.SelectStmt, targets []route.Target, spec MergeSpec) (MergeSpec, *errs.MySQL) {
-	if sel.Limit == nil {
+// applyRewrite parses LIMIT and rewrites per-shard SQL when OFFSET or hidden
+// aggregate columns (AVG's SUM/COUNT) require it.
+func applyRewrite(sel *ast.SelectStmt, targets []route.Target, spec MergeSpec, extras []rewrite.ExtraAggregate) (MergeSpec, *errs.MySQL) {
+	var perShard *int64
+	if sel.Limit != nil {
+		offset, count, ok := sql.ParseLimit(sel.Limit)
+		if !ok {
+			return MergeSpec{}, errs.Unsupported("multi-shard LIMIT must be literal integers")
+		}
+		if offset > 0 {
+			if count > math.MaxInt64-offset {
+				return MergeSpec{}, errs.Unsupported("multi-shard LIMIT OFFSET is too large")
+			}
+			n := offset + count
+			perShard = &n
+		}
+		spec.Limit = &Limit{Offset: offset, Count: count}
+	}
+	if perShard == nil && len(extras) == 0 {
 		return spec, nil
 	}
-	offset, count, ok := sql.ParseLimit(sel.Limit)
-	if !ok {
-		return MergeSpec{}, errs.Unsupported("multi-shard LIMIT must be literal integers")
+	sqlText, err := rewrite.Select(sel, rewrite.Spec{
+		PerShardLimit:   perShard,
+		ExtraAggregates: extras,
+	})
+	if err != nil {
+		return MergeSpec{}, errs.Unsupported("multi-shard rewrite failed: %v", err)
 	}
-	if offset > 0 {
-		if count > math.MaxInt64-offset {
-			return MergeSpec{}, errs.Unsupported("multi-shard LIMIT OFFSET is too large")
-		}
-		perShard := offset + count
-		sqlText, err := rewrite.Select(sel, rewrite.Spec{PerShardLimit: &perShard})
-		if err != nil {
-			return MergeSpec{}, errs.Unsupported("multi-shard LIMIT rewrite failed: %v", err)
-		}
-		for i := range targets {
-			targets[i].SQL = sqlText
-		}
+	for i := range targets {
+		targets[i].SQL = sqlText
 	}
-	spec.Limit = &Limit{Offset: offset, Count: count}
 	return spec, nil
 }
 
 // aggregateSpecs accepts aggregate-only projections without GROUP BY.
-// AVG needs a SUM/COUNT rewrite plus hidden columns and is rejected for now.
-func aggregateSpecs(sel *ast.SelectStmt) ([]AggregateSpec, *errs.MySQL) {
+// AVG is rewritten to hidden SUM/COUNT columns and merged from those.
+func aggregateSpecs(sel *ast.SelectStmt) ([]AggregateSpec, []rewrite.ExtraAggregate, *errs.MySQL) {
 	if sel.Fields == nil || len(sel.Fields.Fields) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	specs := make([]AggregateSpec, 0, len(sel.Fields.Fields))
+	base := len(sel.Fields.Fields)
+	avgIdx := 0
+	specs := make([]AggregateSpec, 0, base)
+	var extras []rewrite.ExtraAggregate
 	for i, field := range sel.Fields.Fields {
 		agg, ok := field.Expr.(*ast.AggregateFuncExpr)
 		if !ok {
 			if hasAggregate(field.Expr) {
-				return nil, errs.Unsupported("multi-shard aggregate must be a top-level aggregate field")
+				return nil, nil, errs.Unsupported("multi-shard aggregate must be a top-level aggregate field")
 			}
 			if len(specs) > 0 {
-				return nil, errs.Unsupported("multi-shard aggregate query must project only aggregate functions")
+				return nil, nil, errs.Unsupported("multi-shard aggregate query must project only aggregate functions")
 			}
 			continue
 		}
 		if agg.Distinct {
-			return nil, errs.Unsupported("multi-shard aggregate DISTINCT is not supported")
+			return nil, nil, errs.Unsupported("multi-shard aggregate DISTINCT is not supported")
 		}
-		var fn AggregateFunc
+		fn := AggregateFunc(0)
 		switch strings.ToLower(agg.F) {
 		case "count":
 			fn = AggCount
@@ -270,16 +283,36 @@ func aggregateSpecs(sel *ast.SelectStmt) ([]AggregateSpec, *errs.MySQL) {
 		case "max":
 			fn = AggMax
 		case "avg":
-			return nil, errs.Unsupported("multi-shard AVG requires SUM/COUNT rewrite and is not supported yet")
+			if len(agg.Args) != 1 {
+				return nil, nil, errs.Unsupported("multi-shard AVG requires exactly one argument")
+			}
+			sumIdx := base + 2*avgIdx
+			extras = append(extras,
+				rewrite.ExtraAggregate{
+					Func:  "sum",
+					Expr:  agg.Args[0],
+					Alias: fmt.Sprintf("__sw_avg_sum_%d", avgIdx),
+				},
+				rewrite.ExtraAggregate{
+					Func:  "count",
+					Expr:  agg.Args[0],
+					Alias: fmt.Sprintf("__sw_avg_count_%d", avgIdx),
+				},
+			)
+			avgIdx++
+			specs = append(specs, AggregateSpec{
+				Func: AggAvg, Column: sumIdx, CountColumn: sumIdx + 1, Output: i,
+			})
+			continue
 		default:
-			return nil, errs.Unsupported("multi-shard aggregate %s is not supported", agg.F)
+			return nil, nil, errs.Unsupported("multi-shard aggregate %s is not supported", agg.F)
 		}
 		specs = append(specs, AggregateSpec{Func: fn, Column: i, Output: i})
 	}
 	if len(specs) > 0 && len(specs) != len(sel.Fields.Fields) {
-		return nil, errs.Unsupported("multi-shard aggregate query must project only aggregate functions")
+		return nil, nil, errs.Unsupported("multi-shard aggregate query must project only aggregate functions")
 	}
-	return specs, nil
+	return specs, extras, nil
 }
 
 func orderKeys(sel *ast.SelectStmt) ([]OrderKey, *errs.MySQL) {

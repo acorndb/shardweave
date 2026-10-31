@@ -367,6 +367,46 @@ func TestDispatch_Aggregate(t *testing.T) {
 	require.Equal(t, 1, tr1.last(t).resets)
 }
 
+func TestDispatch_Avg(t *testing.T) {
+	tr0, tr1 := &tracker{}, &tracker{}
+	fields := []result.Field{
+		{Name: "AVG(amount)", OrgName: "AVG(amount)", Type: result.TypeNewDecimal, Charset: 63, Decimals: 4},
+		{Name: "__sw_avg_sum_0", OrgName: "SUM(amount)", Type: result.TypeNewDecimal, Charset: 63},
+		{Name: "__sw_avg_count_0", OrgName: "COUNT(amount)", Type: result.TypeLongLong, Charset: 63},
+	}
+	p := newMultiPipeline(t, tr0, tr1,
+		func(c *fakeConn) {
+			c.fields = fields
+			c.rows = []result.Row{{[]byte("2.5000"), []byte("5"), []byte("2")}}
+		},
+		func(c *fakeConn) {
+			c.fields = fields
+			c.rows = []result.Row{{[]byte("4.0000"), []byte("8"), []byte("2")}}
+		})
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	_, err := p.executePlan(context.Background(), rt, query("SELECT AVG(amount) FROM orders"),
+		&plan.Plan{
+			Kind:    plan.MultiShard,
+			Targets: multiTargets(),
+			Merge: plan.MergeSpec{Aggregates: []plan.AggregateSpec{{
+				Func: plan.AggAvg, Column: 1, CountColumn: 2, Output: 0,
+			}}},
+		})
+	require.NoError(t, err)
+
+	pkts := collect()
+	require.Len(t, pkts, 1+1+1+1, "header + 1 output column + 1 row + terminator")
+	cells, err := mysql.DecodeTextRow(pkts[2], 1)
+	require.NoError(t, err)
+	require.Equal(t, "3.2500", string(cells[0]))
+	require.Empty(t, rt.leases)
+	require.Equal(t, 1, tr0.last(t).resets)
+	require.Equal(t, 1, tr1.last(t).resets)
+}
+
 func TestDispatch_AggregateLimitZero(t *testing.T) {
 	tr0, tr1 := &tracker{}, &tracker{}
 	fields := []result.Field{{Name: "COUNT(*)", OrgName: "COUNT(*)", Type: 0x08, Charset: 63}}

@@ -110,9 +110,12 @@ func TestShardedReplicas(t *testing.T) {
 	require.Equal(t, 200, connScalar(t, ctx, conn, "SELECT amount FROM orders WHERE user_id = 2"))
 	requireShardRows(t, ctx, conn, "SELECT user_id, amount FROM orders",
 		map[int]int{1: 50, 2: 200})
+	var avg float64
+	require.NoError(t, conn.QueryRowContext(ctx, "SELECT AVG(amount) FROM orders").Scan(&avg))
+	require.Equal(t, 125.0, avg)
 
 	// Unsupported shapes stay explicit errors on a real topology.
-	assertReject(t, ctx, conn, "SELECT AVG(amount) FROM orders")
+	assertReject(t, ctx, conn, "SELECT AVG(DISTINCT amount) FROM orders")
 	assertReject(t, ctx, conn, "SELECT COUNT(DISTINCT user_id) FROM orders")
 	assertReject(t, ctx, conn, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id")
 	assertReject(t, ctx, conn, "SELECT * FROM orders WHERE user_id IN (SELECT user_id FROM orders)")

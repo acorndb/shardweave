@@ -87,9 +87,8 @@ func TestAggregate_RejectsUnsupported(t *testing.T) {
 	require.Equal(t, uint16(1235), me.Number)
 
 	fields := aggFields()
-	_, err = merge.Aggregate(nil, fields, []plan.AggregateSpec{{Func: plan.AggAvg, Column: 0, Output: 0}})
+	_, err = merge.Aggregate(nil, fields, []plan.AggregateSpec{{Func: plan.AggregateFunc(99), Column: 0, Output: 0}})
 	require.ErrorAs(t, err, &me)
-	require.Contains(t, me.Message, "AVG")
 
 	_, err = merge.Aggregate(nil, fields, []plan.AggregateSpec{{Func: plan.AggCount, Column: 0, Output: 2}})
 	require.ErrorAs(t, err, &me)
@@ -105,4 +104,70 @@ func TestAggregate_Close(t *testing.T) {
 	require.NoError(t, s.Close())
 	require.Equal(t, 1, a.closes)
 	require.Equal(t, 1, b.closes)
+}
+
+func avgFields(avgType byte, avgDecimals byte, sumType byte) []result.Field {
+	return []result.Field{
+		{Name: "AVG(amount)", OrgName: "AVG(amount)", Type: avgType, Decimals: avgDecimals},
+		{Name: "__sw_avg_sum_0", OrgName: "SUM(amount)", Type: sumType},
+		{Name: "__sw_avg_count_0", OrgName: "COUNT(amount)", Type: 0x08},
+	}
+}
+
+func TestAggregate_Avg(t *testing.T) {
+	fields := avgFields(typeNewDec, 4, typeNewDec)
+	streams := []result.Stream{
+		&scriptStream{fields: fields, rows: []result.Row{{[]byte("2.5000"), []byte("5"), []byte("2")}}},
+		&scriptStream{fields: fields, rows: []result.Row{{[]byte("4.0000"), []byte("8"), []byte("2")}}},
+	}
+	s, err := merge.Aggregate(streams, fields, []plan.AggregateSpec{{
+		Func: plan.AggAvg, Column: 1, CountColumn: 2, Output: 0,
+	}})
+	require.NoError(t, err)
+	require.Equal(t, fields[:1], s.Fields())
+	require.Equal(t, [][]string{{"3.2500"}}, collectValues(t, s))
+}
+
+func TestAggregate_AvgNulls(t *testing.T) {
+	fields := avgFields(typeNewDec, 4, typeNewDec)
+	streams := []result.Stream{
+		&scriptStream{fields: fields, rows: []result.Row{{nil, nil, []byte("0")}}},
+		&scriptStream{fields: fields, rows: []result.Row{{[]byte("5.0000"), []byte("10"), []byte("2")}}},
+	}
+	s, err := merge.Aggregate(streams, fields, []plan.AggregateSpec{{
+		Func: plan.AggAvg, Column: 1, CountColumn: 2, Output: 0,
+	}})
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"5.0000"}}, collectValues(t, s))
+}
+
+func TestAggregate_AvgAllNull(t *testing.T) {
+	fields := avgFields(typeNewDec, 4, typeNewDec)
+	s, err := merge.Aggregate([]result.Stream{
+		&scriptStream{fields: fields, rows: []result.Row{{nil, nil, []byte("0")}}},
+	}, fields, []plan.AggregateSpec{{
+		Func: plan.AggAvg, Column: 1, CountColumn: 2, Output: 0,
+	}})
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"<nil>"}}, collectValues(t, s))
+}
+
+func TestAggregate_AvgFloat(t *testing.T) {
+	fields := avgFields(0x05, 0, 0x05)
+	s, err := merge.Aggregate([]result.Stream{
+		&scriptStream{fields: fields, rows: []result.Row{{[]byte("1.5"), []byte("1.5"), []byte("1")}}},
+		&scriptStream{fields: fields, rows: []result.Row{{[]byte("2.5"), []byte("2.5"), []byte("1")}}},
+	}, fields, []plan.AggregateSpec{{Func: plan.AggAvg, Column: 1, CountColumn: 2, Output: 0}})
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"2"}}, collectValues(t, s))
+}
+
+func TestAggregate_AvgInvalidCountColumn(t *testing.T) {
+	fields := avgFields(typeNewDec, 4, typeNewDec)
+	var me *errs.MySQL
+	_, err := merge.Aggregate(nil, fields, []plan.AggregateSpec{{
+		Func: plan.AggAvg, Column: 1, CountColumn: 9, Output: 0,
+	}})
+	require.ErrorAs(t, err, &me)
+	require.Equal(t, uint16(1235), me.Number)
 }

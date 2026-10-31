@@ -49,7 +49,15 @@ func Aggregate(streams []result.Stream, fields []result.Field, specs []plan.Aggr
 			}
 			kinds[i] = kind
 		case plan.AggAvg:
-			return nil, errs.Unsupported("multi-shard AVG requires SUM/COUNT rewrite and is not supported yet")
+			if spec.CountColumn < 0 || spec.CountColumn >= len(fields) {
+				return nil, errs.Unsupported("multi-shard AVG count column %d is out of range", spec.CountColumn)
+			}
+			kind, ok := sumKind(fields[spec.Column])
+			if !ok {
+				return nil, errs.Unsupported("multi-shard AVG on column %q type 0x%02x is not supported",
+					fields[spec.Column].Name, fields[spec.Column].Type)
+			}
+			kinds[i] = kind
 		default:
 			return nil, errs.Unsupported("multi-shard aggregate function %d is not supported", spec.Func)
 		}
@@ -112,6 +120,7 @@ func (a *aggregate) Next() (result.Row, error) {
 
 func (a *aggregate) fold() (result.Row, error) {
 	counts := make([]uint64, len(a.specs))
+	avgCounts := make([]uint64, len(a.specs))
 	decs := make([]*decimalSum, len(a.specs))
 	floats := make([]*floatSum, len(a.specs))
 	bests := make([]*bestValue, len(a.specs))
@@ -169,6 +178,34 @@ func (a *aggregate) fold() (result.Row, error) {
 					if err := bests[i].add(v, a.kinds[i], spec.Func == plan.AggMax); err != nil {
 						return nil, err
 					}
+				case plan.AggAvg:
+					if v != nil {
+						if a.kinds[i] == kindFloat {
+							if floats[i] == nil {
+								floats[i] = &floatSum{}
+							}
+							if err := floats[i].add(v); err != nil {
+								return nil, err
+							}
+						} else {
+							if decs[i] == nil {
+								decs[i] = &decimalSum{}
+							}
+							if err := decs[i].add(v); err != nil {
+								return nil, err
+							}
+						}
+					}
+					if spec.CountColumn >= len(row) {
+						return nil, fmt.Errorf("merge: AVG count column %d out of row width %d", spec.CountColumn, len(row))
+					}
+					if cv := row[spec.CountColumn]; cv != nil {
+						n, err := parseCount(cv)
+						if err != nil {
+							return nil, err
+						}
+						avgCounts[i] += n
+					}
 				}
 			}
 		}
@@ -190,6 +227,20 @@ func (a *aggregate) fold() (result.Row, error) {
 		case plan.AggMin, plan.AggMax:
 			if bests[i] != nil {
 				out[spec.Output] = bests[i].raw
+			}
+		case plan.AggAvg:
+			if avgCounts[i] == 0 {
+				continue
+			}
+			if a.kinds[i] == kindFloat {
+				if floats[i] != nil {
+					out[spec.Output] = []byte(strconv.FormatFloat(
+						floats[i].sum/float64(avgCounts[i]), 'g', -1, 64))
+				}
+			} else if decs[i] != nil {
+				avg := new(big.Rat).Quo(decs[i].rat,
+					new(big.Rat).SetInt(new(big.Int).SetUint64(avgCounts[i])))
+				out[spec.Output] = []byte(avg.FloatString(int(a.fields[spec.Output].Decimals)))
 			}
 		}
 	}
