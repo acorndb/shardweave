@@ -208,7 +208,7 @@ func TestBuilder_MultiShard(t *testing.T) {
 			selectStmt(t, "SELECT id, amount FROM orders ORDER BY id DESC"))
 		require.NoError(t, err)
 		require.Equal(t, plan.MultiShard, p.Kind)
-		require.Equal(t, []plan.OrderKey{{Column: -1, Name: "id", Desc: true}}, p.Merge.OrderBy)
+		require.Equal(t, []plan.OrderKey{{Kind: plan.OrderByName, Name: "id", Desc: true}}, p.Merge.OrderBy)
 	})
 
 	t.Run("order_by_position", func(t *testing.T) {

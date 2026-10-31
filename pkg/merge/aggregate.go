@@ -71,9 +71,9 @@ func Aggregate(streams []result.Stream, fields []result.Field, specs []plan.Aggr
 
 func sumKind(f result.Field) (valueKind, bool) {
 	switch f.Type {
-	case colTypeTiny, colTypeShort, colTypeLong, colTypeLongLong, colTypeInt24, colTypeYear, colTypeNewDec:
+	case result.TypeTiny, result.TypeShort, result.TypeLong, result.TypeLongLong, result.TypeInt24, result.TypeYear, result.TypeNewDecimal:
 		return kindDecimal, true
-	case colTypeFloat, colTypeDouble:
+	case result.TypeFloat, result.TypeDouble:
 		return kindFloat, true
 	default:
 		return 0, false

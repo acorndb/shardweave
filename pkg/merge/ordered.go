@@ -15,24 +15,6 @@ import (
 	"github.com/acorndb/shardweave/pkg/result"
 )
 
-// MySQL column type codes used by the ORDER BY comparator.
-const (
-	colTypeTiny      byte = 0x01
-	colTypeShort     byte = 0x02
-	colTypeLong      byte = 0x03
-	colTypeFloat     byte = 0x04
-	colTypeDouble    byte = 0x05
-	colTypeTimestamp byte = 0x07
-	colTypeLongLong  byte = 0x08
-	colTypeInt24     byte = 0x09
-	colTypeDate      byte = 0x0a
-	colTypeDateTime  byte = 0x0c
-	colTypeYear      byte = 0x0d
-	colTypeNewDec    byte = 0xf6
-
-	flagUnsigned uint16 = 0x20
-)
-
 type valueKind uint8
 
 const (
@@ -66,7 +48,7 @@ func Ordered(streams []result.Stream, fields []result.Field, keys []plan.OrderKe
 	resolved := make([]resolvedKey, len(keys))
 	for i, k := range keys {
 		col := k.Column
-		if col < 0 {
+		if k.Kind == plan.OrderByName {
 			col = resolveField(fields, k.Name)
 			if col < 0 {
 				return nil, errs.Unsupported("ORDER BY column %q is missing from the result set", k.Name)
@@ -95,16 +77,16 @@ func resolveField(fields []result.Field, name string) int {
 
 func comparatorFor(f result.Field) (valueKind, error) {
 	switch f.Type {
-	case colTypeTiny, colTypeShort, colTypeLong, colTypeLongLong, colTypeInt24, colTypeYear:
-		if f.Flags&flagUnsigned != 0 {
+	case result.TypeTiny, result.TypeShort, result.TypeLong, result.TypeLongLong, result.TypeInt24, result.TypeYear:
+		if f.Flags&result.FlagUnsigned != 0 {
 			return kindUint, nil
 		}
 		return kindInt, nil
-	case colTypeFloat, colTypeDouble:
+	case result.TypeFloat, result.TypeDouble:
 		return kindFloat, nil
-	case colTypeNewDec:
+	case result.TypeNewDecimal:
 		return kindDecimal, nil
-	case colTypeTimestamp, colTypeDate, colTypeDateTime:
+	case result.TypeTimestamp, result.TypeDate, result.TypeDateTime:
 		return kindText, nil
 	default:
 		return 0, errs.Unsupported("multi-shard ORDER BY on column %q type 0x%02x is not supported",

@@ -237,7 +237,7 @@ func TestDispatch_Ordered(t *testing.T) {
 		&plan.Plan{
 			Kind:    plan.MultiShard,
 			Targets: multiTargets(),
-			Merge:   plan.MergeSpec{OrderBy: []plan.OrderKey{{Column: -1, Name: "id"}}},
+			Merge:   plan.MergeSpec{OrderBy: []plan.OrderKey{{Kind: plan.OrderByName, Name: "id"}}},
 		})
 	require.NoError(t, err)
 
@@ -275,7 +275,7 @@ func TestDispatch_OrderedLimit(t *testing.T) {
 			Kind:    plan.MultiShard,
 			Targets: multiTargets(),
 			Merge: plan.MergeSpec{
-				OrderBy: []plan.OrderKey{{Column: -1, Name: "id"}},
+				OrderBy: []plan.OrderKey{{Kind: plan.OrderByName, Name: "id"}},
 				Limit:   &plan.Limit{Count: 2},
 			},
 		})
@@ -315,7 +315,7 @@ func TestDispatch_OrderedRejectsUnsupportedTypeBeforeHeader(t *testing.T) {
 		&plan.Plan{
 			Kind:    plan.MultiShard,
 			Targets: multiTargets(),
-			Merge:   plan.MergeSpec{OrderBy: []plan.OrderKey{{Column: -1, Name: "id"}}},
+			Merge:   plan.MergeSpec{OrderBy: []plan.OrderKey{{Kind: plan.OrderByName, Name: "id"}}},
 		})
 	var rej *errs.MySQL
 	require.ErrorAs(t, err, &rej)

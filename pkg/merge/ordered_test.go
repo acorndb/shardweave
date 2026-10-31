@@ -125,7 +125,7 @@ func TestOrdered_ResolveNameAndOrgName(t *testing.T) {
 	}
 
 	for _, name := range []string{"id", "x"} {
-		s, err := merge.Ordered(mk(), fields, []plan.OrderKey{{Column: -1, Name: name}})
+		s, err := merge.Ordered(mk(), fields, []plan.OrderKey{{Kind: plan.OrderByName, Name: name}})
 		require.NoError(t, err)
 		require.Equal(t, [][]string{{"1"}, {"2"}}, collectValues(t, s), name)
 	}
@@ -183,7 +183,7 @@ func TestOrdered_RejectsUnsupportedTypeAndKeys(t *testing.T) {
 
 	fields := []result.Field{numField("id")}
 	_, err = merge.Ordered([]result.Stream{&scriptStream{fields: fields}}, fields,
-		[]plan.OrderKey{{Column: -1, Name: "missing"}})
+		[]plan.OrderKey{{Kind: plan.OrderByName, Name: "missing"}})
 	require.ErrorAs(t, err, &me)
 	require.Contains(t, me.Message, "missing")
 

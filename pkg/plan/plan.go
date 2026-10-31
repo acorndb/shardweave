@@ -63,9 +63,19 @@ func (p TxPolicy) String() string {
 	}
 }
 
-// OrderKey is one ORDER BY key. Column >= 0 is a 0-based output column index;
-// Column < 0 means resolve Name against the result fields (Name or OrgName).
+// OrderKeyKind says how an ORDER BY key is addressed.
+type OrderKeyKind uint8
+
+const (
+	// OrderByPosition uses Column as a 0-based output index (ORDER BY 1).
+	OrderByPosition OrderKeyKind = iota
+	// OrderByName resolves Name against result Field.Name/OrgName.
+	OrderByName
+)
+
+// OrderKey is one ORDER BY key.
 type OrderKey struct {
+	Kind   OrderKeyKind
 	Column int
 	Name   string
 	Desc   bool
@@ -280,12 +290,12 @@ func orderKeys(sel *ast.SelectStmt) ([]OrderKey, *errs.MySQL) {
 	for _, item := range sel.OrderBy.Items {
 		switch e := item.Expr.(type) {
 		case *ast.ColumnNameExpr:
-			keys = append(keys, OrderKey{Column: -1, Name: e.Name.Name.L, Desc: item.Desc})
+			keys = append(keys, OrderKey{Kind: OrderByName, Name: e.Name.Name.L, Desc: item.Desc})
 		case *ast.PositionExpr:
 			if e.N < 1 {
 				return nil, errs.Unsupported("multi-shard ORDER BY position must be >= 1")
 			}
-			keys = append(keys, OrderKey{Column: e.N - 1, Desc: item.Desc})
+			keys = append(keys, OrderKey{Kind: OrderByPosition, Column: e.N - 1, Desc: item.Desc})
 		default:
 			return nil, errs.Unsupported("multi-shard ORDER BY supports column names or positions only")
 		}
