@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/acorndb/shardweave/pkg/backend"
 	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/merge"
 	"github.com/acorndb/shardweave/pkg/mysql"
-	"github.com/acorndb/shardweave/pkg/mysql/packet"
 	"github.com/acorndb/shardweave/pkg/plan"
 	"github.com/acorndb/shardweave/pkg/result"
 	"github.com/acorndb/shardweave/pkg/route"
@@ -104,7 +102,7 @@ func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statemen
 
 	// All headers, ORDER BY comparators and aggregate functions are valid, so
 	// a partial result set is no longer possible.
-	if err := writeResultHeader(rt.Front, outFields); err != nil {
+	if err := mysql.WriteResultHeader(rt.Front, resultColumns(outFields)); err != nil {
 		cleanup(true)
 		return false, err
 	}
@@ -127,7 +125,7 @@ func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statemen
 			return false, err
 		}
 	}
-	if err := writeFrontPayload(rt.Front, mysql.EncodeEOF(frontendDeprecateEOF, mysql.ServerStatusAutocommit, 0)); err != nil {
+	if err := mysql.WriteEOF(rt.Front, frontendDeprecateEOF, mysql.ServerStatusAutocommit, 0); err != nil {
 		cleanup(true)
 		return false, err
 	}
@@ -142,40 +140,7 @@ func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statemen
 // openDecoded acquires/reuses the slice lease, aligns it, executes the payload
 // and reads the result header. Rows stay unread for the caller to stream.
 func (p *Pipeline) openDecoded(ctx context.Context, rt *Runtime, stmt *sql.Statement, target route.Target) (result.Stream, error) {
-	if rt.leases == nil {
-		rt.leases = make(map[string]*lease)
-	}
-	l := rt.leases[target.Slice]
-	acquired := false
-	if l == nil {
-		slice, err := p.cluster.Get(target.Slice)
-		if err != nil {
-			return nil, err
-		}
-		conn, pool, err := slice.Acquire(ctx, target.Role)
-		if err != nil {
-			return nil, err
-		}
-		l = &lease{slice: slice, conn: conn, pool: pool}
-		rt.leases[target.Slice] = l
-		acquired = true
-	}
-
-	db := target.DB
-	if db == "" {
-		db = rt.State.Database()
-	}
-	if err := l.conn.Align(ctx, backend.AlignSettings{Database: db, Charset: rt.State.Charset()}); err != nil {
-		if acquired {
-			_ = p.releaseOne(rt, target.Slice, false)
-		}
-		return nil, err
-	}
-	payload, err := p.payloadFor(rt, stmt, target)
-	if err != nil {
-		return nil, err
-	}
-	stream, err := l.conn.Exec(ctx, backend.ExecRequest{Payload: payload})
+	stream, err := p.execTarget(ctx, rt, stmt, target)
 	if err != nil {
 		return nil, err
 	}
@@ -224,12 +189,11 @@ func encodeCells(row result.Row, n int) ([][]byte, error) {
 	return cells, nil
 }
 
-func writeResultHeader(front *packet.Conn, fields []result.Field) error {
-	if err := writeFrontPayload(front, mysql.EncodeColumnCount(uint64(len(fields)))); err != nil {
-		return err
-	}
+// resultColumns converts logical fields to protocol column definitions.
+func resultColumns(fields []result.Field) []mysql.Column {
+	out := make([]mysql.Column, 0, len(fields))
 	for _, f := range fields {
-		def := mysql.EncodeColumnDefinition(mysql.Column{
+		out = append(out, mysql.Column{
 			Schema:       f.DB,
 			Table:        f.Table,
 			OrgTable:     f.OrgTable,
@@ -241,11 +205,8 @@ func writeResultHeader(front *packet.Conn, fields []result.Field) error {
 			Flags:        f.Flags,
 			Decimals:     f.Decimals,
 		})
-		if err := writeFrontPayload(front, def); err != nil {
-			return err
-		}
 	}
-	return nil
+	return out
 }
 
 func rejectMulti(format string, args ...any) error {

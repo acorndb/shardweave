@@ -117,10 +117,7 @@ func NewConnWithOptions(raw net.Conn, users UserProvider, opts Options) (*Conn, 
 		return nil, fmt.Errorf("access denied for user %q", resp.Username)
 	}
 
-	okPkt := mysql.EncodeOK(0, 0, 0x0002, 0)
-	obuf := make([]byte, 4+len(okPkt))
-	copy(obuf[4:], okPkt)
-	if err := pc.WritePacket(obuf); err != nil {
+	if err := mysql.WriteOK(pc, 0, 0, mysql.ServerStatusAutocommit, 0); err != nil {
 		_ = pc.Close()
 		return nil, err
 	}

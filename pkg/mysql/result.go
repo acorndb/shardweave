@@ -41,6 +41,38 @@ func EncodeERR(errno uint16, sqlState, message string) []byte {
 	return data
 }
 
+// WriteOK writes one complete OK packet to front.
+func WriteOK(front *packet.Conn, affectedRows, lastInsertID uint64, status, warnings uint16) error {
+	if front == nil {
+		return fmt.Errorf("mysql: nil frontend for WriteOK")
+	}
+	return writePayload(front, EncodeOK(affectedRows, lastInsertID, status, warnings))
+}
+
+// WriteResultHeader writes the column count and every ColumnDefinition41.
+func WriteResultHeader(front *packet.Conn, cols []Column) error {
+	if front == nil {
+		return fmt.Errorf("mysql: nil frontend for WriteResultHeader")
+	}
+	if err := writePayload(front, EncodeColumnCount(uint64(len(cols)))); err != nil {
+		return err
+	}
+	for _, col := range cols {
+		if err := writePayload(front, EncodeColumnDefinition(col)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// WriteEOF writes the result-set terminator for the negotiated capability.
+func WriteEOF(front *packet.Conn, deprecateEOF bool, status, warnings uint16) error {
+	if front == nil {
+		return fmt.Errorf("mysql: nil frontend for WriteEOF")
+	}
+	return writePayload(front, EncodeEOF(deprecateEOF, status, warnings))
+}
+
 // WriteERR writes one complete ERR packet to front. It owns the 4-byte header
 // framing so proxy/server do not each duplicate the packet construction.
 func WriteERR(front *packet.Conn, e *errs.MySQL) error {
@@ -50,10 +82,7 @@ func WriteERR(front *packet.Conn, e *errs.MySQL) error {
 	if e == nil {
 		e = errs.Unknown("unknown error")
 	}
-	payload := EncodeERR(e.Number, e.SQLState, e.Message)
-	buf := make([]byte, 4+len(payload))
-	copy(buf[4:], payload)
-	return front.WritePacket(buf)
+	return writePayload(front, EncodeERR(e.Number, e.SQLState, e.Message))
 }
 
 // Column is one protocol-level ColumnDefinition41.

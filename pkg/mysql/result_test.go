@@ -99,3 +99,50 @@ func TestEncodeEOF(t *testing.T) {
 	require.Equal(t, []byte{0xfe, 0x01, 0x00, 0x02, 0x00},
 		EncodeEOF(false, 0x0002, 1))
 }
+
+func writeAndRead(t *testing.T, n int, write func(*packet.Conn) error) [][]byte {
+	t.Helper()
+	srv, cli := net.Pipe()
+	t.Cleanup(func() { _ = srv.Close(); _ = cli.Close() })
+	front := packet.NewConn(srv)
+	rd := packet.NewConn(cli)
+	done := make(chan error, 1)
+	go func() { done <- write(front) }()
+
+	pkts := make([][]byte, 0, n)
+	for range n {
+		data, err := rd.ReadPacket()
+		require.NoError(t, err)
+		pkts = append(pkts, data)
+	}
+	require.NoError(t, <-done)
+	return pkts
+}
+
+func TestWriteOK(t *testing.T) {
+	pkts := writeAndRead(t, 1, func(front *packet.Conn) error {
+		return WriteOK(front, 2, 9, 0x0002, 1)
+	})
+	require.Equal(t, EncodeOK(2, 9, 0x0002, 1), pkts[0])
+	require.Error(t, WriteOK(nil, 0, 0, 0, 0))
+}
+
+func TestWriteResultHeader(t *testing.T) {
+	cols := []Column{{Name: "id", Charset: 63, Type: 0x03}, {Name: "amount", Charset: 63, Type: 0x03}}
+	pkts := writeAndRead(t, 1+len(cols), func(front *packet.Conn) error {
+		return WriteResultHeader(front, cols)
+	})
+	require.Equal(t, EncodeColumnCount(2), pkts[0])
+	for i, col := range cols {
+		require.Equal(t, EncodeColumnDefinition(col), pkts[i+1])
+	}
+	require.Error(t, WriteResultHeader(nil, cols))
+}
+
+func TestWriteEOF(t *testing.T) {
+	pkts := writeAndRead(t, 1, func(front *packet.Conn) error {
+		return WriteEOF(front, true, 0x0002, 0)
+	})
+	require.Equal(t, EncodeEOF(true, 0x0002, 0), pkts[0])
+	require.Error(t, WriteEOF(nil, true, 0, 0))
+}

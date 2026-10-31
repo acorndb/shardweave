@@ -109,31 +109,3 @@ func TestState_SessionFunctions(t *testing.T) {
 	require.Equal(t, uint64(0), s.LastInsertID(), "COM_RESET_CONNECTION clears LAST_INSERT_ID")
 	require.Equal(t, int64(-1), s.RowCount(), "COM_RESET_CONNECTION resets ROW_COUNT")
 }
-
-func TestDetectReservedSQL(t *testing.T) {
-	cases := []struct {
-		sql  string
-		want bool
-	}{
-		{"SELECT 1", false},
-		{"SET @x = 1", true},
-		{"set @foo := 2", true},
-		{"CREATE TEMPORARY TABLE t (id INT)", true},
-		{"create temporary table t(id int)", true},
-		{"SELECT GET_LOCK('a', 1)", true},
-		{"SELECT RELEASE_LOCK('a')", true},
-		{"LOCK TABLES t READ", true},
-		{"SET NAMES utf8mb4", false},
-		// @@system_var is not a user variable: reading it must not pin the session.
-		{"SELECT @@server_id", false},
-		{"SELECT @@GLOBAL.max_connections", false},
-		{"SET @@SESSION.sql_mode = 'ANSI'", false},
-		// User variable reads are connection-scoped too.
-		{"SELECT @probe", true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.sql, func(t *testing.T) {
-			require.Equal(t, tc.want, session.DetectReservedSQL(tc.sql))
-		})
-	}
-}

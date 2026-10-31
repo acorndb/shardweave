@@ -113,7 +113,7 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 		case mysql.ComQuit:
 			return nil
 		case mysql.ComPing:
-			if err := writeOK(front); err != nil {
+			if err := mysql.WriteOK(front, 0, 0, mysql.ServerStatusAutocommit, 0); err != nil {
 				return err
 			}
 		case mysql.ComInitDB:
@@ -124,7 +124,7 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 				continue
 			}
 		case mysql.ComQuery:
-			if session.DetectReservedSQL(stmt.Raw) {
+			if sql.DetectReservedSQL(stmt.Raw) {
 				st.MarkReserved()
 			}
 			if err := cfg.Exec.Handle(ctx, ec, stmt); err != nil {
@@ -154,7 +154,7 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 			// Match prior behavior: Release failure still clears proxy state.
 			_ = cfg.Exec.Release(ec, false)
 			st.Reset()
-			if err := writeOK(front); err != nil {
+			if err := mysql.WriteOK(front, 0, 0, mysql.ServerStatusAutocommit, 0); err != nil {
 				return err
 			}
 		default:
@@ -186,11 +186,4 @@ func handleExecError(front *packet.Conn, err error) error {
 		_ = mysql.WriteERR(front, errs.TooManyConnections())
 	}
 	return err
-}
-
-func writeOK(front *packet.Conn) error {
-	p := mysql.EncodeOK(0, 0, mysql.ServerStatusAutocommit, 0)
-	buf := make([]byte, 4+len(p))
-	copy(buf[4:], p)
-	return front.WritePacket(buf)
 }

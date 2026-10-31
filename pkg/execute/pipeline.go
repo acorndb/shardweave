@@ -13,6 +13,7 @@ import (
 	"github.com/acorndb/shardweave/pkg/mysql"
 	"github.com/acorndb/shardweave/pkg/mysql/packet"
 	"github.com/acorndb/shardweave/pkg/plan"
+	"github.com/acorndb/shardweave/pkg/result"
 	"github.com/acorndb/shardweave/pkg/route"
 	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/acorndb/shardweave/pkg/sql"
@@ -93,6 +94,65 @@ func (p *Pipeline) Release(rt *Runtime, discard bool) error {
 	return first
 }
 
+// acquireLease reuses the session lease for the slice or acquires a new one.
+func (p *Pipeline) acquireLease(ctx context.Context, rt *Runtime, target route.Target) (*lease, bool, error) {
+	if rt.leases == nil {
+		rt.leases = make(map[string]*lease)
+	}
+	if l := rt.leases[target.Slice]; l != nil {
+		return l, false, nil
+	}
+	slice, err := p.cluster.Get(target.Slice)
+	if err != nil {
+		return nil, false, err
+	}
+	conn, pool, err := slice.Acquire(ctx, target.Role)
+	if err != nil {
+		return nil, false, err
+	}
+	l := &lease{slice: slice, conn: conn, pool: pool}
+	rt.leases[target.Slice] = l
+	return l, true, nil
+}
+
+// execTarget acquires/reuses a lease, aligns it and executes the command. It
+// returns the backend stream; callers own forwarding/decoding and cleanup.
+func (p *Pipeline) execTarget(ctx context.Context, rt *Runtime, stmt *sql.Statement, target route.Target) (result.Stream, error) {
+	l, acquired, err := p.acquireLease(ctx, rt, target)
+	if err != nil {
+		return nil, err
+	}
+	if err := l.conn.Align(ctx, backend.AlignSettings{
+		Database: targetDatabase(rt, target),
+		Charset:  rt.State.Charset(),
+	}); err != nil {
+		if acquired {
+			_ = p.releaseOne(rt, target.Slice, false)
+		}
+		return nil, err
+	}
+	payload, err := p.payloadFor(rt, stmt, target)
+	if err != nil {
+		return nil, err
+	}
+	stream, err := l.conn.Exec(ctx, backend.ExecRequest{
+		Payload: payload,
+		Prepare: stmt.Cmd == mysql.ComStmtPrepare,
+		NoReply: stmt.Cmd == mysql.ComStmtClose,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return stream, nil
+}
+
+func targetDatabase(rt *Runtime, target route.Target) string {
+	if target.DB != "" {
+		return target.DB
+	}
+	return rt.State.Database()
+}
+
 // Handle builds a Plan, acquires/reuses a lease, executes and forwards the result.
 func (p *Pipeline) Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement) error {
 	if p == nil || p.cluster == nil {
@@ -147,24 +207,6 @@ func (p *Pipeline) executePlan(ctx context.Context, rt *Runtime, stmt *sql.State
 // runOne executes one target, acquires/reuses its lease and forwards the raw
 // response. It returns whether session state was successfully updated.
 func (p *Pipeline) runOne(ctx context.Context, rt *Runtime, stmt *sql.Statement, target route.Target) (bool, error) {
-	if rt.leases == nil {
-		rt.leases = make(map[string]*lease)
-	}
-	l := rt.leases[target.Slice]
-	acquired := false
-	if l == nil {
-		slice, err := p.cluster.Get(target.Slice)
-		if err != nil {
-			return false, err
-		}
-		conn, pool, err := slice.Acquire(ctx, target.Role)
-		if err != nil {
-			return false, err
-		}
-		l = &lease{slice: slice, conn: conn, pool: pool}
-		rt.leases[target.Slice] = l
-		acquired = true
-	}
 	// Evaluate stickiness after execution: BEGIN sets InTx from the backend status.
 	defer func() {
 		if !rt.State.NeedsSticky() {
@@ -172,27 +214,7 @@ func (p *Pipeline) runOne(ctx context.Context, rt *Runtime, stmt *sql.Statement,
 		}
 	}()
 
-	db := target.DB
-	if db == "" {
-		db = rt.State.Database()
-	}
-	if err := l.conn.Align(ctx, backend.AlignSettings{Database: db, Charset: rt.State.Charset()}); err != nil {
-		if acquired {
-			_ = p.releaseOne(rt, target.Slice, false)
-		}
-		return false, err
-	}
-
-	payload, err := p.payloadFor(rt, stmt, target)
-	if err != nil {
-		return false, err
-	}
-	req := backend.ExecRequest{
-		Payload: payload,
-		Prepare: stmt.Cmd == mysql.ComStmtPrepare,
-		NoReply: stmt.Cmd == mysql.ComStmtClose,
-	}
-	stream, err := l.conn.Exec(ctx, req)
+	stream, err := p.execTarget(ctx, rt, stmt, target)
 	if err != nil {
 		return false, err
 	}
@@ -236,7 +258,7 @@ func (p *Pipeline) runOne(ctx context.Context, rt *Runtime, stmt *sql.Statement,
 	if info.ServerErr {
 		return false, nil // ERR already forwarded; rowCount is marked -1
 	}
-	if !req.Prepare && !req.NoReply {
+	if stmt.Cmd != mysql.ComStmtPrepare && stmt.Cmd != mysql.ComStmtClose {
 		rt.State.SetInTx(info.Status&mysql.ServerStatusInTrans != 0)
 	}
 	applyEffect(rt.State, stmt.Effect)
@@ -335,16 +357,14 @@ func writeTextResult(front *packet.Conn, cols []string, rows [][]string) error {
 	if front == nil {
 		return fmt.Errorf("execute: nil frontend for explain")
 	}
-	if err := writeFrontPayload(front, mysql.EncodeColumnCount(uint64(len(cols)))); err != nil {
-		return err
-	}
+	columns := make([]mysql.Column, 0, len(cols))
 	for _, name := range cols {
-		def := mysql.EncodeColumnDefinition(mysql.Column{
+		columns = append(columns, mysql.Column{
 			Name: name, Charset: 0x2d, ColumnLength: 1024, Type: 0xfd, // VAR_STRING
 		})
-		if err := writeFrontPayload(front, def); err != nil {
-			return err
-		}
+	}
+	if err := mysql.WriteResultHeader(front, columns); err != nil {
+		return err
 	}
 	for _, row := range rows {
 		cells := make([][]byte, len(row))
@@ -357,7 +377,7 @@ func writeTextResult(front *packet.Conn, cols []string, rows [][]string) error {
 	}
 	// The frontend handshake advertises CLIENT_DEPRECATE_EOF; keep this in sync
 	// if capability negotiation becomes per-session.
-	return writeFrontPayload(front, mysql.EncodeEOF(frontendDeprecateEOF, mysql.ServerStatusAutocommit, 0))
+	return mysql.WriteEOF(front, frontendDeprecateEOF, mysql.ServerStatusAutocommit, 0)
 }
 
 func writeFrontPayload(front *packet.Conn, payload []byte) error {
