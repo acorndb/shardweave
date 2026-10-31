@@ -5,9 +5,12 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/pingcap/tidb/pkg/parser/ast"
+	"github.com/pingcap/tidb/pkg/parser/format"
+	"github.com/pingcap/tidb/pkg/parser/opcode"
 
 	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/route"
@@ -63,6 +66,26 @@ func (p TxPolicy) String() string {
 	}
 }
 
+// HavingOp is one HAVING comparison operator.
+type HavingOp uint8
+
+const (
+	HavingEQ HavingOp = iota
+	HavingNE
+	HavingLT
+	HavingLE
+	HavingGT
+	HavingGE
+)
+
+// HavingPredicate is one comparison against a grouped output column. Values are
+// canonical numeric strings; HAVING is AND-only for now.
+type HavingPredicate struct {
+	Column int
+	Op     HavingOp
+	Value  string
+}
+
 // OrderKeyKind says how an ORDER BY key is addressed.
 type OrderKeyKind uint8
 
@@ -112,6 +135,7 @@ type AggregateSpec struct {
 // refer to the rewritten per-shard result, including hidden columns.
 type MergeSpec struct {
 	OrderBy    []OrderKey
+	Having     []HavingPredicate
 	Limit      *Limit
 	Aggregates []AggregateSpec
 	GroupBy    []int
@@ -194,6 +218,9 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 	if !ok {
 		return MergeSpec{}, nil
 	}
+	if sel.Having != nil && sel.GroupBy == nil {
+		return MergeSpec{}, errs.Unsupported("HAVING requires GROUP BY in sharding mode")
+	}
 	if sel.Distinct {
 		if sel.GroupBy != nil {
 			return MergeSpec{}, errs.Unsupported("multi-shard DISTINCT with GROUP BY is not supported")
@@ -217,7 +244,7 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 			spec.Limit = &Limit{Offset: offset, Count: count}
 			removeLimit = true
 		}
-		return applyRewrite(sel, targets, spec, nil, nil, removeLimit)
+		return applyRewrite(sel, targets, spec, nil, nil, removeLimit, false)
 	}
 	if sel.GroupBy != nil {
 		spec, extras, rej := groupSpecs(sel)
@@ -229,6 +256,11 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 			return MergeSpec{}, rej
 		}
 		spec.OrderBy = keys
+		having, rej := havingPredicates(sel)
+		if rej != nil {
+			return MergeSpec{}, rej
+		}
+		spec.Having = having
 		removeLimit := false
 		if sel.Limit != nil {
 			offset, count, ok := sql.ParseLimit(sel.Limit)
@@ -238,7 +270,7 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 			spec.Limit = &Limit{Offset: offset, Count: count}
 			removeLimit = true
 		}
-		return applyRewrite(sel, targets, spec, extras, nil, removeLimit)
+		return applyRewrite(sel, targets, spec, extras, nil, removeLimit, len(having) > 0)
 	}
 	aggs, extras, rej := aggregateSpecs(sel)
 	if rej != nil {
@@ -250,7 +282,7 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 			return MergeSpec{}, errs.Unsupported("multi-shard aggregate with ORDER BY is not supported")
 		}
 		spec.Aggregates = aggs
-		return applyRewrite(sel, targets, spec, extras, nil, false)
+		return applyRewrite(sel, targets, spec, extras, nil, false, false)
 	}
 	keys, orderFields, output, rej := orderSpec(sel)
 	if rej != nil {
@@ -258,7 +290,7 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 	}
 	spec.OrderBy = keys
 	spec.Output = output
-	return applyRewrite(sel, targets, spec, nil, orderFields, false)
+	return applyRewrite(sel, targets, spec, nil, orderFields, false, false)
 }
 
 // applyRewrite parses LIMIT and rewrites per-shard SQL when OFFSET or hidden
@@ -270,6 +302,7 @@ func applyRewrite(
 	extras []rewrite.ExtraAggregate,
 	orderFields []rewrite.ExtraField,
 	removeLimit bool,
+	removeHaving bool,
 ) (MergeSpec, *errs.MySQL) {
 	var perShard *int64
 	if sel.Limit != nil && !removeLimit {
@@ -286,7 +319,7 @@ func applyRewrite(
 		}
 		spec.Limit = &Limit{Offset: offset, Count: count}
 	}
-	if perShard == nil && len(extras) == 0 && len(orderFields) == 0 && !removeLimit {
+	if perShard == nil && len(extras) == 0 && len(orderFields) == 0 && !removeLimit && !removeHaving {
 		return spec, nil
 	}
 	sqlText, err := rewrite.Select(sel, rewrite.Spec{
@@ -294,6 +327,7 @@ func applyRewrite(
 		ExtraAggregates: extras,
 		ExtraFields:     orderFields,
 		RemoveLimit:     removeLimit,
+		RemoveHaving:    removeHaving,
 	})
 	if err != nil {
 		return MergeSpec{}, errs.Unsupported("multi-shard rewrite failed: %v", err)
@@ -302,6 +336,166 @@ func applyRewrite(
 		targets[i].SQL = sqlText
 	}
 	return spec, nil
+}
+
+// havingPredicates parses HAVING into AND-only comparisons on grouped output
+// columns (group columns, aggregate aliases or matching aggregate expressions).
+func havingPredicates(sel *ast.SelectStmt) ([]HavingPredicate, *errs.MySQL) {
+	if sel.Having == nil || sel.Having.Expr == nil {
+		return nil, nil
+	}
+	if sel.GroupBy == nil {
+		return nil, errs.Unsupported("HAVING requires GROUP BY in sharding mode")
+	}
+	var preds []HavingPredicate
+	if rej := collectHaving(sel, sel.Having.Expr, &preds); rej != nil {
+		return nil, rej
+	}
+	if len(preds) == 0 {
+		return nil, errs.Unsupported("HAVING must contain at least one comparison")
+	}
+	return preds, nil
+}
+
+func collectHaving(sel *ast.SelectStmt, expr ast.ExprNode, out *[]HavingPredicate) *errs.MySQL {
+	switch e := expr.(type) {
+	case *ast.ParenthesesExpr:
+		return collectHaving(sel, e.Expr, out)
+	case *ast.BinaryOperationExpr:
+		if e.Op == opcode.LogicAnd {
+			if rej := collectHaving(sel, e.L, out); rej != nil {
+				return rej
+			}
+			return collectHaving(sel, e.R, out)
+		}
+		pred, rej := havingComparison(sel, e)
+		if rej != nil {
+			return rej
+		}
+		*out = append(*out, *pred)
+		return nil
+	default:
+		return errs.Unsupported("HAVING supports AND-ed comparisons only")
+	}
+}
+
+func havingComparison(sel *ast.SelectStmt, e *ast.BinaryOperationExpr) (*HavingPredicate, *errs.MySQL) {
+	op, ok := havingOp(e.Op)
+	if !ok {
+		return nil, errs.Unsupported("HAVING operator is not supported")
+	}
+	col, ok := havingColumn(sel, e.L)
+	if ok {
+		lit, ok := havingLiteral(e.R)
+		if !ok {
+			return nil, errs.Unsupported("HAVING right side must be a numeric literal or selected aggregate")
+		}
+		return &HavingPredicate{Column: col, Op: op, Value: lit}, nil
+	}
+	col, ok = havingColumn(sel, e.R)
+	if !ok {
+		return nil, errs.Unsupported("HAVING must compare a selected column/aggregate with a literal")
+	}
+	lit, ok := havingLiteral(e.L)
+	if !ok {
+		return nil, errs.Unsupported("HAVING left side must be a numeric literal or selected aggregate")
+	}
+	return &HavingPredicate{Column: col, Op: flipHavingOp(op), Value: lit}, nil
+}
+
+func havingColumn(sel *ast.SelectStmt, expr ast.ExprNode) (int, bool) {
+	switch e := expr.(type) {
+	case *ast.ColumnNameExpr:
+		idx := selectFieldIndex(sel, e.Name.Name.L)
+		return idx, idx >= 0
+	case *ast.PositionExpr:
+		if e.N >= 1 && e.N <= len(sel.Fields.Fields) {
+			return e.N - 1, true
+		}
+	case *ast.AggregateFuncExpr:
+		for i, field := range sel.Fields.Fields {
+			agg, ok := field.Expr.(*ast.AggregateFuncExpr)
+			if ok && sameAggregate(agg, e) {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func sameAggregate(a, b *ast.AggregateFuncExpr) bool {
+	if a == nil || b == nil || !strings.EqualFold(a.F, b.F) || a.Distinct != b.Distinct ||
+		len(a.Args) != len(b.Args) {
+		return false
+	}
+	for i := range a.Args {
+		if exprText(a.Args[i]) != exprText(b.Args[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func exprText(expr ast.ExprNode) string {
+	var b strings.Builder
+	ctx := format.NewRestoreCtx(format.DefaultRestoreFlags, &b)
+	if err := expr.Restore(ctx); err != nil {
+		return ""
+	}
+	return b.String()
+}
+
+func havingLiteral(expr ast.ExprNode) (string, bool) {
+	v, ok := expr.(ast.ValueExpr)
+	if !ok {
+		return "", false
+	}
+	switch x := v.GetValue().(type) {
+	case int:
+		return strconv.Itoa(x), true
+	case int64:
+		return strconv.FormatInt(x, 10), true
+	case uint64:
+		return strconv.FormatUint(x, 10), true
+	case float64:
+		return strconv.FormatFloat(x, 'g', -1, 64), true
+	default:
+		return "", false
+	}
+}
+
+func havingOp(op opcode.Op) (HavingOp, bool) {
+	switch op {
+	case opcode.EQ:
+		return HavingEQ, true
+	case opcode.NE:
+		return HavingNE, true
+	case opcode.LT:
+		return HavingLT, true
+	case opcode.LE:
+		return HavingLE, true
+	case opcode.GT:
+		return HavingGT, true
+	case opcode.GE:
+		return HavingGE, true
+	default:
+		return 0, false
+	}
+}
+
+func flipHavingOp(op HavingOp) HavingOp {
+	switch op {
+	case HavingLT:
+		return HavingGT
+	case HavingLE:
+		return HavingGE
+	case HavingGT:
+		return HavingLT
+	case HavingGE:
+		return HavingLE
+	default:
+		return op
+	}
 }
 
 // groupSpecs accepts projected group columns plus aggregate-only other fields.

@@ -102,3 +102,24 @@ func TestSelect_RemoveLimit(t *testing.T) {
 	require.Nil(t, got.Limit)
 	require.NotNil(t, sel.Limit, "caller AST must be restored")
 }
+
+func TestSelect_RemoveHaving(t *testing.T) {
+	sel := parseSelect(t, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id HAVING COUNT(*) > 1")
+	out, err := rewrite.Select(sel, rewrite.Spec{RemoveHaving: true})
+	require.NoError(t, err)
+	res, err := sqlparser.Parse(out)
+	require.NoError(t, err)
+	got := res.Stmts[0].(*ast.SelectStmt)
+	require.Nil(t, got.Having)
+	require.NotNil(t, sel.Having, "caller AST must be restored")
+}
+
+func TestSelect_RemoveHavingKeepsLabels(t *testing.T) {
+	sel := parseSelect(t, "SELECT COUNT(*) FROM orders GROUP BY user_id HAVING COUNT(*) > 1")
+	out, err := rewrite.Select(sel, rewrite.Spec{RemoveHaving: true})
+	require.NoError(t, err)
+	res, err := sqlparser.Parse(out)
+	require.NoError(t, err)
+	got := res.Stmts[0].(*ast.SelectStmt)
+	require.Equal(t, "COUNT(*)", got.Fields.Fields[0].AsName.O)
+}

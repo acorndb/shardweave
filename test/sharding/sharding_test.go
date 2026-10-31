@@ -272,8 +272,23 @@ func TestSingleShardRouting(t *testing.T) {
 		"SELECT user_id, SUM(amount) AS s FROM orders GROUP BY user_id ORDER BY s DESC LIMIT 1",
 		[][]string{{"2", "250"}})
 	requireRowCount(t, ctx, conn, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id LIMIT 1", 1)
+	requireRowValues(t, ctx, conn,
+		"SELECT amount, COUNT(*) AS c FROM orders GROUP BY amount HAVING c > 1 ORDER BY amount",
+		[][]string{{"50", "2"}})
+	requireRowValues(t, ctx, conn,
+		"SELECT amount, COUNT(*) FROM orders GROUP BY amount HAVING COUNT(*) > 1",
+		[][]string{{"50", "2"}})
+	requireRowValues(t, ctx, conn,
+		"SELECT user_id, SUM(amount) AS s FROM orders GROUP BY user_id HAVING s >= 200 ORDER BY user_id",
+		[][]string{{"2", "250"}})
+	requireRowValues(t, ctx, conn,
+		"SELECT user_id, COUNT(*) FROM orders GROUP BY user_id HAVING COUNT(*) > 1 AND user_id > 1 ORDER BY user_id",
+		[][]string{{"2", "2"}})
 	assertReject(t, ctx, conn, "SELECT COUNT(*) FROM orders GROUP BY user_id")
 	assertReject(t, ctx, conn, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id ORDER BY COUNT(*)")
+	assertReject(t, ctx, conn, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id HAVING COUNT(*) > 1 OR user_id = 1")
+	assertReject(t, ctx, conn, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id HAVING COUNT(*) > '1'")
+	assertReject(t, ctx, conn, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id HAVING SUM(qty) > 1")
 
 	requireGroupRows(t, ctx, conn, "SELECT DISTINCT amount FROM orders",
 		map[string][]string{"50": {}, "200": {}})

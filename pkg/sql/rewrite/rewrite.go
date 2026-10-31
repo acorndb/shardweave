@@ -38,6 +38,9 @@ type Spec struct {
 	// RemoveLimit drops LIMIT from the per-shard SQL. GROUP BY/DISTINCT apply
 	// LIMIT after the global merge, so per-shard truncation is unsafe.
 	RemoveLimit bool
+	// RemoveHaving drops HAVING from the per-shard SQL. HAVING on aggregate
+	// outputs must be evaluated after cross-shard groups are merged.
+	RemoveHaving bool
 }
 
 // Select restores sel with spec applied. The caller's AST is restored before
@@ -47,6 +50,7 @@ func Select(sel *ast.SelectStmt, spec Spec) (string, error) {
 		return "", fmt.Errorf("rewrite: nil SELECT")
 	}
 	oldLimit := sel.Limit
+	oldHaving := sel.Having
 	oldFields := sel.Fields
 	switch {
 	case spec.RemoveLimit:
@@ -54,7 +58,10 @@ func Select(sel *ast.SelectStmt, spec Spec) (string, error) {
 	case spec.PerShardLimit != nil:
 		sel.Limit = &ast.Limit{Count: ast.NewValueExpr(*spec.PerShardLimit, "", "")}
 	}
-	if len(spec.ExtraAggregates) > 0 || len(spec.ExtraFields) > 0 {
+	if spec.RemoveHaving {
+		sel.Having = nil
+	}
+	if sel.Fields != nil {
 		original := sel.Fields.Fields
 		capacity := len(original) + len(spec.ExtraAggregates) + len(spec.ExtraFields)
 		fields := make([]*ast.SelectField, len(original), capacity)
@@ -82,6 +89,7 @@ func Select(sel *ast.SelectStmt, spec Spec) (string, error) {
 	}
 	defer func() {
 		sel.Limit = oldLimit
+		sel.Having = oldHaving
 		sel.Fields = oldFields
 	}()
 

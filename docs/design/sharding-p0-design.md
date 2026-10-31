@@ -367,8 +367,9 @@ route → []Target
   JSON 类型 1235；`SELECT *` 搭配表达式排序 1235；
 - 支持 `COUNT/SUM/MIN/MAX/AVG`（无 GROUP BY）、数值/日期列 GROUP BY、
   数值/日期列 DISTINCT，以及其按已选列的 ORDER BY/LIMIT；
-- 不支持 `HAVING / 窗口函数 / 聚合 DISTINCT / 聚合表达式排序 / INTO /
-  锁定读 / SQL_CALC_FOUND_ROWS`；字符串列分组/去重/排序仍 1235；
+- 支持 GROUP BY 的 AND 数值 HAVING（分组列/聚合别名/匹配聚合表达式）；
+- 不支持窗口函数、聚合 DISTINCT、HAVING OR/字符串、聚合表达式排序、
+  INTO、锁定读、SQL_CALC_FOUND_ROWS；字符串列分组/去重/排序仍 1235；
 - `LIMIT n` / `LIMIT n OFFSET m`：OFFSET>0 时 per-shard 改写成 `LIMIT m+n`，
   归并后由 `Limit` 截断/跳过；
 - lease 顺序 acquire（session map 不并发写），随后各 target 的
@@ -538,7 +539,7 @@ route → []Target
   各片部分分组，输出为首次出现顺序（MySQL 未保证顺序）；
 - 分组列必须在 select list；分组表达式/未选分组列 1235；
 - 字符串/二进制分组列 1235（collation 权重表未引入）；
-- GROUP BY + ORDER BY/LIMIT、HAVING 仍 1235；
+- GROUP BY + ORDER BY/LIMIT、数值 HAVING 已支持；
 - single-DB oracle 覆盖用户分组、金额跨片分组、过滤后分组。
 
 已落地（B1.8，DISTINCT，2026-10-31）：
@@ -546,7 +547,7 @@ route → []Target
 - `SELECT DISTINCT 列/表达式` 跨片去重；各片先 DISTINCT，归并层按规范化行 key
   去重，输出首次出现顺序；
 - 数值/日期键可用；字符串/二进制列 1235（collation 权重表未引入）；
-- `DISTINCT + ORDER BY/LIMIT`、聚合 DISTINCT 仍 1235；
+- `DISTINCT + ORDER BY/LIMIT` 已支持；聚合 DISTINCT 仍 1235；
 - oracle 覆盖单列/多列 DISTINCT 与单库一致。
 
 已落地（B1.9，GROUP BY/DISTINCT 排序与 LIMIT，2026-10-31）：
@@ -557,6 +558,15 @@ route → []Target
   部分分组；ORDER BY 仍保留在各片但最终以全局排序为准；
 - 聚合表达式排序（`ORDER BY COUNT(*)`）仍 1235，需先起别名或位置；
 - 字符串/二进制排序仍 1235（collation 权重表未引入）。
+
+已落地（B1.10，HAVING，2026-10-31）：
+
+- `GROUP BY ... HAVING` 支持已选分组列/聚合别名/匹配聚合表达式与数值字面量
+  的 `= != < <= > >=` 比较，多个条件按 AND 组合；
+- per-shard SQL 移除 HAVING（`rewrite.Spec.RemoveHaving`），HAVING 在全局
+  分组后执行；
+- OR、字符串字面量、未选聚合、无 GROUP BY 的 HAVING 仍 1235；
+- oracle/e2e 覆盖别名、聚合表达式、AND、跨片 group 过滤。
 
 未落地（B1.2）：
 
@@ -653,6 +663,12 @@ B1.9（已落地，GROUP BY/DISTINCT 排序与 LIMIT）：
 - per-shard LIMIT 移除，避免部分分组被提前截断；
 - 聚合表达式排序、字符串排序仍 1235。
 
+B1.10（已落地，HAVING）：
+
+- `GROUP BY ... HAVING` 的 AND 数值比较（分组列/聚合别名/匹配聚合表达式）；
+- per-shard HAVING 移除，全局分组后过滤；
+- OR、字符串字面量、未选聚合、无 GROUP BY 的 HAVING 仍 1235。
+
 DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代理始终显式 Reject。
 
 ### 8.2 Reject（当前）
@@ -662,7 +678,7 @@ DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代�
   `hash_mod_str` 下的 `1`）；
 - 分片表上需要归并的 SELECT（HAVING/窗口/INTO/锁定读/SQL_CALC_FOUND_ROWS）；
   子查询；聚合 DISTINCT、聚合与非聚合投影混合、聚合 + ORDER BY、聚合表达式
-  排序；字符串/二进制 GROUP BY/DISTINCT/排序 1235；
+  排序、HAVING OR/字符串/未选聚合；字符串/二进制 GROUP BY/DISTINCT/排序 1235；
 - 事务 / `autocommit=0` / reserved / prepared pin 会话中的多分片语句；
 - 跨片/多表 JOIN、schema 限定表；
 - prepared 参数化分片键、prepared DML、prepared 多分片；

@@ -369,6 +369,54 @@ func TestBuilder_MultiShard(t *testing.T) {
 		}, p.Merge.Aggregates)
 	})
 
+	t.Run("group_having_alias", func(t *testing.T) {
+		st := selectStmt(t, "SELECT user_id, COUNT(*) AS c FROM orders GROUP BY user_id HAVING c > 1")
+		p, err := b.Build(context.Background(), session.NewState(), st)
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.HavingPredicate{{Column: 1, Op: plan.HavingGT, Value: "1"}}, p.Merge.Having)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			require.Nil(t, res.Stmts[0].(*ast.SelectStmt).Having, "HAVING is evaluated after merge")
+		}
+	})
+
+	t.Run("group_having_aggregate_and", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT user_id, COUNT(*), SUM(amount) FROM orders GROUP BY user_id HAVING COUNT(*) > 1 AND SUM(amount) >= 100"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.HavingPredicate{
+			{Column: 1, Op: plan.HavingGT, Value: "1"},
+			{Column: 2, Op: plan.HavingGE, Value: "100"},
+		}, p.Merge.Having)
+	})
+
+	t.Run("having_or_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id HAVING COUNT(*) > 1 OR user_id = 1"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Contains(t, p.Reject.Message, "HAVING")
+	})
+
+	t.Run("having_without_group_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT COUNT(*) FROM orders HAVING COUNT(*) > 1"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Contains(t, p.Reject.Message, "GROUP BY")
+	})
+
+	t.Run("having_string_literal_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id HAVING COUNT(*) > '1'"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Contains(t, p.Reject.Message, "numeric")
+	})
+
 	t.Run("distinct", func(t *testing.T) {
 		p, err := b.Build(context.Background(), session.NewState(),
 			selectStmt(t, "SELECT DISTINCT user_id, amount FROM orders"))

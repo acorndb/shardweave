@@ -24,6 +24,9 @@ func Validate(spec plan.MergeSpec) error {
 	if len(spec.GroupBy) > 0 {
 		return nil
 	}
+	if len(spec.Having) > 0 {
+		return errs.Unsupported("multi-shard HAVING requires GROUP BY")
+	}
 	if len(spec.Aggregates) > 0 && len(spec.OrderBy) > 0 {
 		return errs.Unsupported("multi-shard aggregate with ORDER BY is not supported")
 	}
@@ -47,6 +50,13 @@ func Merge(streams []result.Stream, fields []result.Field, spec plan.MergeSpec) 
 		out, err := Group(streams, fields, spec.GroupBy, spec.Aggregates, spec.Output)
 		if err != nil {
 			return nil, err
+		}
+		if len(spec.Having) > 0 {
+			filtered, err := Filter(out, out.Fields(), spec.Having)
+			if err != nil {
+				return nil, err
+			}
+			out = filtered
 		}
 		return sortAndLimit(out, spec)
 	}

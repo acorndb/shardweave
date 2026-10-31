@@ -166,6 +166,10 @@ func TestShardedAggregateOracle(t *testing.T) {
 		{query: "SELECT COUNT(*), SUM(amount), AVG(amount) FROM orders WHERE id < 0"},
 		{query: "SELECT user_id, COUNT(*) FROM orders WHERE id < 0 GROUP BY user_id"},
 		{query: "SELECT DISTINCT amount FROM orders WHERE id < 0"},
+		{query: "SELECT amount, COUNT(*) AS c FROM orders GROUP BY amount HAVING c > 1 ORDER BY amount"},
+		{query: "SELECT amount, COUNT(*) FROM orders GROUP BY amount HAVING COUNT(*) > 1"},
+		{query: "SELECT user_id, SUM(amount) AS s FROM orders GROUP BY user_id HAVING s >= 200 ORDER BY user_id"},
+		{query: "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id HAVING COUNT(*) > 1 AND user_id > 1 ORDER BY user_id"},
 	}
 	for _, tc := range queries {
 		t.Run(tc.query, func(t *testing.T) {
