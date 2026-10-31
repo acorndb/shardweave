@@ -14,15 +14,16 @@ import (
 
 	"github.com/acorndb/prism/pkg/backend_server"
 	"github.com/acorndb/prism/pkg/config"
+	"github.com/acorndb/prism/pkg/executor"
 	"github.com/acorndb/prism/pkg/proxy"
 	"github.com/acorndb/prism/pkg/router"
 )
 
-// Server is one proxy process: listen address + backend group + live config.
+// Server is one proxy process: listen address + executor + live config.
 type Server struct {
-	path  string
-	rt    *config.Runtime
-	group *router.Group
+	path string
+	rt   *config.Runtime
+	exec executor.Executor
 
 	listener net.Listener
 	running  atomic.Bool
@@ -43,14 +44,14 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 	}
 
 	rt := config.NewRuntime(cfg)
-	group, err := newBackendGroup(rt, cfg)
+	exec, err := newExecutor(rt, cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
-		_ = group.Close()
+		_ = exec.Close()
 		return nil, fmt.Errorf("server: listen %s: %w", cfg.Listen, err)
 	}
 
@@ -58,7 +59,7 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 	s := &Server{
 		path:     configPath,
 		rt:       rt,
-		group:    group,
+		exec:     exec,
 		listener: ln,
 		ctx:      ctx,
 		cancel:   cancel,
@@ -67,7 +68,7 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 	return s, nil
 }
 
-func newBackendGroup(rt *config.Runtime, cfg *config.Config) (*router.Group, error) {
+func newExecutor(rt *config.Runtime, cfg *config.Config) (executor.Executor, error) {
 	pcfg := toPoolConfig(cfg.Pool)
 	bs := cfg.BackendServer
 	mode := bs.Mode
@@ -81,18 +82,19 @@ func newBackendGroup(rt *config.Runtime, cfg *config.Config) (*router.Group, err
 		}
 	}
 
+	var g *router.Group
 	switch mode {
 	case config.ModeSingle:
 		ep, err := bs.Primary()
 		if err != nil {
 			return nil, err
 		}
-		return &router.Group{Master: backend_server.New(pcfg, open(ep))}, nil
+		g = &router.Group{Master: backend_server.New(pcfg, open(ep))}
 	case config.ModeRWSplit:
 		if bs.Master == nil {
 			return nil, fmt.Errorf("server: rwsplit master required")
 		}
-		g := &router.Group{
+		g = &router.Group{
 			Master:      backend_server.New(pcfg, open(*bs.Master)),
 			LoadBalance: bs.LoadBalance,
 		}
@@ -104,10 +106,10 @@ func newBackendGroup(rt *config.Runtime, cfg *config.Config) (*router.Group, err
 			g.Slaves = append(g.Slaves, backend_server.New(pcfg, open(ep)))
 		}
 		_ = rt // pools dial from cfg snapshot at open; address reload still rejected
-		return g, nil
 	default:
 		return nil, fmt.Errorf("server: unsupported backend_server.mode %q", mode)
 	}
+	return executor.New(mode, g)
 }
 
 // Addr returns the bound listen address.
@@ -156,7 +158,7 @@ func (s *Server) onConn(c net.Conn) {
 
 	_ = proxy.Serve(s.ctx, c, proxy.SessionConfig{
 		Users: s.rt.UserProvider(),
-		Group: s.group,
+		Exec:  s.exec,
 	})
 }
 
@@ -176,8 +178,8 @@ func (s *Server) Close() {
 		if s.listener != nil {
 			_ = s.listener.Close()
 		}
-		if s.group != nil {
-			_ = s.group.Close()
+		if s.exec != nil {
+			_ = s.exec.Close()
 		}
 	})
 }

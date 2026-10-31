@@ -6,24 +6,23 @@ import (
 	"net"
 	"strings"
 
-	"github.com/acorndb/prism/pkg/backend_server"
+	"github.com/acorndb/prism/pkg/executor"
 	"github.com/acorndb/prism/pkg/mysql"
 	"github.com/acorndb/prism/pkg/mysql/packet"
 	"github.com/acorndb/prism/pkg/mysql/server"
-	"github.com/acorndb/prism/pkg/router"
 	"github.com/acorndb/prism/pkg/session"
 )
 
-// SessionConfig wires frontend auth and backend topology for passthrough.
+// SessionConfig wires frontend auth and backend executor for passthrough.
 type SessionConfig struct {
 	Users server.UserProvider
-	Group *router.Group
+	Exec  executor.Executor
 }
 
 // Serve runs one frontend connection: handshake then command loop.
 func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
-	if cfg.Group == nil {
-		return fmt.Errorf("proxy: nil backend group")
+	if cfg.Exec == nil {
+		return fmt.Errorf("proxy: nil executor")
 	}
 	sc, err := server.NewConn(raw, cfg.Users)
 	if err != nil {
@@ -35,12 +34,9 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 		st.SetDatabase(db)
 	}
 
-	var sticky backend_server.Backend
-	var stickyPool *backend_server.Pool
+	ec := &executor.Conn{Front: front, State: st}
 	defer func() {
-		if sticky != nil {
-			_ = cfg.Group.Discard(stickyPool, sticky)
-		}
+		_ = cfg.Exec.ReleaseSticky(ec, true)
 	}()
 
 	for {
@@ -64,6 +60,7 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 		if cmd == mysql.ComQuery && len(data) > 1 {
 			sql = string(data[1:])
 		}
+		req := executor.Request{Cmd: cmd, Payload: data, SQL: sql}
 
 		switch cmd {
 		case mysql.ComQuit:
@@ -73,11 +70,8 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 				return err
 			}
 		case mysql.ComInitDB:
-			db := string(data[1:])
-			st.SetDatabase(db)
-			if err := withBackend(ctx, cfg.Group, st, cmd, sql, &sticky, &stickyPool, func(b backend_server.Backend) error {
-				return execCommand(front, b, st, data, false)
-			}); err != nil {
+			st.SetDatabase(string(data[1:]))
+			if err := cfg.Exec.Handle(ctx, ec, req); err != nil {
 				return err
 			}
 		case mysql.ComQuery:
@@ -93,34 +87,22 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 			if v, ok := parseSetAutocommit(sql); ok {
 				st.SetAutocommit(v)
 			}
-			if err := withBackend(ctx, cfg.Group, st, cmd, sql, &sticky, &stickyPool, func(b backend_server.Backend) error {
-				return execCommand(front, b, st, data, false)
-			}); err != nil {
+			if err := cfg.Exec.Handle(ctx, ec, req); err != nil {
 				return err
 			}
 		case mysql.ComStmtPrepare:
 			st.MarkReserved()
-			if err := withBackend(ctx, cfg.Group, st, cmd, sql, &sticky, &stickyPool, func(b backend_server.Backend) error {
-				return execCommand(front, b, st, data, true)
-			}); err != nil {
+			if err := cfg.Exec.Handle(ctx, ec, req); err != nil {
 				return err
 			}
-		case mysql.ComStmtExecute, mysql.ComStmtReset:
-			if err := withBackend(ctx, cfg.Group, st, cmd, sql, &sticky, &stickyPool, func(b backend_server.Backend) error {
-				return execCommand(front, b, st, data, false)
-			}); err != nil {
-				return err
-			}
-		case mysql.ComStmtClose:
-			if err := withBackend(ctx, cfg.Group, st, cmd, sql, &sticky, &stickyPool, func(b backend_server.Backend) error {
-				return writeBackend(b, data)
-			}); err != nil {
+		case mysql.ComStmtExecute, mysql.ComStmtReset, mysql.ComStmtClose:
+			if err := cfg.Exec.Handle(ctx, ec, req); err != nil {
 				return err
 			}
 		case mysql.ComResetConnection:
-			if err := handleComResetConnection(ctx, cfg.Group, st, &sticky, &stickyPool); err != nil {
-				return err
-			}
+			// Match prior behavior: Release failure still clears proxy state.
+			_ = cfg.Exec.ReleaseSticky(ec, false)
+			st.Reset()
 			if err := writeOK(front); err != nil {
 				return err
 			}
@@ -184,7 +166,6 @@ func parseSetAutocommit(sql string) (bool, bool) {
 		return false, false
 	}
 	rest := strings.TrimSpace(s[3:])
-	// strip optional SESSION.
 	if len(rest) >= 7 && strings.EqualFold(rest[:7], "SESSION") {
 		rest = strings.TrimSpace(rest[7:])
 	}
@@ -208,113 +189,6 @@ func parseSetAutocommit(sql string) (bool, bool) {
 	default:
 		return false, false
 	}
-}
-
-func handleComResetConnection(ctx context.Context, g *router.Group, st *session.State, sticky *backend_server.Backend, stickyPool **backend_server.Pool) error {
-	_ = ctx
-	if *sticky != nil {
-		b := *sticky
-		p := *stickyPool
-		*sticky = nil
-		*stickyPool = nil
-		if err := g.Release(p, b); err != nil {
-			st.Reset()
-			return nil
-		}
-	}
-	st.Reset()
-	return nil
-}
-
-func withBackend(
-	ctx context.Context,
-	g *router.Group,
-	st *session.State,
-	cmd byte,
-	sql string,
-	sticky *backend_server.Backend,
-	stickyPool **backend_server.Pool,
-	fn func(backend_server.Backend) error,
-) error {
-	var b backend_server.Backend
-	var p *backend_server.Pool
-	var err error
-
-	if *sticky != nil {
-		b = *sticky
-		p = *stickyPool
-	} else {
-		role := router.Pick(st, cmd, sql)
-		b, p, err = g.Acquire(ctx, role)
-		if err != nil {
-			return err
-		}
-	}
-
-	if err := alignBackend(ctx, b, st); err != nil {
-		if *sticky == nil {
-			_ = g.Release(p, b)
-		}
-		return err
-	}
-
-	ferr := fn(b)
-
-	if st.NeedsSticky() {
-		*sticky = b
-		*stickyPool = p
-		return ferr
-	}
-	*sticky = nil
-	*stickyPool = nil
-	_ = g.Release(p, b)
-	return ferr
-}
-
-func alignBackend(ctx context.Context, b backend_server.Backend, st *session.State) error {
-	a, ok := b.(interface {
-		Align(context.Context, string, string) error
-	})
-	if !ok {
-		return nil
-	}
-	return a.Align(ctx, st.Database(), st.Charset())
-}
-
-func writeBackend(b backend_server.Backend, cmd []byte) error {
-	mb, ok := b.(*backend_server.MySQLBackend)
-	if !ok {
-		return fmt.Errorf("proxy: backend type %T not supported", b)
-	}
-	back := mb.Packet()
-	back.ResetSequence()
-	buf := make([]byte, 4+len(cmd))
-	copy(buf[4:], cmd)
-	return back.WritePacket(buf)
-}
-
-func execCommand(front *packet.Conn, b backend_server.Backend, st *session.State, cmd []byte, prepare bool) error {
-	mb, ok := b.(*backend_server.MySQLBackend)
-	if !ok {
-		return fmt.Errorf("proxy: backend type %T not supported", b)
-	}
-	back := mb.Packet()
-	back.ResetSequence()
-	buf := make([]byte, 4+len(cmd))
-	copy(buf[4:], cmd)
-	if err := back.WritePacket(buf); err != nil {
-		return err
-	}
-	const deprecateEOF = true
-	if prepare {
-		return mysql.ForwardPrepareResponse(front, back, deprecateEOF)
-	}
-	status, err := mysql.ForwardResponse(front, back, deprecateEOF)
-	if err != nil {
-		return err
-	}
-	st.SetInTx(status&mysql.ServerStatusInTrans != 0)
-	return nil
 }
 
 func writeOK(front *packet.Conn) error {

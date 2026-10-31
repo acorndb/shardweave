@@ -13,7 +13,7 @@
 ## 0. 一句话
 
 配置顶层用 **`backend_server`**，用 **`mode: single | rwsplit | sharding`** 表达三种后端形态（产品语义学 dbpack 三 mode，命名用更直白的词）。  
-数据面仍是一条 **`Plan → Dispatch → Merge`**；mode 只装配 Router / 多池，**不**复制三套 Executor。  
+数据面仍是 **`Plan → Dispatch → Merge`**（M1 退化为透传）；mode 经工厂装配 **同接口三 Executor**（Single / RWSplit / Sharding stub，见 [executor-three-mode-design.md](executor-three-mode-design.md)），共享 forward，差异在选源 / 拓扑。  
 `rwsplit` 选源 **对照 kingshard/Gaea/dbpack 源码逐条移植**（§5 规则表）：先会话/事务（`IN_TRANS || !autocommit`），再语句分类；变量靠 **State + Align**，不默认广播 `SET`。禁止脱离开源依据自创规则。
 
 ---
@@ -47,10 +47,10 @@
 | SQL 分类 | AST（Insert/Select…） | parser + fromSlave 标志 | stmtType + token 启发（FOR UPDATE、hint） | **启发规则**（前缀/关键字），性能优先 |
 | 会话压过路由 | `localTransactionMap` 钉 tx | `isInTransaction()` → 强制 master | `isInTransaction` / keepSession → master | **已有 `session.State`：InTx / Reserved / NeedsSticky** |
 | `SET` / 变量 | RWS **`QueryAll` 广播** | 部分 SET 在代理侧处理 + 会话状态 | **会话变量表 + 借连 init** | **State + Align（跟 Gaea/已有池）**；不默认 QueryAll |
-| 上层差异 | 三种大 Executor | ClientConn 内分支多 | SessionExecutor 统一入口 | **统一管线；mode 只换 Router** |
+| 上层差异 | 三种大 Executor | ClientConn 内分支多 | SessionExecutor 统一入口 | **同接口三 Executor + 共享 forward；mode 工厂装配** |
 | 池 | 每 DS 一池 | 每地址 DB | Slice 内多池 | **保持一地址一 `pool.Pool`** |
 
-结论：学 dbpack 的 **三种 mode 叙事**；学 kingshard/Gaea 的 **启发 + 会话状态选源**；学本仓库已有的 **Align / sticky**，不学 dbpack 默认 SET 广播。
+结论：学 dbpack 的 **三种 mode 叙事与三 Executor 拆分**；学 kingshard/Gaea 的 **启发 + 会话状态选源**；学本仓库已有的 **Align / sticky**，不学 dbpack 默认 SET 广播。`sharding` Executor 本阶段仅占位（Validate 拒绝）。
 
 ---
 

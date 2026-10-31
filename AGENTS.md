@@ -121,7 +121,7 @@ files:
 ## 实现时额外约束（本仓库）
 
 - M1 主路径：`NoopRouter → PassthroughPlan → Dispatch(1) → IdentityMerger`；分片/改写/聚合只经预留接口演进。
-- 后端拓扑：配置顶层 `backend_server.mode` = `single` / `rwsplit` / `sharding`（学 dbpack 三 mode 叙事）；mode 只装配 Router，**不**复制三套 Executor。`rwsplit` 选源**对照 kingshard/Gaea 规则移植**（启发 + 会话），**事务/sticky 优先于读从**。详见 E10 与 `docs/design/backend-server-single-rwsplit-design.md`。
+- 后端拓扑：配置顶层 `backend_server.mode` = `single` / `rwsplit` / `sharding`（学 dbpack 三 mode 叙事）。**同接口三 Executor**（`pkg/executor`：Single / RWSplit / Sharding stub），mode 工厂装配；共享 forward，差异在选源。`rwsplit` 选源**对照 kingshard/Gaea 规则移植**（启发 + 会话），**事务/sticky 优先于读从**。详见 E10、`docs/design/backend-server-single-rwsplit-design.md`、`docs/design/executor-three-mode-design.md`。
 - 不采用 Gaea 式「全局物化再计算」作为默认跨片路径；分片规则后置调研。
 - `sharding` / 未实现字段：不要在 YAML 里预留“忽略生效”的假字段；用 KnownFields / Validate **拒绝**。
 - 用户变量 / 临时表 / 锁：会话 **reserved** 钉后端连接；系统变量白名单借连对齐；归还池前优先 `COM_RESET_CONNECTION`。

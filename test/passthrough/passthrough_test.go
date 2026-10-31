@@ -11,6 +11,8 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/acorndb/prism/pkg/backend_server"
+	"github.com/acorndb/prism/pkg/config"
+	"github.com/acorndb/prism/pkg/executor"
 	"github.com/acorndb/prism/pkg/proxy"
 	"github.com/acorndb/prism/pkg/router"
 	"github.com/stretchr/testify/require"
@@ -52,7 +54,9 @@ func TestPassthrough_Select1(t *testing.T) {
 		func(ctx context.Context) (backend_server.Backend, error) {
 			return backend_server.DialMySQL(ctx, mysqlAddr, "smoke", "smoke-pass", "smoke")
 		})
-	t.Cleanup(func() { _ = p.Close() })
+	exec, err := executor.New(config.ModeSingle, &router.Group{Master: p})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = exec.Close() })
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -69,7 +73,7 @@ func TestPassthrough_Select1(t *testing.T) {
 			go func(c net.Conn) {
 				_ = proxy.Serve(serveCtx, c, proxy.SessionConfig{
 					Users: mapUsers{"smoke": "smoke-pass"},
-					Group: &router.Group{Master: p},
+					Exec:  exec,
 				})
 				_ = c.Close()
 			}(c)
