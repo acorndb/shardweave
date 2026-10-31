@@ -4,6 +4,7 @@ package execute
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/acorndb/shardweave/pkg/backend"
 	"github.com/acorndb/shardweave/pkg/mysql"
@@ -103,6 +104,14 @@ func (p *Pipeline) Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement)
 		return fmt.Errorf("execute: nil statement")
 	}
 
+	rewriteSessionFunc(rt.State, stmt)
+	success := false
+	defer func() {
+		if !success {
+			markRowCountError(rt.State, stmt)
+		}
+	}()
+
 	pl, err := p.builder.Build(ctx, rt.State, stmt)
 	if err != nil {
 		return err
@@ -166,14 +175,76 @@ func (p *Pipeline) Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement)
 	if !ok {
 		return fmt.Errorf("execute: stream %T not forwardable", stream)
 	}
-	status, serverErr, err := raw.ForwardTo(ctx, rt.Front)
-	if err == nil && !serverErr {
+	info, err := raw.ForwardTo(ctx, rt.Front)
+	if err == nil && !info.ServerErr {
 		if !req.Prepare && !req.NoReply {
-			rt.State.SetInTx(status&mysql.ServerStatusInTrans != 0)
+			rt.State.SetInTx(info.Status&mysql.ServerStatusInTrans != 0)
 		}
 		applyEffect(rt.State, stmt.Effect)
+		applyResponseState(rt.State, stmt, info)
+		success = true
 	}
 	return err
+}
+
+// rewriteSessionFunc answers SELECT LAST_INSERT_ID()/ROW_COUNT() from session
+// state. The rewritten literal is sent to a backend so the proxy does not need
+// to synthesize a result set; the value is independent of the backend data.
+func rewriteSessionFunc(st *session.State, stmt *sql.Statement) {
+	if stmt.Cmd != mysql.ComQuery {
+		return
+	}
+	fn, ok := sql.ParseSessionFunc(stmt.Raw)
+	if !ok {
+		return
+	}
+	var value string
+	switch fn.Kind {
+	case sql.SessionFuncLastInsertID:
+		value = strconv.FormatUint(st.LastInsertID(), 10)
+	case sql.SessionFuncRowCount:
+		value = strconv.FormatInt(st.RowCount(), 10)
+	}
+	rewritten := fn.Rewrite(value)
+	payload := make([]byte, 1+len(rewritten))
+	payload[0] = mysql.ComQuery
+	copy(payload[1:], rewritten)
+	stmt.Payload = payload
+	stmt.Raw = rewritten
+}
+
+// applyResponseState mirrors MySQL's connection-scoped function semantics:
+// LAST_INSERT_ID persists across statements (only a non-zero OK value updates
+// it); ROW_COUNT is -1 for result sets/errors, affected_rows for DML, and 0 for
+// other OK results.
+func applyResponseState(st *session.State, stmt *sql.Statement, info mysql.ResponseInfo) {
+	if info.LastInsertID != 0 {
+		st.SetLastInsertID(info.LastInsertID)
+	}
+	switch stmt.Cmd {
+	case mysql.ComQuery, mysql.ComStmtExecute:
+	default:
+		return
+	}
+	if info.ResultSet {
+		st.SetRowCount(-1)
+		return
+	}
+	if stmt.Cmd == mysql.ComStmtExecute || sql.IsDML(stmt.Raw) {
+		st.SetRowCount(int64(info.AffectedRows))
+		return
+	}
+	st.SetRowCount(0)
+}
+
+func markRowCountError(st *session.State, stmt *sql.Statement) {
+	if stmt == nil {
+		return
+	}
+	switch stmt.Cmd {
+	case mysql.ComQuery, mysql.ComStmtExecute:
+		st.SetRowCount(-1)
+	}
 }
 
 // applyEffect applies a statement's session effect only after a successful

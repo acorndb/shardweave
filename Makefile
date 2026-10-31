@@ -17,6 +17,7 @@ test-integration:
 	$(GO) test -race -count=1 -timeout 20m -v ./test/differential/ -run 'TestNullProxyCalibration|TestPassthroughDifferential|TestPassthroughQueryScenarios'
 	$(GO) test -race -count=1 -timeout 20m -v ./test/handshake/ -run TestClientDial_RealMySQL
 	$(GO) test -race -count=1 -timeout 20m -v ./test/passthrough/ -run TestPassthrough_Select1
+	$(GO) test -race -count=1 -timeout 15m -v ./test/rwsplit/ -run TestRWSplitRealTopology
 
 lint:
 	$(GO) vet ./...

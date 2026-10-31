@@ -109,6 +109,60 @@ func TestForwardResponseResult_ERR(t *testing.T) {
 	require.Equal(t, [][]byte{er}, <-front)
 }
 
+func TestForwardResponseInfo_OKMetadata(t *testing.T) {
+	src, dst, bw, fr := pipePair(t)
+	ok := mysql.EncodeOK(3, 42, mysql.ServerStatusAutocommit, 1)
+	werr := writePackets(t, bw, [][]byte{ok})
+	front := drainFront(t, fr, 1)
+
+	info, err := mysql.ForwardResponseInfo(dst, src, true)
+	require.NoError(t, err)
+	require.False(t, info.ServerErr)
+	require.False(t, info.ResultSet)
+	require.Equal(t, mysql.ServerStatusAutocommit, info.Status)
+	require.Equal(t, uint64(3), info.AffectedRows)
+	require.Equal(t, uint64(42), info.LastInsertID)
+	require.Equal(t, uint16(1), info.Warnings)
+
+	require.NoError(t, <-werr)
+	require.Equal(t, [][]byte{ok}, <-front)
+}
+
+func TestForwardResponseInfo_ResultSet(t *testing.T) {
+	src, dst, bw, fr := pipePair(t)
+	colCount := []byte{0x01}
+	colDef := []byte{
+		0x03, 'd', 'e', 'f',
+		0x00, 0x00, 0x00,
+		0x01, '1',
+		0x00,
+		0x0c,
+		0x3f, 0x00,
+		0x01, 0x00, 0x00, 0x00,
+		0x08,
+		0x00, 0x00,
+		0x00,
+		0x00, 0x00,
+	}
+	row := []byte{0x01, '1'}
+	eofOK := []byte{0xfe, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00}
+	packets := [][]byte{colCount, colDef, row, eofOK}
+
+	werr := writePackets(t, bw, packets)
+	front := drainFront(t, fr, len(packets))
+
+	info, err := mysql.ForwardResponseInfo(dst, src, true)
+	require.NoError(t, err)
+	require.False(t, info.ServerErr)
+	require.True(t, info.ResultSet)
+	require.Equal(t, mysql.ServerStatusAutocommit, info.Status)
+	require.Zero(t, info.AffectedRows)
+	require.Zero(t, info.LastInsertID)
+
+	require.NoError(t, <-werr)
+	require.Equal(t, packets, <-front)
+}
+
 func TestForwardResponseResult_OK(t *testing.T) {
 	src, dst, bw, fr := pipePair(t)
 	ok := mysql.EncodeOK(1, 0, mysql.ServerStatusAutocommit, 0)

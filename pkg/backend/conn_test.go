@@ -122,13 +122,13 @@ func TestMySQLConn_Exec_ForwardsResponse(t *testing.T) {
 	}()
 
 	raw, ok := stream.(interface {
-		ForwardTo(context.Context, *packet.Conn) (uint16, bool, error)
+		ForwardTo(context.Context, *packet.Conn) (mysql.ResponseInfo, error)
 	})
 	require.True(t, ok)
-	status, serverErr, err := raw.ForwardTo(context.Background(), front)
+	info, err := raw.ForwardTo(context.Background(), front)
 	require.NoError(t, err)
-	require.False(t, serverErr)
-	require.Equal(t, mysql.ServerStatusAutocommit, status)
+	require.False(t, info.ServerErr)
+	require.Equal(t, mysql.ServerStatusAutocommit, info.Status)
 	require.NotNil(t, <-frontRead)
 }
 
@@ -154,13 +154,13 @@ func TestMySQLConn_Exec_NoReply(t *testing.T) {
 	require.Equal(t, payload, <-readCh)
 
 	raw, ok := stream.(interface {
-		ForwardTo(context.Context, *packet.Conn) (uint16, bool, error)
+		ForwardTo(context.Context, *packet.Conn) (mysql.ResponseInfo, error)
 	})
 	require.True(t, ok)
-	status, serverErr, err := raw.ForwardTo(context.Background(), nil)
+	info, err := raw.ForwardTo(context.Background(), nil)
 	require.NoError(t, err)
-	require.False(t, serverErr)
-	require.Equal(t, uint16(0), status)
+	require.False(t, info.ServerErr)
+	require.Equal(t, uint16(0), info.Status)
 }
 
 func TestMySQLConn_Exec_EmptyPayload(t *testing.T) {

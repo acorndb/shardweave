@@ -64,8 +64,9 @@ func compareStep(idx int, name string, a, b StepResult) []string {
 
 	// After a statement error, shardweave releases the backend with COM_RESET_CONNECTION,
 	// so session warnings are not preserved across the follow-up SHOW WARNINGS.
-	// Only compare warnings when both sides succeeded.
-	if a.Err == nil && b.Err == nil {
+	// Only compare warnings when both sides succeeded and neither side rejects
+	// SHOW WARNINGS (shardweave returns 1235 by design).
+	if a.Err == nil && b.Err == nil && !a.WarningsUnsupported && !b.WarningsUnsupported {
 		add("warnings数量", len(a.Warnings), len(b.Warnings))
 		for j := range a.Warnings {
 			if j < len(b.Warnings) {

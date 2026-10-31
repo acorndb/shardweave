@@ -21,7 +21,8 @@ func stmt(raw string) *sql.Statement {
 
 func TestBuilder_AllMaster(t *testing.T) {
 	p, err := (plan.Builder{Router: source.AllMaster{}}).Build(
-		context.Background(), session.NewState(), stmt("SELECT 1"))
+		context.Background(), session.NewState(), stmt("SELECT 1"),
+	)
 	require.NoError(t, err)
 	require.Equal(t, plan.Passthrough, p.Kind)
 	require.Len(t, p.Targets, 1)
@@ -62,6 +63,27 @@ type fakeRouter struct {
 
 func (f fakeRouter) Route(context.Context, *session.State, *sql.Statement) ([]route.Target, error) {
 	return f.targets, f.err
+}
+
+func TestBuilder_UnsupportedRejected(t *testing.T) {
+	cases := []string{
+		"SHOW WARNINGS",
+		"SHOW MASTER STATUS",
+		"SET sql_mode = 'ANSI_QUOTES'",
+	}
+	for _, query := range cases {
+		t.Run(query, func(t *testing.T) {
+			p, err := (plan.Builder{Router: source.AllMaster{}}).Build(
+				context.Background(), session.NewState(), stmt(query),
+			)
+			require.NoError(t, err)
+			require.Equal(t, plan.Reject, p.Kind)
+			require.NotNil(t, p.Reject)
+			require.Equal(t, uint16(1235), p.Reject.Code)
+			require.Equal(t, "42000", p.Reject.State)
+			require.NotEmpty(t, p.Reject.Message)
+		})
+	}
 }
 
 func TestBuilder_MultiTargetRejected(t *testing.T) {

@@ -76,6 +76,24 @@ func TestState_Reset(t *testing.T) {
 	require.False(t, s.NeedsSticky())
 }
 
+func TestState_SessionFunctions(t *testing.T) {
+	s := session.NewState()
+	require.Equal(t, uint64(0), s.LastInsertID())
+	require.Equal(t, int64(-1), s.RowCount())
+
+	s.SetLastInsertID(42)
+	s.SetRowCount(3)
+	require.Equal(t, uint64(42), s.LastInsertID())
+	require.Equal(t, int64(3), s.RowCount())
+
+	s.SetLastInsertID(7)
+	require.Equal(t, uint64(7), s.LastInsertID(), "later inserts replace the value")
+
+	s.Reset()
+	require.Equal(t, uint64(0), s.LastInsertID(), "COM_RESET_CONNECTION clears LAST_INSERT_ID")
+	require.Equal(t, int64(-1), s.RowCount(), "COM_RESET_CONNECTION resets ROW_COUNT")
+}
+
 func TestDetectReservedSQL(t *testing.T) {
 	cases := []struct {
 		sql  string
@@ -90,6 +108,12 @@ func TestDetectReservedSQL(t *testing.T) {
 		{"SELECT RELEASE_LOCK('a')", true},
 		{"LOCK TABLES t READ", true},
 		{"SET NAMES utf8mb4", false},
+		// @@system_var is not a user variable: reading it must not pin the session.
+		{"SELECT @@server_id", false},
+		{"SELECT @@GLOBAL.max_connections", false},
+		{"SET @@SESSION.sql_mode = 'ANSI'", false},
+		// User variable reads are connection-scoped too.
+		{"SELECT @probe", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.sql, func(t *testing.T) {

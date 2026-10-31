@@ -24,17 +24,20 @@ import (
 type fakeConn struct {
 	tag string
 
-	mu        sync.Mutex
-	status    uint16
-	serverErr bool
-	alignErr  error
-	execErr   error
-	execCalls int
-	aligns    int
-	resets    int
-	closed    bool
-	lastReq   backend.ExecRequest
-	lastAlign backend.AlignSettings
+	mu           sync.Mutex
+	status       uint16
+	serverErr    bool
+	affectedRows uint64
+	lastInsertID uint64
+	resultSet    bool
+	alignErr     error
+	execErr      error
+	execCalls    int
+	aligns       int
+	resets       int
+	closed       bool
+	lastReq      backend.ExecRequest
+	lastAlign    backend.AlignSettings
 }
 
 func (c *fakeConn) Ping(context.Context) error {
@@ -48,11 +51,18 @@ func (c *fakeConn) Exec(_ context.Context, req backend.ExecRequest) (result.Stre
 	c.execCalls++
 	c.lastReq = req
 	status, serverErr, err := c.status, c.serverErr, c.execErr
+	affected, lastID, resultSet := c.affectedRows, c.lastInsertID, c.resultSet
 	c.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	return &fakeStream{status: status, serverErr: serverErr}, nil
+	return &fakeStream{
+		status:       status,
+		serverErr:    serverErr,
+		affectedRows: affected,
+		lastInsertID: lastID,
+		resultSet:    resultSet,
+	}, nil
 }
 
 func (c *fakeConn) Align(_ context.Context, s backend.AlignSettings) error {
@@ -79,13 +89,22 @@ func (c *fakeConn) Close() error {
 }
 
 type fakeStream struct {
-	status    uint16
-	serverErr bool
-	closed    bool
+	status       uint16
+	serverErr    bool
+	affectedRows uint64
+	lastInsertID uint64
+	resultSet    bool
+	closed       bool
 }
 
-func (s *fakeStream) ForwardTo(context.Context, *packet.Conn) (uint16, bool, error) {
-	return s.status, s.serverErr, nil
+func (s *fakeStream) ForwardTo(context.Context, *packet.Conn) (mysql.ResponseInfo, error) {
+	return mysql.ResponseInfo{
+		Status:       s.status,
+		ServerErr:    s.serverErr,
+		AffectedRows: s.affectedRows,
+		LastInsertID: s.lastInsertID,
+		ResultSet:    s.resultSet,
+	}, nil
 }
 
 func (s *fakeStream) Fields() []result.Field { return nil }
@@ -491,4 +510,99 @@ func TestPipeline_NilInputs(t *testing.T) {
 	require.Error(t, p.Handle(context.Background(), newRuntime(), nil))
 	require.NoError(t, p.Release(nil, false))
 	require.NoError(t, p.Release(newRuntime(), true))
+}
+
+func TestPipeline_CapturesOKMetadata(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
+		c.affectedRows = 3
+		c.lastInsertID = 42
+	}))), plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	require.NoError(t, p.Handle(context.Background(), rt, query("INSERT INTO t VALUES (1)")))
+	require.Equal(t, uint64(42), rt.State.LastInsertID())
+	require.Equal(t, int64(3), rt.State.RowCount())
+}
+
+func TestPipeline_LastInsertIDRewrite(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
+		c.resultSet = true
+	}))), plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	rt.State.SetLastInsertID(42)
+	require.NoError(t, p.Handle(context.Background(), rt, query("SELECT LAST_INSERT_ID() AS id")))
+	require.Equal(t, "SELECT CAST(42 AS UNSIGNED) AS `id`", string(tr.last(t).lastReq.Payload[1:]))
+	require.Equal(t, int64(-1), rt.State.RowCount())
+}
+
+func TestPipeline_RowCountRewrite(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
+		c.resultSet = true
+	}))), plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	rt.State.SetRowCount(3)
+	require.NoError(t, p.Handle(context.Background(), rt, query("SELECT ROW_COUNT()")))
+	require.Equal(t, "SELECT CAST(3 AS SIGNED) AS `ROW_COUNT()`", string(tr.last(t).lastReq.Payload[1:]))
+	require.Equal(t, int64(-1), rt.State.RowCount(), "the SELECT itself resets ROW_COUNT to -1")
+}
+
+func TestPipeline_ResultSetResetsRowCount(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
+		c.resultSet = true
+	}))), plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	rt.State.SetRowCount(5)
+	require.NoError(t, p.Handle(context.Background(), rt, query("SELECT 1")))
+	require.Equal(t, int64(-1), rt.State.RowCount())
+}
+
+func TestPipeline_ServerErrorResetsRowCount(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
+		c.serverErr = true
+	}))), plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	rt.State.SetRowCount(5)
+	rt.State.SetLastInsertID(7)
+	require.NoError(t, p.Handle(context.Background(), rt, query("INSERT INTO t VALUES (1)")))
+	require.Equal(t, int64(-1), rt.State.RowCount())
+	require.Equal(t, uint64(7), rt.State.LastInsertID(), "failed statement must not change LAST_INSERT_ID")
+}
+
+func TestPipeline_DDLResetsRowCountToZero(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, nil))),
+		plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	rt.State.SetRowCount(5)
+	require.NoError(t, p.Handle(context.Background(), rt, query("CREATE TABLE t (id INT)")))
+	require.Equal(t, int64(0), rt.State.RowCount())
+}
+
+func TestPipeline_PreparedExecuteUsesAffectedRows(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
+		c.affectedRows = 2
+	}))), plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	stmt := &sql.Statement{Cmd: mysql.ComStmtExecute, Payload: []byte{mysql.ComStmtExecute}}
+	require.NoError(t, p.Handle(context.Background(), rt, stmt))
+	require.Equal(t, int64(2), rt.State.RowCount())
 }

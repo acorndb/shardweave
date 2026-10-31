@@ -13,6 +13,7 @@ import (
 	"github.com/acorndb/shardweave/pkg/mysql"
 	"github.com/acorndb/shardweave/pkg/mysql/client"
 	"github.com/acorndb/shardweave/pkg/mysql/packet"
+	"github.com/acorndb/shardweave/pkg/plan"
 	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/acorndb/shardweave/pkg/sql"
 	"github.com/stretchr/testify/require"
@@ -303,4 +304,27 @@ func TestServe_PoolExhaustedWrites1040(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Serve did not exit after pool exhaustion")
 	}
+}
+
+func TestServe_RejectErrorWrites1235AndContinues(t *testing.T) {
+	exec := newFakeExec()
+	exec.handleErr = &plan.RejectError{
+		Code:    1235,
+		State:   "42000",
+		Message: "SHOW WARNINGS is not supported",
+	}
+	pc, serveErr := newProxySession(t, exec)
+
+	writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("SHOW WARNINGS")...))
+	data := readPacket(t, pc)
+	require.Equal(t, byte(mysql.ErrHeader), data[0])
+	require.Equal(t, uint16(1235), binary.LittleEndian.Uint16(data[1:3]))
+	require.Contains(t, string(data[9:]), "SHOW WARNINGS")
+
+	// A rejected statement must not kill the session.
+	writeCommand(t, pc, []byte{mysql.ComPing})
+	data = readPacket(t, pc)
+	require.Equal(t, byte(mysql.OKHeader), data[0])
+
+	quit(t, pc, serveErr)
 }

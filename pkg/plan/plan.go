@@ -74,6 +74,16 @@ func (b Builder) Build(ctx context.Context, st *session.State, stmt *sql.Stateme
 	if stmt == nil {
 		return nil, fmt.Errorf("plan: nil statement")
 	}
+	if reason := sql.UnsupportedReason(stmt.Raw); reason != "" {
+		return &Plan{
+			Kind: Reject,
+			Reject: &RejectError{
+				Code:    1235, // ER_NOT_SUPPORTED_YET
+				State:   "42000",
+				Message: reason,
+			},
+		}, nil
+	}
 	targets, err := b.Router.Route(ctx, st, stmt)
 	if err != nil {
 		return nil, err

@@ -11,6 +11,7 @@ import (
 	"github.com/acorndb/shardweave/pkg/mysql"
 	"github.com/acorndb/shardweave/pkg/mysql/packet"
 	"github.com/acorndb/shardweave/pkg/mysql/server"
+	"github.com/acorndb/shardweave/pkg/plan"
 	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/acorndb/shardweave/pkg/sql"
 )
@@ -93,23 +94,35 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 			}
 		case mysql.ComInitDB:
 			if err := cfg.Exec.Handle(ctx, ec, stmt); err != nil {
-				return handleExecError(front, err)
+				if herr := handleExecError(front, err); herr != nil {
+					return herr
+				}
+				continue
 			}
 		case mysql.ComQuery:
 			if session.DetectReservedSQL(stmt.Raw) {
 				st.MarkReserved()
 			}
 			if err := cfg.Exec.Handle(ctx, ec, stmt); err != nil {
-				return handleExecError(front, err)
+				if herr := handleExecError(front, err); herr != nil {
+					return herr
+				}
+				continue
 			}
 		case mysql.ComStmtPrepare:
 			st.MarkReserved()
 			if err := cfg.Exec.Handle(ctx, ec, stmt); err != nil {
-				return handleExecError(front, err)
+				if herr := handleExecError(front, err); herr != nil {
+					return herr
+				}
+				continue
 			}
 		case mysql.ComStmtExecute, mysql.ComStmtReset, mysql.ComStmtClose:
 			if err := cfg.Exec.Handle(ctx, ec, stmt); err != nil {
-				return handleExecError(front, err)
+				if herr := handleExecError(front, err); herr != nil {
+					return herr
+				}
+				continue
 			}
 		case mysql.ComResetConnection:
 			// Match prior behavior: Release failure still clears proxy state.
@@ -125,6 +138,13 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 }
 
 func handleExecError(front *packet.Conn, err error) error {
+	var rej *plan.RejectError
+	if errors.As(err, &rej) {
+		if werr := writeERR(front, rej.Code, rej.State, rej.Message); werr != nil {
+			return werr
+		}
+		return nil // rejected statement must not kill the session
+	}
 	if errors.Is(err, execute.ErrPoolExhausted) {
 		_ = writeERR(front, 1040, "08004", "Too many connections")
 	}

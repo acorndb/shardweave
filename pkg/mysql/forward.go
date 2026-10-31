@@ -21,26 +21,51 @@ func ForwardResponse(dst, src *packet.Conn, deprecateEOF bool) (serverStatus uin
 	return status, err
 }
 
+// ResponseInfo describes the observable outcome of one command response.
+// ResultSet is true when the last result was a result set (SELECT/SHOW/...),
+// false for an OK/ERR-only response.
+type ResponseInfo struct {
+	Status       uint16
+	ServerErr    bool
+	AffectedRows uint64
+	LastInsertID uint64
+	Warnings     uint16
+	ResultSet    bool
+}
+
 // ForwardResponseResult is ForwardResponse plus whether the backend returned an
 // ERR packet. Callers that mutate session state must skip the mutation when
 // serverErr is true: an ERR packet has no SERVER_STATUS field, so status is 0
 // and is not a valid state transition.
 func ForwardResponseResult(dst, src *packet.Conn, deprecateEOF bool) (serverStatus uint16, serverErr bool, err error) {
+	info, err := ForwardResponseInfo(dst, src, deprecateEOF)
+	return info.Status, info.ServerErr, err
+}
+
+// ForwardResponseInfo copies one command response and returns its OK-packet
+// metadata (affected rows, last insert id, warnings, result-set type).
+func ForwardResponseInfo(dst, src *packet.Conn, deprecateEOF bool) (ResponseInfo, error) {
+	var out ResponseInfo
 	for {
-		var more bool
-		var status uint16
-		var errPacket bool
-		more, status, errPacket, err = forwardOne(dst, src, deprecateEOF)
+		one, more, err := forwardOne(dst, src, deprecateEOF)
 		if err != nil {
-			return 0, false, err
+			return ResponseInfo{}, err
 		}
-		if errPacket {
-			serverErr = true
+		if one.ServerErr {
+			out.ServerErr = true
 		} else {
-			serverStatus = status
+			out.Status = one.Status
 		}
+		if one.LastInsertID != 0 {
+			out.LastInsertID = one.LastInsertID
+		}
+		if !one.ResultSet && !one.ServerErr {
+			out.AffectedRows = one.AffectedRows
+			out.Warnings = one.Warnings
+		}
+		out.ResultSet = one.ResultSet
 		if !more {
-			return serverStatus, serverErr, nil
+			return out, nil
 		}
 	}
 }
@@ -80,53 +105,54 @@ func ForwardPrepareResponse(dst, src *packet.Conn, deprecateEOF bool) error {
 	return nil
 }
 
-func forwardOne(dst, src *packet.Conn, deprecateEOF bool) (more bool, status uint16, serverErr bool, err error) {
+func forwardOne(dst, src *packet.Conn, deprecateEOF bool) (info ResponseInfo, more bool, err error) {
 	data, err := src.ReadPacket()
 	if err != nil {
-		return false, 0, false, err
+		return ResponseInfo{}, false, err
 	}
 	if err := writePayload(dst, data); err != nil {
-		return false, 0, false, err
+		return ResponseInfo{}, false, err
 	}
 	if len(data) == 0 {
-		return false, 0, false, nil
+		return ResponseInfo{}, false, nil
 	}
 	switch data[0] {
 	case ErrHeader:
-		return false, 0, true, nil
+		return ResponseInfo{ServerErr: true}, false, nil
 	case OKHeader:
-		status = okStatus(data)
-		return statusHasMore(status), status, false, nil
+		info.Status, info.AffectedRows, info.LastInsertID, info.Warnings = parseOK(data)
+		return info, statusHasMore(info.Status), nil
 	case 0xfb: // LOCAL INFILE — not supported in P1/P2
-		return false, 0, false, fmt.Errorf("mysql: LOCAL INFILE not supported")
+		return ResponseInfo{}, false, fmt.Errorf("mysql: LOCAL INFILE not supported")
 	}
 
+	info.ResultSet = true
 	cols, _, err := readLenEncInt(data)
 	if err != nil {
-		return false, 0, false, err
+		return ResponseInfo{}, false, err
 	}
 	if err := forwardDefinitions(dst, src, cols, deprecateEOF); err != nil {
-		return false, 0, false, err
+		return ResponseInfo{}, false, err
 	}
 
 	for {
 		row, err := src.ReadPacket()
 		if err != nil {
-			return false, 0, false, err
+			return ResponseInfo{}, false, err
 		}
 		if err := writePayload(dst, row); err != nil {
-			return false, 0, false, err
+			return ResponseInfo{}, false, err
 		}
 		if len(row) == 0 {
 			continue
 		}
 		if row[0] == ErrHeader {
-			return false, 0, true, nil
+			return ResponseInfo{ResultSet: true, ServerErr: true}, false, nil
 		}
 		// Terminator: classic EOF or OK-replacing-EOF (0xfe, len < 9).
 		if row[0] == EOFHeader && len(row) < 9 {
-			status = eofStatus(row, deprecateEOF)
-			return statusHasMore(status), status, false, nil
+			info.Status = eofStatus(row, deprecateEOF)
+			return info, statusHasMore(info.Status), nil
 		}
 	}
 }
@@ -161,26 +187,34 @@ func statusHasMore(status uint16) bool {
 	return status&ServerMoreResultsExists != 0
 }
 
-// okStatus extracts SERVER_STATUS from a PROTOCOL_41 OK payload.
-func okStatus(data []byte) uint16 {
+// parseOK extracts affected rows, last insert id, status and warnings from a
+// PROTOCOL_41 OK payload.
+func parseOK(data []byte) (status uint16, affectedRows, lastInsertID uint64, warnings uint16) {
 	if len(data) < 1 || data[0] != OKHeader {
-		return 0
+		return 0, 0, 0, 0
 	}
 	pos := 1
-	_, adv, err := readLenEncInt(data[pos:])
+	var adv int
+	var err error
+	affectedRows, adv, err = readLenEncInt(data[pos:])
 	if err != nil {
-		return 0
+		return 0, 0, 0, 0
 	}
 	pos += adv
-	_, adv, err = readLenEncInt(data[pos:])
+	lastInsertID, adv, err = readLenEncInt(data[pos:])
 	if err != nil {
-		return 0
+		return 0, 0, 0, 0
 	}
 	pos += adv
 	if pos+2 > len(data) {
-		return 0
+		return 0, 0, 0, 0
 	}
-	return binary.LittleEndian.Uint16(data[pos : pos+2])
+	status = binary.LittleEndian.Uint16(data[pos : pos+2])
+	pos += 2
+	if pos+2 <= len(data) {
+		warnings = binary.LittleEndian.Uint16(data[pos : pos+2])
+	}
+	return status, affectedRows, lastInsertID, warnings
 }
 
 // eofStatus extracts SERVER_STATUS from classic EOF or deprecate-EOF terminator.

@@ -12,6 +12,8 @@
 ### 0.1 已有
 
 - `pkg/*` 单元测试：协议编解码、握手、池、路由规则、计划骨架、配置。
+- `test/harness` + `test/rwsplit`：真实 MySQL 主从（GTID 复制）+ 进程内代理 +
+  `go-sql-driver` 客户端的行为矩阵。
 - `test/differential`：`CalibrationScript` 经真代理 vs 直连 MySQL 的透传差分。
 - `test/handshake`、`test/passthrough`：握手与真代理冒烟。
 - 本次 R1/R2 后的聚焦覆盖率：
@@ -178,6 +180,11 @@
 - **SQLancer 的 oracle 思想**可在 T4 变形测试里借鉴（例如同一查询的不同写法
   必须同结果），但不引入 Java 工具链。
 
+补充评估（2026-10-31）：`github.com/chaos-mesh/go-sqlsmith` 可种子化、
+schema-aware，但会让主模块引入 **368 个模块**（TiDB 依赖树），且 depth≥2
+生成的 SQL 出现未定义别名（如 `s1.c5`），因此不进入主模块。随机层采用
+`test/randgen` 仓内小生成器：零依赖、SQL 保证可在 MySQL 8.0 执行。
+
 ## 6. 推荐目标架构
 
 ### 6.1 目录
@@ -188,6 +195,8 @@ test/
 │   ├── route/              # 纯 route/plan case（无 Docker）
 │   ├── sql/                # 代理 vs 直连 case（YAML）
 │   └── mysql-test/         # 可选：MTR 白名单 .test
+├── harness/                # 真实 MySQL 主从 + 进程内代理
+├── rwsplit/                # 真实客户端 rwsplit 行为矩阵
 ├── differential/           # 现有 runner：对比、录制、失败最小化
 ├── randgen/                # 种子化随机 SQL 生成 + shrink
 ├── metamorphic/            # 分片 vs 单库（P4）
@@ -233,6 +242,40 @@ CI 分层：
 - **PR**：`test-unit` + `test-corpus`（快）。
 - **merge**：`test-differential` 子集 + `test-e2e` 冒烟。
 - **nightly**：全量差分、randgen、MTR 白名单、fuzz 长跑、MySQL 5.7/8.0 矩阵。
+
+### 6.4 真实拓扑 harness（已落地）
+
+`test/harness` 提供真实环境，不再依赖 fake 角色：
+
+- `StartTopology(ctx, n)`：起 1 master + N replica（`mysql:8.0`），
+  开 `log-bin` + `gtid-mode=ON`，用
+  `CHANGE REPLICATION SOURCE ... SOURCE_AUTO_POSITION=1` 建真复制；
+  追平后对从库 `SET GLOBAL read_only=ON`，误写会以 1290 显式失败。
+- `Topology.Sync`：用 `WAIT_FOR_EXECUTED_GTID_SET(master_gtid, 30)` 等所有从库追平，
+  不靠 sleep。
+- `StartProxy`：进程内启动真实 `server.Server`（rwsplit 装配），监听 loopback。
+- `test/rwsplit`：`go-sql-driver` 真实连接，直连 master 作为 oracle，验证：
+  从库 read_only、普通 SELECT 落从库、代理写入到主库并复制、事务 pin 主库、
+  prepared round-trip、用户变量会话粘滞、MySQL errno 透传。
+
+运行：
+
+```bash
+go test -race -count=1 -timeout 10m -v ./test/rwsplit/
+```
+
+需要 Docker；`-short` 自动 Skip；CI 的 `make test-integration` 已包含。
+后续可对从库 `STOP REPLICA` / `START REPLICA` 制造确定性延迟，验证
+`read_after_write` 窗口与从库故障切换，不需要 fake clock。
+
+随机差分（`test/randgen` + `test/rwsplit/random_test.go`）：
+
+- 种子化生成 SELECT：投影、算术、聚合、JOIN、WHERE、ORDER BY、LIMIT；
+- 同一 seed 完全可复现；同一 SQL 分别直连 master 与经代理执行，
+  比较列、行、errno/message；
+- 默认 120 条/轮，`SHARDWEAVE_RANDOM_QUERIES` 调数量，
+  `SHARDWEAVE_RANDOM_SEED` 调种子；
+- 行结果排序后比较，本轮只验证读路径转发一致性，不验证 ORDER BY 排序本身。
 
 ## 7. 落地顺序
 

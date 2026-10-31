@@ -12,10 +12,16 @@ type State struct {
 	autocommit bool
 	reserved   bool
 	charset    string
+
+	// Connection-scoped information functions. They are answered by the proxy
+	// from these fields, not by the backend connection currently in use.
+	lastInsertID uint64
+	rowCount     int64
 }
 
 // NewState returns a session state with MySQL-default autocommit=ON.
-func NewState() *State { return &State{autocommit: true} }
+// ROW_COUNT() is -1 until a statement sets it.
+func NewState() *State { return &State{autocommit: true, rowCount: -1} }
 
 func (s *State) Database() string { return s.database }
 func (s *State) SetDatabase(db string) {
@@ -53,6 +59,24 @@ func (s *State) SetCharset(cs string) {
 	s.charset = cs
 }
 
+// LastInsertID is the value LAST_INSERT_ID() would return for this session.
+func (s *State) LastInsertID() uint64 { return s.lastInsertID }
+
+// SetLastInsertID updates the session value. Callers should only apply a
+// non-zero OK-packet last_insert_id: zero means "unchanged" in MySQL.
+func (s *State) SetLastInsertID(id uint64) {
+	s.lastInsertID = id
+}
+
+// RowCount is the value ROW_COUNT() would return for this session.
+func (s *State) RowCount() int64 { return s.rowCount }
+
+// SetRowCount updates the session value (-1 for SELECT/error, affected rows
+// for DML, 0 for DDL/SET/transaction statements).
+func (s *State) SetRowCount(n int64) {
+	s.rowCount = n
+}
+
 // Reset clears transaction/reserved/charset state for COM_RESET_CONNECTION.
 // Current database is preserved (MySQL COM_RESET_CONNECTION semantics).
 func (s *State) Reset() {
@@ -60,6 +84,8 @@ func (s *State) Reset() {
 	s.autocommit = true
 	s.reserved = false
 	s.charset = ""
+	s.lastInsertID = 0
+	s.rowCount = -1
 }
 
 // NeedsSticky reports whether the session must keep the same backend connection.
@@ -97,6 +123,11 @@ func hasUserVariableAssign(sql string) bool {
 			continue
 		}
 		if i+1 >= len(sql) {
+			continue
+		}
+		if sql[i+1] == '@' {
+			// Skip the "@@" system-variable pair: it is not connection-scoped.
+			i++
 			continue
 		}
 		r := rune(sql[i+1])

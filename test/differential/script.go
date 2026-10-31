@@ -40,6 +40,9 @@ type StepResult struct {
 	ResultSets []ResultSet  // Query 步骤与 prepared 的 query runs
 	Execs      []ExecResult // prepared 的 exec runs
 	Warnings   []WarningRow // 步骤后 SHOW WARNINGS 的观测
+	// WarningsUnsupported is set when the endpoint rejects SHOW WARNINGS
+	// (shardweave returns 1235 by design). Warnings are then not comparable.
+	WarningsUnsupported bool
 }
 
 // ResultSet 是一个结果集的归一化快照。
@@ -93,7 +96,7 @@ func RunScript(ctx context.Context, dsn string, steps []Step) ([]StepResult, err
 	results := make([]StepResult, 0, len(steps))
 	for _, s := range steps {
 		res := runStep(ctx, conn, s)
-		res.Warnings = showWarnings(ctx, conn)
+		res.Warnings, res.WarningsUnsupported = showWarnings(ctx, conn)
 		results = append(results, res)
 	}
 	return results, nil
@@ -192,21 +195,25 @@ func readResultSet(rows *sql.Rows) (ResultSet, error) {
 	return rs, rows.Err()
 }
 
-func showWarnings(ctx context.Context, conn *sql.Conn) []WarningRow {
+func showWarnings(ctx context.Context, conn *sql.Conn) ([]WarningRow, bool) {
 	rows, err := conn.QueryContext(ctx, "SHOW WARNINGS")
 	if err != nil {
-		return nil
+		var me *mysql.MySQLError
+		if errors.As(err, &me) && me.Number == 1235 {
+			return nil, true
+		}
+		return nil, false
 	}
 	defer rows.Close()
 	var out []WarningRow
 	for rows.Next() {
 		var level, code, message string
 		if err := rows.Scan(&level, &code, &message); err != nil {
-			return out
+			return out, false
 		}
 		out = append(out, WarningRow{Level: level, Code: code, Message: message})
 	}
-	return out
+	return out, false
 }
 
 // normalize 把驱动扫描出的任意值归一化为确定性的字符串表示。
