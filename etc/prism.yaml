@@ -44,7 +44,7 @@ pool:
   idle_timeout: 5m
   max_lifetime: 1h
   health_check_interval: 30s
-  acquire_timeout: 0  # 0 = fail fast when max_capacity is exhausted; >0 = wait up to
+  acquire_timeout: 0s  # 0s = fail fast when max_capacity is exhausted; >0 = wait up to
   dial_timeout: 5s
   read_timeout: 30s
   write_timeout: 30s
