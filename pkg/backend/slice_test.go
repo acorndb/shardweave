@@ -28,7 +28,7 @@ func (s *sliceStubConn) Align(context.Context, backend.AlignSettings) error { re
 func newPool(t *testing.T, idBase int, fail bool) *backend.Pool {
 	t.Helper()
 	var n atomic.Int32
-	return backend.NewPool(backend.PoolConfig{Capacity: 0, MaxCapacity: 4, GetTimeout: time.Second}, func(ctx context.Context) (backend.Conn, error) {
+	return backend.NewPool(backend.PoolConfig{Capacity: 0, MaxCapacity: 4, AcquireTimeout: time.Second}, func(ctx context.Context) (backend.Conn, error) {
 		if fail {
 			return nil, errors.New("dial fail")
 		}

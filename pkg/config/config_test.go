@@ -35,7 +35,7 @@ pool:
   idle_timeout: 5m
   max_lifetime: 1h
   health_check_interval: 30s
-  get_timeout: 3s
+  acquire_timeout: 3s
   dial_timeout: 4s
   read_timeout: 15s
   write_timeout: 16s
@@ -61,7 +61,7 @@ func TestLoadFile_OK_Single(t *testing.T) {
 	require.Equal(t, 5*time.Minute, cfg.Pool.IdleTimeout)
 	require.Equal(t, time.Hour, cfg.Pool.MaxLifetime)
 	require.Equal(t, 30*time.Second, cfg.Pool.HealthCheckInterval)
-	require.Equal(t, 3*time.Second, cfg.Pool.GetTimeout)
+	require.Equal(t, 3*time.Second, cfg.Pool.AcquireTimeout)
 	require.Equal(t, 4*time.Second, cfg.Pool.DialTimeout)
 	require.Equal(t, 15*time.Second, cfg.Pool.ReadTimeout)
 	require.Equal(t, 16*time.Second, cfg.Pool.WriteTimeout)
@@ -362,7 +362,7 @@ pool:
   idle_timeout: 5m
   max_lifetime: 1h
   health_check_interval: 30s
-  get_timeout: 3s
+  acquire_timeout: 3s
   dial_timeout: 4s
   read_timeout: 15s
   write_timeout: 16s

@@ -50,7 +50,7 @@ func TestPassthrough_Select1(t *testing.T) {
 	require.NoError(t, err)
 	mysqlAddr := net.JoinHostPort(host, port.Port())
 
-	p := backend.NewPool(backend.PoolConfig{Capacity: 1, MaxCapacity: 4, GetTimeout: 5 * time.Second},
+	p := backend.NewPool(backend.PoolConfig{Capacity: 1, MaxCapacity: 4, AcquireTimeout: 5 * time.Second},
 		func(ctx context.Context) (backend.Conn, error) {
 			return backend.DialMySQL(ctx, mysqlAddr, "smoke", "smoke-pass", "smoke")
 		})

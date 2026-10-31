@@ -80,7 +80,7 @@ type Pool struct {
 	IdleTimeout         time.Duration `yaml:"idle_timeout"`
 	MaxLifetime         time.Duration `yaml:"max_lifetime"`
 	HealthCheckInterval time.Duration `yaml:"health_check_interval"`
-	GetTimeout          time.Duration `yaml:"get_timeout"`
+	AcquireTimeout      time.Duration `yaml:"acquire_timeout"`
 	DialTimeout         time.Duration `yaml:"dial_timeout"`
 	ReadTimeout         time.Duration `yaml:"read_timeout"`
 	WriteTimeout        time.Duration `yaml:"write_timeout"`

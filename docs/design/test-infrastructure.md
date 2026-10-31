@@ -26,7 +26,7 @@
 | `pkg/config` | 93.8%（R5 后） |
 | `pkg/mysql` | 69.0% |
 | `pkg/mysql/packet` | 75.5% |
-| `pkg/backend` | 71.9% |
+| `pkg/backend` | 72.1% |
 | `pkg/server` | 64.1% |
 
 ### 0.2 缺口

@@ -102,7 +102,8 @@
 ### 3.4 连接池健康与故障处理
 
 > 2026-10-31 `feat/pool-hardening` 已补：`Conn.Ping` 健康检查、idle reaper
-> （`IdleTimeout`）、`MaxIdle`、`MaxLifetime`、`Capacity` 预热、`Pool.Stats()`。
+> （`IdleTimeout`）、`MaxIdle`、`MaxLifetime`、`Capacity` 预热、`Pool.Stats()`、
+> `acquire_timeout`（默认 0 = 池满 fail-fast；>0 才等待）。
 > 仍缺：查询失败重试/换库、全局/每用户上限、池指标、warmup 失败日志。
 
 | 缺口 | 证据 | 影响 |

@@ -124,7 +124,7 @@ func (t *tracker) last(tb testing.TB) *fakeConn {
 
 func newPool(t *testing.T, tag string, tr *tracker, configure func(*fakeConn)) *backend.Pool {
 	t.Helper()
-	p := backend.NewPool(backend.PoolConfig{Capacity: 0, MaxCapacity: 4, GetTimeout: time.Second},
+	p := backend.NewPool(backend.PoolConfig{Capacity: 0, MaxCapacity: 4, AcquireTimeout: time.Second},
 		func(context.Context) (backend.Conn, error) {
 			c := &fakeConn{tag: tag, status: mysql.ServerStatusAutocommit}
 			if configure != nil {

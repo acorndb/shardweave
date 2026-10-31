@@ -220,7 +220,7 @@ func toPoolConfig(c config.Pool) backend.PoolConfig {
 		IdleTimeout:         c.IdleTimeout,
 		MaxLifetime:         c.MaxLifetime,
 		HealthCheckInterval: c.HealthCheckInterval,
-		GetTimeout:          c.GetTimeout,
+		AcquireTimeout:      c.AcquireTimeout,
 		DialTimeout:         c.DialTimeout,
 		ReadTimeout:         c.ReadTimeout,
 		WriteTimeout:        c.WriteTimeout,

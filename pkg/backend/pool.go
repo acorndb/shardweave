@@ -11,6 +11,10 @@ import (
 // OpenFunc creates a new backend connection.
 type OpenFunc func(ctx context.Context) (Conn, error)
 
+// ErrPoolExhausted is returned when the pool is at MaxCapacity and the
+// configured AcquireTimeout is zero (fail-fast).
+var ErrPoolExhausted = errors.New("pool: exhausted")
+
 // PoolConfig controls pool sizing, health checks and recycling.
 type PoolConfig struct {
 	Capacity            int           // initial idle target (best-effort async warmup)
@@ -19,7 +23,7 @@ type PoolConfig struct {
 	IdleTimeout         time.Duration // close idle connections after this duration (0 = disabled)
 	MaxLifetime         time.Duration // close connections older than this (0 = unlimited)
 	HealthCheckInterval time.Duration // ping idle conns older than this (0 = default 30s; <0 disables)
-	GetTimeout          time.Duration // acquire / ping / reset timeout
+	AcquireTimeout      time.Duration // wait when exhausted; 0 = fail fast
 	DialTimeout         time.Duration // backend TCP + handshake timeout
 	ReadTimeout         time.Duration // backend per-read I/O timeout
 	WriteTimeout        time.Duration // backend per-write I/O timeout
@@ -67,8 +71,8 @@ func NewPool(cfg PoolConfig, open OpenFunc) *Pool {
 	if cfg.Capacity > cfg.MaxIdle {
 		cfg.Capacity = cfg.MaxIdle
 	}
-	if cfg.GetTimeout <= 0 {
-		cfg.GetTimeout = 2 * time.Second
+	if cfg.AcquireTimeout < 0 {
+		cfg.AcquireTimeout = 0
 	}
 	if cfg.HealthCheckInterval == 0 {
 		cfg.HealthCheckInterval = 30 * time.Second
@@ -96,6 +100,18 @@ func (p *Pool) liveLocked() int {
 	return p.active + len(p.idle)
 }
 
+// opTimeout bounds internal reset/ping/warmup contexts; per-packet I/O
+// deadlines are enforced by packet.Conn.
+func (p *Pool) opTimeout() time.Duration {
+	if p.cfg.ReadTimeout > 0 {
+		return p.cfg.ReadTimeout
+	}
+	if p.cfg.DialTimeout > 0 {
+		return p.cfg.DialTimeout
+	}
+	return 5 * time.Second
+}
+
 // Stats is a point-in-time pool snapshot for diagnostics/metrics.
 type Stats struct {
 	Active int
@@ -114,10 +130,15 @@ func (p *Pool) Stats() Stats {
 }
 
 // Acquire returns an idle backend or opens a new one up to MaxCapacity.
+// When the pool is exhausted, AcquireTimeout controls whether to wait
+// (AcquireTimeout > 0) or fail fast (AcquireTimeout == 0).
 func (p *Pool) Acquire(ctx context.Context) (Conn, error) {
-	deadline := time.Now().Add(p.cfg.GetTimeout)
-	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
-		deadline = dl
+	var deadline time.Time
+	if p.cfg.AcquireTimeout > 0 {
+		deadline = time.Now().Add(p.cfg.AcquireTimeout)
+		if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+			deadline = dl
+		}
 	}
 
 	for {
@@ -142,7 +163,7 @@ func (p *Pool) Acquire(ctx context.Context) (Conn, error) {
 				continue
 			}
 			if p.needPing(ic.since) {
-				pingCtx, cancel := context.WithTimeout(ctx, p.cfg.GetTimeout)
+				pingCtx, cancel := context.WithTimeout(ctx, p.opTimeout())
 				err := ic.conn.Ping(pingCtx)
 				cancel()
 				if err != nil {
@@ -197,8 +218,11 @@ func (p *Pool) Acquire(ctx context.Context) (Conn, error) {
 		}
 		p.mu.Unlock()
 
+		if p.cfg.AcquireTimeout <= 0 {
+			return nil, fmt.Errorf("%w (max_capacity=%d)", ErrPoolExhausted, p.cfg.MaxCapacity)
+		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("pool: get timeout after %s", p.cfg.GetTimeout)
+			return nil, fmt.Errorf("%w after %s", ErrPoolExhausted, p.cfg.AcquireTimeout)
 		}
 		select {
 		case <-ctx.Done():
@@ -214,7 +238,7 @@ func (p *Pool) Release(b Conn) error {
 	if b == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.GetTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), p.opTimeout())
 	defer cancel()
 	resetErr := b.Reset(ctx)
 
@@ -311,7 +335,7 @@ func (p *Pool) warmup() {
 			p.mu.Unlock()
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), p.cfg.GetTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), p.opTimeout())
 		b, err := open(ctx)
 		cancel()
 
