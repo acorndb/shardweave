@@ -39,7 +39,7 @@
    无 MySQL 的驱动测试。
 3. **差分只有一组固定脚本**，没有 case 格式、录制/回放、失败最小化。
 4. **没有随机 SQL / 语法覆盖**：手写语料增长慢，容易漏掉语法组合。
-5. **没有变形测试**：分片 vs 单库的一致性没有自动门禁。
+5. **变形测试仅覆盖无 GROUP BY 聚合**：`test/metamorphic` 已有分片 vs 单库 oracle；ORDER BY/LIMIT、随机数据与 GROUP BY 尚未覆盖。
 6. **R1/R2 的验证边界**：做完了静态 diff 复核、`go build`、`go vet`、变更包
    聚焦测试和覆盖率；**差分没有跑**（Docker 当前不可用，且按 AGENTS 需要用户
    明确批准）。所以“行为不变”目前是“按重构方式保证 + 聚焦测试验证”，
@@ -267,6 +267,25 @@ go test -race -count=1 -timeout 10m -v ./test/rwsplit/
 需要 Docker；`-short` 自动 Skip；CI 的 `make test-integration` 已包含。
 后续可对从库 `STOP REPLICA` / `START REPLICA` 制造确定性延迟，验证
 从库健康探测、坏从库屏蔽与故障回落，不需要 fake clock。不做 read-after-write 窗口。
+
+分片聚合 metamorphic（2026-10-31）：
+
+- `test/metamorphic/aggregate_test.go`：2 个 master-only slice + 1 个独立
+  MySQL oracle；同一份 24 行数据（含 NULL、负数）按 `user_id % 2` 分布，
+  oracle 保存全量；
+- 对 `COUNT(*) / COUNT(amount) / SUM / MIN / MAX`、跨片 IN、非键过滤、
+  范围过滤逐条比较列名与值；数值按 big.Rat 归一化，NULL 语义单独比较；
+- 这是聚合归并的独立 oracle，不再只依赖手写期望值。
+
+分片复制拓扑（2026-10-31）：
+
+- `StartShardedTopologyWithReplicas(ctx, slices, replicas)`：每个 slice 独立
+  master + GTID 从库，从库 `read_only`；`ShardedTopology.Sync` 等待所有分片
+  复制追平；
+- `test/sharding/replica_test.go`（`TestShardedReplicas`）：2 slice ×
+  (1 master + 1 replica)，验证写主读从、scatter/ORDER BY/LIMIT OFFSET/聚合、
+  prepared、错误拒绝与会话恢复；
+- master-only 的 `StartShardedTopology` 仍保留给快速 e2e。
 
 随机差分（`test/randgen` + `test/rwsplit/random_test.go`）：
 

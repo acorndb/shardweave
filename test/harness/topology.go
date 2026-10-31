@@ -167,11 +167,19 @@ func (tp *Topology) Sync(ctx context.Context) error {
 	if tp == nil || tp.Master == nil {
 		return fmt.Errorf("harness: nil topology")
 	}
+	return syncReplicas(ctx, tp.Master, tp.Replicas)
+}
+
+// syncReplicas waits until every replica executed the master's GTID set.
+func syncReplicas(ctx context.Context, master *Instance, replicas []*Instance) error {
+	if len(replicas) == 0 {
+		return nil
+	}
 	var gtid string
-	if err := tp.Master.DB.QueryRowContext(ctx, "SELECT @@GLOBAL.gtid_executed").Scan(&gtid); err != nil {
+	if err := master.DB.QueryRowContext(ctx, "SELECT @@GLOBAL.gtid_executed").Scan(&gtid); err != nil {
 		return fmt.Errorf("harness: read master gtid_executed: %w", err)
 	}
-	for _, r := range tp.Replicas {
+	for _, r := range replicas {
 		var timedOut int
 		if err := r.DB.QueryRowContext(ctx, "SELECT WAIT_FOR_EXECUTED_GTID_SET(?, 30)", gtid).Scan(&timedOut); err != nil {
 			return fmt.Errorf("harness: wait %s: %w", r.Name, err)

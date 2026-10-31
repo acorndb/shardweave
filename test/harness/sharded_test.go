@@ -11,6 +11,9 @@ func TestShardedProxyConfig(t *testing.T) {
 	tp := &ShardedTopology{Slices: []*Instance{
 		{Name: "s0", addr: "127.0.0.1:33061"},
 		{Name: "s1", addr: "127.0.0.1:33062"},
+	}, Replicas: [][]*Instance{
+		{{Name: "s0-replica-1", addr: "127.0.0.1:33063"}},
+		nil,
 	}}
 	cfg := tp.ProxyConfig()
 
@@ -29,4 +32,8 @@ func TestShardedProxyConfig(t *testing.T) {
 	require.Equal(t, "name", profiles.Key)
 	require.Equal(t, constant.ShardingHashModStr, profiles.Algorithm)
 	require.Equal(t, []string{"s0", "s1"}, profiles.Slices)
+
+	require.Len(t, cfg.Backend.Slices[0].Slaves, 1)
+	require.Equal(t, "127.0.0.1:33063", cfg.Backend.Slices[0].Slaves[0].Address)
+	require.Empty(t, cfg.Backend.Slices[1].Slaves)
 }

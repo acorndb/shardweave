@@ -53,7 +53,7 @@
 | 7 | 无 StmtTable | `proxy` 对 `COM_STMT_PREPARE` 仅 `MarkReserved` 后转发 | 多分片 prepared 无法映射后端 stmt id |
 | 8 | 无事务策略 | `session.State` 只有 `inTx/autocommit/reserved` | 跨片事务语义未定义 |
 | 9 | 无全局 ID / DDL / 全局表 | 配置与计划均无 | 多片 INSERT、DDL 广播、维度表无策略 |
-| 10 | 无多 Slice 测试拓扑 | `test/harness.StartTopology` 只有 1 master + N replica | 分片行为无法端到端验证 |
+| 10 | 单库 oracle / 数据生成 | 分片 e2e 已有 2 Slice + 复制拓扑；聚合 metamorphic 已接单库 oracle | 随机数据、ORDER/LIMIT metamorphic 仍缺 |
 
 ### 1.3 不能破坏的现有约束
 
@@ -645,15 +645,17 @@ DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代�
 | 计划单测 | `SingleShard/MultiShard/Reject`、`EXPLAIN ROUTE` | 否 |
 | 执行单测 | fake Conn + 2 个 target：lease 按片、N=1 raw、N=2 dispatch | 否 |
 | 归并单测 | 脚本化 Stream：count/sum/min/max/avg/order/limit | 否 |
-| 多 Slice e2e | 2~4 个独立 MySQL Slice + 真代理；单分片/跨片 Reject | 是 |
-| 变形测试 | 分片代理 vs 单库全量 oracle；同 SQL 结果一致 | 是 |
+| 多 Slice e2e | 2 Slice + 每片 master+replica + 真代理；`TestShardedReplicas` 验证读从/写主 | 是 |
+| 变形测试 | 聚合已接单库 oracle（NULL/负数/跨片 IN）；ORDER BY/LIMIT 与随机数据待补 | 是 |
 | 故障 | 杀一个 Slice、DDL 部分失败、事务中断 | 是 |
 
-`test/harness` 需要新增：
+`test/harness` 现状：
 
-- `StartShardedTopology(n, replicas)`：每个 Slice 独立 master+replica；
-- `StartOracle()`：单库全量数据，用于 metamorphic；
-- 数据生成按分片键分布，保证每片有数据且可预测。
+- `StartShardedTopology(n)`：n 个 master-only Slice（快速路径）；
+- `StartShardedTopologyWithReplicas(n, replicas)`：每 Slice 独立 master +
+  GTID 复制从库，从库追平后 `read_only`；`ShardedTopology.Sync` 等待所有分片
+  复制追平；
+- 聚合 metamorphic 用单实例 harness 作 oracle；随机数据生成与 ORDER/LIMIT 变形待补。
 
 ## 10. 需要先决策的问题
 

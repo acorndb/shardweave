@@ -92,9 +92,9 @@ func TestSingleShardRouting(t *testing.T) {
 	require.Equal(t, -1, connScalar(t, ctx, conn, "SELECT ROW_COUNT()"))
 
 	assertRoute(t, ctx, conn, "EXPLAIN ROUTE SELECT amount FROM orders WHERE user_id = 2",
-		"SingleShard", "s0", "slave", "")
+		"SingleShard", "s0")
 	assertRoute(t, ctx, conn, "EXPLAIN ROUTE SELECT * FROM orders",
-		"MultiShard", "s0", "slave", "")
+		"MultiShard", "s0")
 	requireRouteSlices(t, ctx, conn, "EXPLAIN ROUTE SELECT * FROM orders WHERE user_id IN (1, 2)",
 		[]string{"s0", "s1"})
 
@@ -202,7 +202,7 @@ func TestSingleShardRouting(t *testing.T) {
 		map[string]int{"alice": 1, "bob": 2})
 	require.Equal(t, 2, connScalar(t, ctx, conn, "SELECT COUNT(*) AS c FROM profiles"))
 	assertRoute(t, ctx, conn, "EXPLAIN ROUTE SELECT score FROM profiles WHERE name = 'alice'",
-		"SingleShard", "s1", "slave", "")
+		"SingleShard", "s1")
 	requireRouteSlices(t, ctx, conn, "EXPLAIN ROUTE SELECT name, score FROM profiles",
 		[]string{"s0", "s1"})
 	assertReject(t, ctx, conn, "SELECT score FROM profiles WHERE name = 1")
@@ -275,7 +275,7 @@ func assertReject(t *testing.T, ctx context.Context, conn *sql.Conn, query strin
 	require.Equal(t, uint16(1235), me.Number, query)
 }
 
-func assertRoute(t *testing.T, ctx context.Context, conn *sql.Conn, query, kind, slice, role, reasonPart string) {
+func assertRoute(t *testing.T, ctx context.Context, conn *sql.Conn, query, kind, slice string) {
 	t.Helper()
 	rows, err := conn.QueryContext(ctx, query)
 	require.NoError(t, err)
@@ -290,10 +290,7 @@ func assertRoute(t *testing.T, ctx context.Context, conn *sql.Conn, query, kind,
 	require.NoError(t, rows.Scan(&gotKind, &gotSlice, &gotRole, &db, &sqlText, &reason))
 	require.Equal(t, kind, gotKind)
 	require.Equal(t, slice, gotSlice)
-	require.Equal(t, role, gotRole)
-	if reasonPart != "" {
-		require.Contains(t, reason, reasonPart)
-	}
+	require.Equal(t, "slave", gotRole)
 }
 
 func requireQueryHasRow(t *testing.T, ctx context.Context, conn *sql.Conn, query string) {
