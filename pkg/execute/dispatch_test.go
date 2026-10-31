@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/acorndb/shardweave/pkg/constant"
 	"github.com/acorndb/shardweave/pkg/errs"
@@ -89,6 +91,41 @@ func orderFields(id string) []result.Field {
 		{Name: id, OrgName: id, Table: "orders", OrgTable: "orders", DB: "bench", Type: 0x03, Charset: 63, ColumnLength: 11},
 		{Name: "amount", OrgName: "amount", Table: "orders", OrgTable: "orders", DB: "bench", Type: 0x03, Charset: 63, ColumnLength: 11},
 	}
+}
+
+func TestDispatch_ConcurrentTargets(t *testing.T) {
+	var active, max atomic.Int32
+	hook := func() {
+		n := active.Add(1)
+		for {
+			old := max.Load()
+			if n <= old || max.CompareAndSwap(old, n) {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+		active.Add(-1)
+	}
+	tr0, tr1 := &tracker{}, &tracker{}
+	p := newMultiPipeline(t, tr0, tr1,
+		func(c *fakeConn) {
+			c.fields = orderFields("id")
+			c.rows = []result.Row{{[]byte("1"), []byte("10")}}
+			c.execHook = hook
+		},
+		func(c *fakeConn) {
+			c.fields = orderFields("id")
+			c.rows = []result.Row{{[]byte("2"), []byte("20")}}
+			c.execHook = hook
+		})
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	require.NoError(t, p.Handle(context.Background(), rt, query("SELECT id, amount FROM orders")))
+	require.GreaterOrEqual(t, max.Load(), int32(2), "targets should execute concurrently")
+	require.NotEmpty(t, collect())
+	require.Empty(t, rt.leases)
 }
 
 func TestDispatch_Concat(t *testing.T) {

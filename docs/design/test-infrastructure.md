@@ -283,6 +283,7 @@ go test -race -count=1 -timeout 10m -v ./test/rwsplit/
 - `StartShardedTopologyWithReplicas(ctx, slices, replicas)`：每个 slice 独立
   master + GTID 从库，从库 `read_only`；`ShardedTopology.Sync` 等待所有分片
   复制追平；
+- 多 target dispatch 并发执行；单测用阻塞 hook 断言至少两个 shard 同时 Exec；
 - `test/sharding/replica_test.go`（`TestShardedReplicas`）：2 slice ×
   (1 master + 1 replica)，验证写主读从、scatter/ORDER BY/LIMIT OFFSET/聚合、
   prepared、错误拒绝与会话恢复；

@@ -41,6 +41,7 @@ type fakeConn struct {
 	closed       bool
 	lastReq      backend.ExecRequest
 	lastAlign    backend.AlignSettings
+	execHook     func()
 
 	fields    []result.Field
 	rows      []result.Row
@@ -62,7 +63,11 @@ func (c *fakeConn) Exec(_ context.Context, req backend.ExecRequest) (result.Stre
 	affected, lastID, resultSet := c.affectedRows, c.lastInsertID, c.resultSet
 	prepareID := c.prepareID
 	fields, rows, decodeErr, rowErr := c.fields, c.rows, c.decodeErr, c.rowErr
+	hook := c.execHook
 	c.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	if err != nil {
 		return nil, err
 	}

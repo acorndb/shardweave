@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/merge"
@@ -21,10 +22,9 @@ type decodedStreamer interface {
 	Decode() (result.Stream, error)
 }
 
-// dispatch runs the P0 multi-shard query path: scatter the same SQL to every
-// target, verify the column metadata, then concatenate rows in target order.
-// The router only produces multi-target SELECT plans that need no ORDER BY,
-// LIMIT, DISTINCT or aggregate merge; D5/D6 replace this with the merge engine.
+// dispatch runs the multi-shard query path: scatter the same SQL to every
+// target, execute headers concurrently, verify column metadata, then hand the
+// streams to the merge engine.
 func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statement, pl *plan.Plan) (bool, error) {
 	if stmt.Cmd != mysql.ComQuery {
 		return false, rejectMulti("multi-shard command %d is not supported", stmt.Cmd)
@@ -54,35 +54,65 @@ func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statemen
 		}
 	}
 
-	var fields []result.Field
-	for _, target := range pl.Targets {
-		stream, err := p.openDecoded(ctx, rt, stmt, target)
+	// Acquire leases sequentially (the lease map is session state), then run
+	// align/exec/header decoding concurrently across independent shard conns.
+	leases := make([]*lease, len(pl.Targets))
+	for i, target := range pl.Targets {
+		l, _, err := p.acquireLease(ctx, rt, target)
 		if err != nil {
-			var se *errs.MySQL
-			if errors.As(err, &se) {
-				// Nothing has been written yet; forward the backend ERR and keep
-				// the session alive, matching the single-target raw path.
-				cleanup(true)
-				return false, mysql.WriteERR(rt.Front, se)
-			}
 			cleanup(true)
 			return false, err
 		}
-		if fields == nil {
-			fields = stream.Fields()
-			if len(fields) == 0 {
-				_ = stream.Close()
-				cleanup(true)
-				return false, fmt.Errorf("execute: shard %s returned no columns", target.Slice)
+		leases[i] = l
+	}
+
+	type resultSlot struct {
+		stream result.Stream
+		err    error
+	}
+	results := make([]resultSlot, len(pl.Targets))
+	var wg sync.WaitGroup
+	for i, target := range pl.Targets {
+		wg.Add(1)
+		go func(i int, target route.Target) {
+			defer wg.Done()
+			stream, err := p.openLeaseDecoded(ctx, rt, stmt, target, leases[i])
+			results[i] = resultSlot{stream: stream, err: err}
+		}(i, target)
+	}
+	wg.Wait()
+
+	for i, res := range results {
+		if res.err != nil {
+			for _, r := range results {
+				if r.stream != nil {
+					_ = r.stream.Close()
+				}
 			}
-		} else if !sameFields(fields, stream.Fields()) {
-			shardFields := stream.Fields()
-			_ = stream.Close()
+			cleanup(true)
+			var se *errs.MySQL
+			if errors.As(res.err, &se) {
+				// Nothing has been written yet; forward the backend ERR and keep
+				// the session alive, matching the single-target raw path.
+				return false, mysql.WriteERR(rt.Front, se)
+			}
+			return false, res.err
+		}
+		opened = append(opened, shardResult{slice: pl.Targets[i].Slice, stream: res.stream})
+	}
+
+	firstSlice := opened[0].slice
+	fields := opened[0].stream.Fields()
+	if len(fields) == 0 {
+		cleanup(true)
+		return false, fmt.Errorf("execute: shard %s returned no columns", firstSlice)
+	}
+	for _, o := range opened[1:] {
+		if !sameFields(fields, o.stream.Fields()) {
 			cleanup(true)
 			return false, fmt.Errorf("execute: shard %s column metadata mismatch: %+v != %+v",
-				target.Slice, shardFields, fields)
+				o.slice, o.stream.Fields(), fields)
 		}
-		opened = append(opened, shardResult{slice: target.Slice, stream: stream})
 	}
 
 	streams := make([]result.Stream, 0, len(opened))
@@ -141,6 +171,30 @@ func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statemen
 // and reads the result header. Rows stay unread for the caller to stream.
 func (p *Pipeline) openDecoded(ctx context.Context, rt *Runtime, stmt *sql.Statement, target route.Target) (result.Stream, error) {
 	stream, err := p.execTarget(ctx, rt, stmt, target)
+	if err != nil {
+		return nil, err
+	}
+	d, ok := stream.(decodedStreamer)
+	if !ok {
+		_ = stream.Close()
+		return nil, fmt.Errorf("execute: stream %T cannot decode result rows", stream)
+	}
+	decoded, err := d.Decode()
+	if err != nil {
+		_ = stream.Close()
+		return nil, err
+	}
+	return decoded, nil
+}
+
+func (p *Pipeline) openLeaseDecoded(
+	ctx context.Context,
+	rt *Runtime,
+	stmt *sql.Statement,
+	target route.Target,
+	l *lease,
+) (result.Stream, error) {
+	stream, err := p.execOnLease(ctx, rt, stmt, target, l)
 	if err != nil {
 		return nil, err
 	}

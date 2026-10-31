@@ -122,28 +122,34 @@ func (p *Pipeline) execTarget(ctx context.Context, rt *Runtime, stmt *sql.Statem
 	if err != nil {
 		return nil, err
 	}
+	stream, err := p.execOnLease(ctx, rt, stmt, target, l)
+	if err != nil {
+		if acquired {
+			_ = p.releaseOne(rt, target.Slice, false)
+		}
+		return nil, err
+	}
+	return stream, nil
+}
+
+// execOnLease aligns and executes on an already-acquired lease. Dispatch uses
+// it to run independent shard targets concurrently.
+func (p *Pipeline) execOnLease(ctx context.Context, rt *Runtime, stmt *sql.Statement, target route.Target, l *lease) (result.Stream, error) {
 	if err := l.conn.Align(ctx, backend.AlignSettings{
 		Database: targetDatabase(rt, target),
 		Charset:  rt.State.Charset(),
 	}); err != nil {
-		if acquired {
-			_ = p.releaseOne(rt, target.Slice, false)
-		}
 		return nil, err
 	}
 	payload, err := p.payloadFor(rt, stmt, target)
 	if err != nil {
 		return nil, err
 	}
-	stream, err := l.conn.Exec(ctx, backend.ExecRequest{
+	return l.conn.Exec(ctx, backend.ExecRequest{
 		Payload: payload,
 		Prepare: stmt.Cmd == mysql.ComStmtPrepare,
 		NoReply: stmt.Cmd == mysql.ComStmtClose,
 	})
-	if err != nil {
-		return nil, err
-	}
-	return stream, nil
 }
 
 func targetDatabase(rt *Runtime, target route.Target) string {

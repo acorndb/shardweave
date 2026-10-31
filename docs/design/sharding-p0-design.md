@@ -371,14 +371,14 @@ route → []Target
   锁定读 / SQL_CALC_FOUND_ROWS`；字符串列分组/去重/排序仍 1235；
 - `LIMIT n` / `LIMIT n OFFSET m`：OFFSET>0 时 per-shard 改写成 `LIMIT m+n`，
   归并后由 `Limit` 截断/跳过；
-- 每个 target 顺序执行（D7 再并发）；先解码全部列元数据并校验一致，再写
-  列头，最后按 target 顺序流式拼接行；LIMIT 提前结束时未读完的后端连接
-  直接 Discard；
+- lease 顺序 acquire（session map 不并发写），随后各 target 的
+  align/exec/列头解码并发执行；列元数据校验后按 target 顺序交给 merge；
+  LIMIT 提前结束时未读完的后端连接直接 Discard；
 - 事务 / `autocommit=0` / reserved / prepared pin 的会话中的多分片语句
   1235（多片连接无法共享事务语义）；
 - 结束符的 `warnings` 固定 0（各分片 warning 不汇总）；任何分片在写列头前
   返回 ERR 时，原样回传 ERR、不产生部分结果集；写行后某片失败会关闭会话
-  （与后端断连一致），D6/D7 再细化；
+  （与后端断连一致），后续 merge/error 设计再细化；
 - 结果行顺序为 target 顺序，不保证与单库 `ORDER BY` 或无排序时一致。
 
 ### 6.3 多分片写（P1/P2）
@@ -581,7 +581,7 @@ DML/DDL 后置：
 | **D4.1** | 从库健康/延迟探测：池内定期探测，选源屏蔽不可用从库，回落主库（**延后**，单机与分片共用） | `STOP REPLICA`/杀从库后读请求不落坏从库；恢复后重新纳入 |
 | **D5** | 多分片 SELECT rewrite 下推（聚合/隐藏列）；ORDER BY、LIMIT/OFFSET 与 `pkg/merge.Concat/Limit/Ordered` 已落地 | 分片 vs 单库一致 |
 | **D6** | 流式 merge operator（concat/order/limit/aggregate/group/distinct） | 单测 + metamorphic |
-| **D7** | execute 并发 dispatch + 结果写回 | N 片 e2e；失败取消 |
+| **D7** | execute 并发 dispatch + 结果写回；已落地：lease 顺序 acquire + align/exec/header 并发 | N 片 e2e；失败清理 |
 | **D8** | DQL corpus/randgen/metamorphic | CI/nightly |
 
 DML 事务、prepared 写、全局序列、跨片 JOIN 后置；DDL 不进代理。

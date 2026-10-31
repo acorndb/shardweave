@@ -69,7 +69,7 @@
 | `pkg/plan` | 计划：三态 + 每目标 SQL + 归并提示 | `Plan`、`Kind`、`Builder`、`MergeSpec`、`Explain` | 执行、持有池 | `sql`、`sql/rewrite`、`route`、`session`、`errs` |
 | `pkg/result` | 逻辑结果：字段/行/流 | `Field`、`Row`、`Stream` | 认识协议、路由、连接 | stdlib |
 | `pkg/merge` | 结果归并 | `Merge`、`Concat`/`Limit`/`Ordered`/`Aggregate` | acquire、执行 | `result`、`plan`（MergeSpec） |
-| `pkg/execute` | 执行引擎：dispatch、lease、写回 | `Runtime`、`Executor`、`lease` | 解析 SQL、决定路由、按 mode 分支 | `plan`、`backend`、`session`、`merge`、`result`、`mysql`、`errs` |
+| `pkg/execute` | 执行引擎：dispatch、lease、写回；多 target 并发执行 | `Runtime`、`Executor`、`lease` | 解析 SQL、决定路由、按 mode 分支 | `plan`、`backend`、`session`、`merge`、`result`、`mysql`、`errs` |
 | `pkg/proxy` | 前端 COM 循环与会话字段 | `Serve`、`SessionConfig` | USE/SET 语义、路由、acquire | `mysql/server`、`mysql`、`sql`、`session`、`execute` |
 | `pkg/server` | 监听、Accept、唯一装配点 | `Server`、`New`、mode→Cluster/Router/Executor | 参与单条 SQL 执行 | 全部（装配例外） |
 | `cmd/shardweave` | 入口、flag、信号、优雅退出 | `main` | 业务逻辑 | `server`、`config`、`log` |
