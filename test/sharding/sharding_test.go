@@ -230,6 +230,10 @@ func TestSingleShardRouting(t *testing.T) {
 		"SingleShard", "s1")
 	requireRouteSlices(t, ctx, conn, "EXPLAIN ROUTE SELECT name, score FROM profiles",
 		[]string{"s0", "s1"})
+	requireRouteSlices(t, ctx, conn, "EXPLAIN ROUTE SELECT COUNT(*) FROM orders",
+		[]string{"s0", "s1"})
+	requireRouteSlices(t, ctx, conn, "EXPLAIN ROUTE SELECT amount, COUNT(*) FROM orders GROUP BY amount",
+		[]string{"s0", "s1"})
 	assertReject(t, ctx, conn, "SELECT score FROM profiles WHERE name = 1")
 	assertReject(t, ctx, conn, "INSERT INTO profiles (name, score) VALUES (1, 3)")
 

@@ -17,7 +17,7 @@ import (
 	"github.com/acorndb/shardweave/test/harness"
 )
 
-// TestShardedAggregateOracle loads the same logical dataset into a 2-slice
+// TestShardedAggregateOracle loads the same logical dataset into a 4-slice
 // sharded cluster and a single MySQL oracle, then compares aggregate results
 // produced by the proxy with the single-DB oracle.
 func TestShardedAggregateOracle(t *testing.T) {
@@ -29,7 +29,7 @@ func TestShardedAggregateOracle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 
-	tp, err := harness.StartShardedTopology(ctx, 2)
+	tp, err := harness.StartShardedTopology(ctx, 4)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -89,7 +89,7 @@ func TestShardedAggregateOracle(t *testing.T) {
 		const insert = "INSERT INTO orders (id, user_id, amount, price, qty) VALUES (?, ?, ?, ?, ?)"
 		_, err := oracle.DB.ExecContext(ctx, insert, r.id, r.userID, r.amount, r.price, r.qty)
 		require.NoError(t, err)
-		slice := r.userID % 2 // hash_mod over [s0, s1]
+		slice := r.userID % 4 // hash_mod over [s0, s1, s2, s3]
 		_, err = tp.Slices[slice].DB.ExecContext(ctx, insert, r.id, r.userID, r.amount, r.price, r.qty)
 		require.NoError(t, err)
 	}
@@ -104,6 +104,14 @@ func TestShardedAggregateOracle(t *testing.T) {
 	pc, err := conn.Conn(ctx)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pc.Close() })
+
+	for _, slice := range tp.Slices {
+		var n int
+		require.NoError(t, slice.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM orders").Scan(&n))
+		require.Greater(t, n, 0, "every configured slice must hold data")
+	}
+	requireRouteCount(t, ctx, pc, "EXPLAIN ROUTE SELECT COUNT(*) FROM orders", 4)
+	requireRouteCount(t, ctx, pc, "EXPLAIN ROUTE SELECT amount, COUNT(*) FROM orders GROUP BY amount", 4)
 
 	queries := []struct {
 		query     string
@@ -165,6 +173,12 @@ func TestShardedAggregateOracle(t *testing.T) {
 			}
 		})
 	}
+}
+
+func requireRouteCount(t *testing.T, ctx context.Context, q querier, query string, want int) {
+	t.Helper()
+	_, rows := queryRows(t, ctx, q, query)
+	require.Len(t, rows, want, "%s should route to all shards", query)
 }
 
 func sortRows(rows [][]sql.NullString) {
