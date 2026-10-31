@@ -535,9 +535,9 @@ func mustExec(t *testing.T, ctx context.Context, db *sql.DB, query string, args 
 	require.NoErrorf(t, err, "执行失败: %s", query)
 }
 
-func mustExecConn(t *testing.T, ctx context.Context, c *sql.Conn, query string, args ...any) {
+func mustExecConn(t *testing.T, ctx context.Context, c *sql.Conn, query string) {
 	t.Helper()
-	_, err := c.ExecContext(ctx, query, args...)
+	_, err := c.ExecContext(ctx, query)
 	require.NoErrorf(t, err, "执行失败: %s", query)
 }
 
@@ -595,26 +595,26 @@ func requireSameQuery(t *testing.T, ctx context.Context, direct, proxied *sql.DB
 	}
 }
 
-func masterScalar(t *testing.T, ctx context.Context, db *sql.DB, query string, args ...any) string {
+func masterScalar(t *testing.T, ctx context.Context, db *sql.DB, query string) string {
 	t.Helper()
-	obs := observeQueryArgs(ctx, db, query, args...)
+	obs := observeQuery(ctx, db, query)
 	require.NoErrorf(t, obs.err, "查询失败: %s", query)
 	require.Len(t, obs.rows, 1, "期望单行结果: %s", query)
 	require.Len(t, obs.rows[0], 1, "期望单列结果: %s", query)
 	return obs.rows[0][0]
 }
 
-func dbScalarInt64(t *testing.T, ctx context.Context, db *sql.DB, query string, args ...any) int64 {
+func dbScalarInt64(t *testing.T, ctx context.Context, db *sql.DB, query string) int64 {
 	t.Helper()
 	var n int64
-	require.NoErrorf(t, db.QueryRowContext(ctx, query, args...).Scan(&n), "查询失败: %s", query)
+	require.NoErrorf(t, db.QueryRowContext(ctx, query).Scan(&n), "查询失败: %s", query)
 	return n
 }
 
-func connScalarInt64(t *testing.T, ctx context.Context, conn *sql.Conn, query string, args ...any) int64 {
+func connScalarInt64(t *testing.T, ctx context.Context, conn *sql.Conn, query string) int64 {
 	t.Helper()
 	var n int64
-	require.NoErrorf(t, conn.QueryRowContext(ctx, query, args...).Scan(&n), "查询失败: %s", query)
+	require.NoErrorf(t, conn.QueryRowContext(ctx, query).Scan(&n), "查询失败: %s", query)
 	return n
 }
 
