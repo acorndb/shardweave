@@ -19,6 +19,5 @@ linters:
           - errcheck
 
 formatters:
-  default: none
   enable:
     - gofumpt
