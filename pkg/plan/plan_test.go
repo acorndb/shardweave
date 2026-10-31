@@ -369,6 +369,31 @@ func TestBuilder_MultiShard(t *testing.T) {
 		}, p.Merge.Aggregates)
 	})
 
+	t.Run("distinct", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT DISTINCT user_id, amount FROM orders"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.True(t, p.Merge.Distinct)
+		require.Empty(t, p.Merge.Aggregates)
+	})
+
+	t.Run("distinct_order_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT DISTINCT user_id FROM orders ORDER BY user_id"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Contains(t, p.Reject.Message, "DISTINCT")
+	})
+
+	t.Run("distinct_aggregate_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT DISTINCT COUNT(*) FROM orders"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Contains(t, p.Reject.Message, "DISTINCT")
+	})
+
 	t.Run("group_by", func(t *testing.T) {
 		st := selectStmt(t, "SELECT user_id, COUNT(*), SUM(amount), AVG(amount) FROM orders GROUP BY user_id")
 		p, err := b.Build(context.Background(), session.NewState(), st)

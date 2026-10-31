@@ -194,6 +194,17 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 	if !ok {
 		return MergeSpec{}, nil
 	}
+	if sel.Distinct {
+		if sel.GroupBy != nil || sel.OrderBy != nil || sel.Limit != nil {
+			return MergeSpec{}, errs.Unsupported("multi-shard DISTINCT with GROUP BY/ORDER BY/LIMIT is not supported")
+		}
+		for _, field := range sel.Fields.Fields {
+			if field.Expr != nil && hasAggregate(field.Expr) {
+				return MergeSpec{}, errs.Unsupported("multi-shard DISTINCT with aggregates is not supported")
+			}
+		}
+		return MergeSpec{Distinct: true}, nil
+	}
 	if sel.GroupBy != nil {
 		spec, extras, rej := groupSpecs(sel)
 		if rej != nil {

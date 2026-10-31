@@ -122,6 +122,8 @@ func TestShardedReplicas(t *testing.T) {
 	requireGroupRows(t, ctx, conn,
 		"SELECT user_id, COUNT(*) FROM orders GROUP BY user_id",
 		map[string][]string{"1": {"1"}, "2": {"1"}})
+	requireGroupRows(t, ctx, conn, "SELECT DISTINCT amount FROM orders",
+		map[string][]string{"50": {}, "200": {}})
 	assertReject(t, ctx, conn, "SELECT * FROM orders WHERE user_id IN (SELECT user_id FROM orders)")
 	requireRowCount(t, ctx, conn, "SELECT * FROM orders LIMIT 1, 1", 1)
 }

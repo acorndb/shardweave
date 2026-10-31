@@ -163,7 +163,7 @@ func TestMerge_Factory(t *testing.T) {
 	cases := []plan.MergeSpec{
 		{GroupBy: []int{0}, OrderBy: []plan.OrderKey{{Column: 0}}},
 		{GroupBy: []int{0}, Limit: &plan.Limit{Count: 1}},
-		{Distinct: true},
+		{Distinct: true, OrderBy: []plan.OrderKey{{Column: 0}}},
 		{
 			Aggregates: []plan.AggregateSpec{{Func: plan.AggCount, Column: 0, Output: 0}},
 			OrderBy:    []plan.OrderKey{{Column: 0}},
@@ -185,7 +185,7 @@ func TestValidate(t *testing.T) {
 	for _, spec := range []plan.MergeSpec{
 		{GroupBy: []int{0}, OrderBy: []plan.OrderKey{{Column: 0}}},
 		{GroupBy: []int{0}, Limit: &plan.Limit{Count: 1}},
-		{Distinct: true},
+		{Distinct: true, OrderBy: []plan.OrderKey{{Column: 0}}},
 		{Aggregates: []plan.AggregateSpec{{Func: plan.AggCount}}, OrderBy: []plan.OrderKey{{Column: 0}}},
 	} {
 		var me *errs.MySQL

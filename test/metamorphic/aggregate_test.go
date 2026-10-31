@@ -117,6 +117,9 @@ func TestShardedAggregateOracle(t *testing.T) {
 		{query: "SELECT amount, COUNT(*), SUM(user_id) FROM orders GROUP BY amount", unordered: true},
 		{query: "SELECT user_id, COUNT(*) FROM orders WHERE amount > 0 GROUP BY user_id", unordered: true},
 		{query: "SELECT user_id FROM orders GROUP BY user_id", unordered: true},
+		{query: "SELECT DISTINCT user_id, amount FROM orders", unordered: true},
+		{query: "SELECT DISTINCT amount FROM orders", unordered: true},
+		{query: "SELECT DISTINCT user_id FROM orders", unordered: true},
 	}
 	for _, tc := range queries {
 		t.Run(tc.query, func(t *testing.T) {

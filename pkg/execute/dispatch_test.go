@@ -205,7 +205,7 @@ func TestDispatch_Rejects(t *testing.T) {
 		_, err := p.executePlan(ctx, newRuntime(), query("SELECT * FROM orders"), &plan.Plan{
 			Kind:    plan.MultiShard,
 			Targets: multiTargets(),
-			Merge:   plan.MergeSpec{Distinct: true},
+			Merge:   plan.MergeSpec{Distinct: true, OrderBy: []plan.OrderKey{{Column: 0}}},
 		})
 		var rej *errs.MySQL
 		require.ErrorAs(t, err, &rej)
@@ -445,6 +445,47 @@ func TestDispatch_Avg(t *testing.T) {
 	cells, err := mysql.DecodeTextRow(pkts[2], 1)
 	require.NoError(t, err)
 	require.Equal(t, "3.2500", string(cells[0]))
+	require.Empty(t, rt.leases)
+	require.Equal(t, 1, tr0.last(t).resets)
+	require.Equal(t, 1, tr1.last(t).resets)
+}
+
+func TestDispatch_Distinct(t *testing.T) {
+	tr0, tr1 := &tracker{}, &tracker{}
+	fields := []result.Field{
+		{Name: "user_id", OrgName: "user_id", Type: result.TypeLong, Charset: 63},
+		{Name: "amount", OrgName: "amount", Type: result.TypeLong, Charset: 63},
+	}
+	p := newMultiPipeline(t, tr0, tr1,
+		func(c *fakeConn) {
+			c.fields = fields
+			c.rows = []result.Row{{[]byte("1"), []byte("50")}, {[]byte("2"), []byte("200")}}
+		},
+		func(c *fakeConn) {
+			c.fields = fields
+			c.rows = []result.Row{{[]byte("1"), []byte("50")}, {[]byte("2"), []byte("50")}}
+		})
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	_, err := p.executePlan(context.Background(), rt, query("SELECT DISTINCT user_id, amount FROM orders"),
+		&plan.Plan{
+			Kind:    plan.MultiShard,
+			Targets: multiTargets(),
+			Merge:   plan.MergeSpec{Distinct: true},
+		})
+	require.NoError(t, err)
+
+	pkts := collect()
+	require.Len(t, pkts, 1+2+3+1, "header + 2 columns + 3 distinct rows + terminator")
+	rows := make([][2]string, 0, 3)
+	for _, pkt := range pkts[3:6] {
+		cells, err := mysql.DecodeTextRow(pkt, 2)
+		require.NoError(t, err)
+		rows = append(rows, [2]string{string(cells[0]), string(cells[1])})
+	}
+	require.Equal(t, [][2]string{{"1", "50"}, {"2", "200"}, {"2", "50"}}, rows)
 	require.Empty(t, rt.leases)
 	require.Equal(t, 1, tr0.last(t).resets)
 	require.Equal(t, 1, tr1.last(t).resets)

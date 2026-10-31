@@ -16,7 +16,11 @@ import (
 // can reject unsupported plans before acquiring backends.
 func Validate(spec plan.MergeSpec) error {
 	if spec.Distinct {
-		return errs.Unsupported("multi-shard DISTINCT is not supported")
+		if len(spec.GroupBy) > 0 || len(spec.Aggregates) > 0 || len(spec.OrderBy) > 0 ||
+			spec.Limit != nil || len(spec.Output) > 0 {
+			return errs.Unsupported("multi-shard DISTINCT with other merge features is not supported")
+		}
+		return nil
 	}
 	if len(spec.GroupBy) > 0 {
 		if len(spec.OrderBy) > 0 {
@@ -38,6 +42,9 @@ func Validate(spec plan.MergeSpec) error {
 func Merge(streams []result.Stream, fields []result.Field, spec plan.MergeSpec) (result.Stream, error) {
 	if err := Validate(spec); err != nil {
 		return nil, err
+	}
+	if spec.Distinct {
+		return Distinct(streams, fields)
 	}
 	if len(spec.GroupBy) > 0 {
 		return Group(streams, fields, spec.GroupBy, spec.Aggregates, spec.Output)

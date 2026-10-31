@@ -365,9 +365,11 @@ route → []Target
 - 支持 `ORDER BY` 列名/位置/表达式（多列、ASC/DESC），由 k 路堆归并；
   未投影的列/表达式通过隐藏列下推，`Output` 投影去掉隐藏列；字符串/二进制/
   JSON 类型 1235；`SELECT *` 搭配表达式排序 1235；
-- 支持 `COUNT/SUM/MIN/MAX/AVG`（无 GROUP BY）与数值/日期列 GROUP BY；
-- 不支持 `HAVING / DISTINCT / 窗口函数 / 聚合 DISTINCT / GROUP BY ... ORDER BY
-  或 LIMIT / INTO / 锁定读 / SQL_CALC_FOUND_ROWS`；
+- 支持 `COUNT/SUM/MIN/MAX/AVG`（无 GROUP BY）、数值/日期列 GROUP BY、
+  数值/日期列 DISTINCT；
+- 不支持 `HAVING / 窗口函数 / 聚合 DISTINCT / GROUP BY 或 DISTINCT 搭配
+  ORDER BY/LIMIT / INTO / 锁定读 / SQL_CALC_FOUND_ROWS`；字符串列分组/去重
+  仍 1235；
 - `LIMIT n` / `LIMIT n OFFSET m`：OFFSET>0 时 per-shard 改写成 `LIMIT m+n`，
   归并后由 `Limit` 截断/跳过；
 - 每个 target 顺序执行（D7 再并发）；先解码全部列元数据并校验一致，再写
@@ -540,6 +542,14 @@ route → []Target
 - GROUP BY + ORDER BY/LIMIT、HAVING 仍 1235；
 - single-DB oracle 覆盖用户分组、金额跨片分组、过滤后分组。
 
+已落地（B1.8，DISTINCT，2026-10-31）：
+
+- `SELECT DISTINCT 列/表达式` 跨片去重；各片先 DISTINCT，归并层按规范化行 key
+  去重，输出首次出现顺序；
+- 数值/日期键可用；字符串/二进制列 1235（collation 权重表未引入）；
+- `DISTINCT + ORDER BY/LIMIT`、聚合 DISTINCT 仍 1235；
+- oracle 覆盖单列/多列 DISTINCT 与单库一致。
+
 未落地（B1.2）：
 
 - 结构化路由决策日志/metrics；
@@ -624,6 +634,11 @@ B1.7（已落地，GROUP BY）：
 - 分组列必须被 select；字符串/二进制分组列 1235（collation 未引入）；
 - GROUP BY + ORDER BY/LIMIT、HAVING、分组表达式仍 1235。
 
+B1.8（已落地，DISTINCT）：
+
+- 数值/日期列的跨片 DISTINCT；`pkg/merge.Distinct` 规范化行 key 去重；
+- 字符串/二进制列、DISTINCT + ORDER BY/LIMIT、聚合 DISTINCT 仍 1235。
+
 DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代理始终显式 Reject。
 
 ### 8.2 Reject（当前）
@@ -631,10 +646,9 @@ DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代�
 - 多分片写（INSERT/UPDATE/DELETE）；跨片 `IN` 的写语句；
 - 分片键字面量类型与算法值域不匹配（如 `hash_mod` 下的 `'abc'`、
   `hash_mod_str` 下的 `1`）；
-- 分片表上需要归并的 SELECT（HAVING/DISTINCT/窗口/INTO/锁定读/
-  SQL_CALC_FOUND_ROWS）；子查询；聚合 DISTINCT、聚合与非聚合投影混合、
-  聚合 + ORDER BY、GROUP BY + ORDER BY/LIMIT；字符串/二进制 GROUP BY
-  与排序 1235；
+- 分片表上需要归并的 SELECT（HAVING/窗口/INTO/锁定读/SQL_CALC_FOUND_ROWS）；
+  子查询；聚合 DISTINCT、聚合与非聚合投影混合、聚合 + ORDER BY；
+  GROUP BY/DISTINCT + ORDER BY/LIMIT；字符串/二进制 GROUP BY/DISTINCT/排序 1235；
 - 事务 / `autocommit=0` / reserved / prepared pin 会话中的多分片语句；
 - 跨片/多表 JOIN、schema 限定表；
 - prepared 参数化分片键、prepared DML、prepared 多分片；

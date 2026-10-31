@@ -104,6 +104,7 @@ func TestRouter_MultiShardSelect(t *testing.T) {
 		{"aggregate_in", "SELECT COUNT(*) FROM orders WHERE user_id IN (1, 2)", []string{"s0", "s1"}},
 		{"group_by_amount", "SELECT amount, COUNT(*) FROM orders GROUP BY amount", []string{"s0", "s1"}},
 		{"group_by_key", "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id", []string{"s0", "s1"}},
+		{"distinct", "SELECT DISTINCT user_id, amount FROM orders", []string{"s0", "s1"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -219,7 +220,6 @@ func TestRouter_Rejects(t *testing.T) {
 		cmd  byte
 	}{
 		{"unsharded_table", "SELECT * FROM users WHERE id = 1", mysql.ComQuery},
-		{"cross_shard_distinct", "SELECT DISTINCT user_id FROM orders", mysql.ComQuery},
 		{"cross_shard_window", "SELECT ROW_NUMBER() OVER (ORDER BY id) FROM orders", mysql.ComQuery},
 		{"cross_shard_calc_found_rows", "SELECT SQL_CALC_FOUND_ROWS * FROM orders", mysql.ComQuery},
 		{"cross_shard_for_update", "SELECT * FROM orders FOR UPDATE", mysql.ComQuery},

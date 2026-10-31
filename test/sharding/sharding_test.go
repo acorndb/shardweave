@@ -265,8 +265,13 @@ func TestSingleShardRouting(t *testing.T) {
 	assertReject(t, ctx, conn, "SELECT amount, COUNT(*) FROM orders GROUP BY amount ORDER BY amount")
 	assertReject(t, ctx, conn, "SELECT amount, COUNT(*) FROM orders GROUP BY amount LIMIT 1")
 
-	// DISTINCT still needs the dedup operator (D5.2).
-	assertReject(t, ctx, conn, "SELECT DISTINCT user_id FROM orders")
+	requireGroupRows(t, ctx, conn, "SELECT DISTINCT amount FROM orders",
+		map[string][]string{"50": {}, "200": {}})
+	requireGroupRows(t, ctx, conn, "SELECT DISTINCT user_id FROM orders",
+		map[string][]string{"1": {}, "2": {}})
+	assertReject(t, ctx, conn, "SELECT DISTINCT name FROM profiles")
+	assertReject(t, ctx, conn, "SELECT DISTINCT amount FROM orders ORDER BY amount")
+	assertReject(t, ctx, conn, "SELECT DISTINCT amount FROM orders LIMIT 1")
 
 	// Unsupported shapes are explicit 1235, not silent wrong results.
 	assertReject(t, ctx, conn, "SELECT * FROM users WHERE id = 1")

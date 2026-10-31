@@ -211,30 +211,36 @@ func (g *groupStream) fold() error {
 }
 
 func (g *groupStream) key(row result.Row) (string, error) {
+	return encodeRowKey(row, g.groupBy, g.kinds)
+}
+
+// encodeRowKey builds a canonical key for numeric/date group/distinct values.
+// String collations are rejected before this function is reached.
+func encodeRowKey(row result.Row, cols []int, kinds []valueKind) (string, error) {
 	var b strings.Builder
-	for i, col := range g.groupBy {
+	for i, col := range cols {
 		if col >= len(row) {
-			return "", fmt.Errorf("merge: group column %d out of row width %d", col, len(row))
+			return "", fmt.Errorf("merge: key column %d out of row width %d", col, len(row))
 		}
-		v, err := parseOrderValue(row[col], g.kinds[i])
+		v, err := parseOrderValue(row[col], kinds[i])
 		if err != nil {
-			return "", fmt.Errorf("merge: group column %d: %w", col, err)
+			return "", fmt.Errorf("merge: key column %d: %w", col, err)
 		}
 		var part string
 		switch {
 		case v.null:
 			part = "n"
-		case g.kinds[i] == kindInt:
+		case kinds[i] == kindInt:
 			part = "i:" + strconv.FormatInt(v.i, 10)
-		case g.kinds[i] == kindUint:
+		case kinds[i] == kindUint:
 			part = "u:" + strconv.FormatUint(v.u, 10)
-		case g.kinds[i] == kindFloat:
+		case kinds[i] == kindFloat:
 			f := v.f
 			if f == 0 {
 				f = 0 // normalize -0
 			}
 			part = "f:" + strconv.FormatUint(math.Float64bits(f), 16)
-		case g.kinds[i] == kindDecimal:
+		case kinds[i] == kindDecimal:
 			part = "d:" + v.r.RatString()
 		default:
 			part = "t:" + string(v.b)
