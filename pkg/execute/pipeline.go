@@ -3,6 +3,7 @@ package execute
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"strconv"
@@ -42,8 +43,9 @@ type Executor interface {
 
 // Pipeline is the single execution implementation shared by all modes.
 type Pipeline struct {
-	cluster *backend.Cluster
-	builder plan.Builder
+	cluster  *backend.Cluster
+	builder  plan.Builder
+	sharding bool
 }
 
 // New builds a Pipeline for a runtime cluster and a mode-specific planner.
@@ -54,7 +56,7 @@ func New(c *backend.Cluster, builder plan.Builder) (*Pipeline, error) {
 	if builder.Router == nil {
 		return nil, fmt.Errorf("execute: requires router")
 	}
-	return &Pipeline{cluster: c, builder: builder}, nil
+	return &Pipeline{cluster: c, builder: builder, sharding: builder.Sharding}, nil
 }
 
 // Close closes the underlying cluster pools.
@@ -184,8 +186,12 @@ func (p *Pipeline) runOne(ctx context.Context, rt *Runtime, stmt *sql.Statement,
 		return false, err
 	}
 
+	payload, err := p.payloadFor(rt, stmt, target)
+	if err != nil {
+		return false, err
+	}
 	req := backend.ExecRequest{
-		Payload: payloadFor(stmt, target),
+		Payload: payload,
 		Prepare: stmt.Cmd == mysql.ComStmtPrepare,
 		NoReply: stmt.Cmd == mysql.ComStmtClose,
 	}
@@ -194,6 +200,33 @@ func (p *Pipeline) runOne(ctx context.Context, rt *Runtime, stmt *sql.Statement,
 		return false, err
 	}
 	defer stream.Close()
+
+	if p.sharding && stmt.Cmd == mysql.ComStmtPrepare {
+		pf, ok := stream.(prepareForwarder)
+		if !ok {
+			return false, fmt.Errorf("execute: stream %T cannot forward prepare", stream)
+		}
+		clientID := rt.State.NextStmtID()
+		info, backendID, err := pf.ForwardPrepareTo(rt.Front, clientID)
+		if err != nil {
+			return false, err
+		}
+		if info.ServerErr {
+			return false, nil
+		}
+		entry := &session.Stmt{
+			ID:      clientID,
+			Slice:   target.Slice,
+			SQL:     stmt.Raw,
+			AST:     stmt.AST,
+			Targets: map[string]uint32{target.Slice: backendID},
+		}
+		if err := rt.State.Stmts().Add(entry); err != nil {
+			return false, err
+		}
+		rt.State.MarkReserved() // keep the backend connection holding the stmt
+		return true, nil
+	}
 
 	raw, ok := stream.(rawForwarder)
 	if !ok {
@@ -211,19 +244,43 @@ func (p *Pipeline) runOne(ctx context.Context, rt *Runtime, stmt *sql.Statement,
 	}
 	applyEffect(rt.State, stmt.Effect)
 	applyResponseState(rt.State, stmt, info)
+	if p.sharding && stmt.Cmd == mysql.ComStmtClose {
+		rt.State.Stmts().Delete(stmt.StmtID)
+	}
 	return true, nil
 }
 
-// payloadFor uses the per-target rewritten SQL when present. Only COM_QUERY
-// has a text SQL representation; prepared commands keep their original bytes.
-func payloadFor(stmt *sql.Statement, target route.Target) []byte {
-	if stmt.Cmd != mysql.ComQuery || target.SQL == "" {
-		return stmt.Payload
+// payloadFor uses the per-target rewritten SQL when present, and rewrites the
+// proxy-owned statement id to the backend id for COM_STMT_* commands.
+func (p *Pipeline) payloadFor(rt *Runtime, stmt *sql.Statement, target route.Target) ([]byte, error) {
+	switch stmt.Cmd {
+	case mysql.ComStmtExecute, mysql.ComStmtReset, mysql.ComStmtClose:
+		if !p.sharding {
+			return stmt.Payload, nil
+		}
+		entry, ok := rt.State.Stmts().Get(stmt.StmtID)
+		if !ok {
+			return nil, fmt.Errorf("execute: unknown prepared statement %d", stmt.StmtID)
+		}
+		backendID := entry.Targets[target.Slice]
+		if backendID == 0 {
+			return nil, fmt.Errorf("execute: statement %d has no backend id on %s", stmt.StmtID, target.Slice)
+		}
+		if len(stmt.Payload) < 5 {
+			return nil, fmt.Errorf("execute: short COM_STMT payload")
+		}
+		payload := append([]byte(nil), stmt.Payload...)
+		binary.LittleEndian.PutUint32(payload[1:5], backendID)
+		return payload, nil
+	case mysql.ComQuery:
+		if target.SQL != "" {
+			payload := make([]byte, 1+len(target.SQL))
+			payload[0] = mysql.ComQuery
+			copy(payload[1:], target.SQL)
+			return payload, nil
+		}
 	}
-	payload := make([]byte, 1+len(target.SQL))
-	payload[0] = mysql.ComQuery
-	copy(payload[1:], target.SQL)
-	return payload
+	return stmt.Payload, nil
 }
 
 // explainRoute builds a plan without executing it and writes a synthetic

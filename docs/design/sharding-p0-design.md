@@ -437,16 +437,22 @@ route → []Target
 - 无 FROM 的 SELECT（常量、`LAST_INSERT_ID()`/`ROW_COUNT()` 改写）路由默认片；
 - 2 Slice 真拓扑 e2e：CRUD、数据落片、跨片拒绝、`LAST_INSERT_ID`/`ROW_COUNT`。
 
-未落地（B1.1，DQL 优先）：
+已落地（B1.1，DQL 兼容）：
 
-- `EXPLAIN ROUTE` + 路由决策日志；
-- 单分片 prepared SELECT + `StmtTable` 接线；
-- `SHOW TABLES/COLUMNS/CREATE`、`USE`、`SET NAMES` 的连接兼容；
-- 分片读一致性：read-after-write / 从库延迟。
+- `EXPLAIN ROUTE`：输出 Kind/Slice/Role/DB/SQL/Reject 原因；
+- 单分片 prepared SELECT + `StmtTable`：**分片键必须是字面量**，
+  参数化分片键明确 1235；prepared 会话 pin 后端连接；
+- `SHOW TABLES/COLUMNS/CREATE/INDEX/VARIABLES`、`USE`、`COM_INIT_DB`、
+  `SET NAMES` 路由默认片，连接初始化不再被打断。
+
+未落地（B1.2）：
+
+- 结构化路由决策日志/metrics；
+- 分片读一致性：read-after-write / 从库延迟；
+- 单分片写事务与 prepared 写。
 
 DML/DDL 后置：
 
-- 单分片写事务（BEGIN/COMMIT/ROLLBACK/SAVEPOINT）与 prepared 写；
 - DDL 不在代理内广播，走外部迁移流程（§6.4）。
 
 ### 7.3 DQL 优先 backlog
@@ -474,12 +480,12 @@ B1.0：
 - 单分片 `INSERT`：分片键存在且所有行落同一片；
 - 无 FROM 的常量 SELECT / 会话函数改写。
 
-B1.1（尚未实现，DQL 优先）：
+B1.1（已落地，DQL 兼容）：
 
 - `EXPLAIN ROUTE`：输出 Kind、Targets、Reject 原因；
-- 单分片 prepared SELECT（`StmtTable` 接线）；
-- `SHOW TABLES/COLUMNS/CREATE`、`USE`、`SET NAMES` 的连接兼容；
-- 分片读一致性：read-after-write / 从库延迟。
+- 单分片 prepared SELECT（`StmtTable` 接线；分片键必须字面量）；
+- `SHOW TABLES/COLUMNS/CREATE/INDEX/VARIABLES`、`USE`、`SET NAMES`；
+- 分片读一致性（read-after-write / 从库延迟）仍未实现。
 
 DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代理始终显式 Reject。
 
@@ -487,6 +493,8 @@ DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代�
 
 - 无分片键 / 非等值 / 多分片写；
 - 跨片/多表 JOIN、schema 限定表；
+- prepared 参数化分片键、prepared DML；
+- SHOW STATUS/MASTER 等非安全 SHOW；`SET sql_mode` 等非 `SET NAMES`；
 - DDL 永久 Reject（外部迁移工具按片变更，见 §6.4）；SHOW/事务控制/prepared 写当前 1235；
 - 多分片 `LAST_INSERT_ID` / `ROW_COUNT`；
 - 未配置规则的普通表（P0 无默认片）；

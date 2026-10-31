@@ -44,6 +44,22 @@ func TestSingleShardRouting(t *testing.T) {
 
 	conn := openConn(t, ctx, proxy.DSN())
 
+	// Connection/session compatibility: metadata reads and session statements
+	// must not be rejected just because they have no shard key.
+	requireQueryHasRow(t, ctx, conn, "SHOW TABLES")
+	requireQueryHasRow(t, ctx, conn, "SHOW COLUMNS FROM orders")
+	requireQueryHasRow(t, ctx, conn, "SHOW CREATE TABLE orders")
+	requireQueryHasRow(t, ctx, conn, "SHOW INDEX FROM orders")
+	requireQueryHasRow(t, ctx, conn, "DESC orders")
+	_, err = conn.ExecContext(ctx, "USE bench")
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, "SET NAMES utf8mb4")
+	require.NoError(t, err)
+	require.Equal(t, "bench", connScalarString(t, ctx, conn, "SELECT DATABASE()"))
+	assertReject(t, ctx, conn, "SHOW MASTER STATUS")
+	assertReject(t, ctx, conn, "SHOW STATUS")
+	assertReject(t, ctx, conn, "SET sql_mode = 'ANSI_QUOTES'")
+
 	// user_id=2 -> even -> s0.
 	_, err = conn.ExecContext(ctx, "INSERT INTO orders (user_id, amount) VALUES (2, 100)")
 	require.NoError(t, err)
@@ -70,16 +86,35 @@ func TestSingleShardRouting(t *testing.T) {
 	require.Equal(t, 1, connScalar(t, ctx, conn, "SELECT ROW_COUNT()"))
 	require.Equal(t, -1, connScalar(t, ctx, conn, "SELECT ROW_COUNT()"))
 
+	assertRoute(t, ctx, conn, "EXPLAIN ROUTE SELECT amount FROM orders WHERE user_id = 2",
+		"SingleShard", "s0", "slave", "")
+	assertRoute(t, ctx, conn, "EXPLAIN ROUTE SELECT * FROM orders",
+		"Reject", "", "", "WHERE")
+
+	// Prepared SELECT: the shard key must be a literal at prepare time; other
+	// parameters are supported by the backend protocol.
+	prep, err := conn.PrepareContext(ctx,
+		"SELECT amount FROM orders WHERE user_id = 2 AND amount > ?")
+	require.NoError(t, err)
+	var preparedAmount int
+	require.NoError(t, prep.QueryRowContext(ctx, 0).Scan(&preparedAmount))
+	require.Equal(t, 200, preparedAmount)
+	require.NoError(t, prep.Close())
+
+	_, err = conn.PrepareContext(ctx, "SELECT amount FROM orders WHERE user_id = ?")
+	var prepErr *drivermysql.MySQLError
+	require.ErrorAs(t, err, &prepErr)
+	require.Equal(t, uint16(1235), prepErr.Number, "parameterized shard key is not routable")
+
+	_, err = conn.PrepareContext(ctx, "UPDATE orders SET amount = ? WHERE user_id = 2")
+	require.ErrorAs(t, err, &prepErr)
+	require.Equal(t, uint16(1235), prepErr.Number, "prepared DML is not supported")
+
 	_, err = conn.ExecContext(ctx, "DELETE FROM orders WHERE user_id = 1")
 	require.NoError(t, err)
 	require.Equal(t, 0, shardCount(t, ctx, tp.Slices[1], "SELECT COUNT(*) FROM orders WHERE user_id = 1"))
 
 	require.Equal(t, 1, connScalar(t, ctx, conn, "SELECT 1"))
-
-	assertRoute(t, ctx, conn, "EXPLAIN ROUTE SELECT amount FROM orders WHERE user_id = 2",
-		"SingleShard", "s0", "slave", "")
-	assertRoute(t, ctx, conn, "EXPLAIN ROUTE SELECT * FROM orders",
-		"Reject", "", "", "WHERE")
 
 	// Unsupported shapes are explicit 1235, not silent wrong results.
 	assertReject(t, ctx, conn, "SELECT * FROM orders WHERE user_id IN (1, 2)")
@@ -154,4 +189,20 @@ func assertRoute(t *testing.T, ctx context.Context, conn *sql.Conn, query, kind,
 	if reasonPart != "" {
 		require.Contains(t, reason, reasonPart)
 	}
+}
+
+func requireQueryHasRow(t *testing.T, ctx context.Context, conn *sql.Conn, query string) {
+	t.Helper()
+	rows, err := conn.QueryContext(ctx, query)
+	require.NoErrorf(t, err, "查询失败: %s", query)
+	defer rows.Close()
+	require.Truef(t, rows.Next(), "期望至少一行: %s", query)
+	require.NoError(t, rows.Err())
+}
+
+func connScalarString(t *testing.T, ctx context.Context, conn *sql.Conn, query string) string {
+	t.Helper()
+	var s string
+	require.NoErrorf(t, conn.QueryRowContext(ctx, query).Scan(&s), "查询失败: %s", query)
+	return s
 }

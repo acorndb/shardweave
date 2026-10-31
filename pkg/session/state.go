@@ -17,6 +17,7 @@ type State struct {
 	// from these fields, not by the backend connection currently in use.
 	lastInsertID uint64
 	rowCount     int64
+	nextStmtID   uint32
 
 	stmts *StmtTable
 }
@@ -89,6 +90,15 @@ func (s *State) Stmts() *StmtTable {
 	return s.stmts
 }
 
+// NextStmtID returns a proxy-owned statement id. It never returns 0.
+func (s *State) NextStmtID() uint32 {
+	s.nextStmtID++
+	if s.nextStmtID == 0 {
+		s.nextStmtID = 1
+	}
+	return s.nextStmtID
+}
+
 // Reset clears transaction/reserved/charset state for COM_RESET_CONNECTION.
 // Current database is preserved (MySQL COM_RESET_CONNECTION semantics).
 func (s *State) Reset() {
@@ -98,6 +108,7 @@ func (s *State) Reset() {
 	s.charset = ""
 	s.lastInsertID = 0
 	s.rowCount = -1
+	s.nextStmtID = 0
 	s.Stmts().Reset()
 }
 

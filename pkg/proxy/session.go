@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -90,12 +91,7 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 				stmt.Raw = raw
 				stmt.Effect = sql.ParseSessionEffect(raw)
 				if cfg.ParseAST {
-					res, perr := sqlparser.Parse(raw)
-					if perr != nil {
-						stmt.Err = perr
-					} else if len(res.Stmts) == 1 {
-						stmt.AST = res.Stmts[0]
-					}
+					parseStatementAST(stmt, raw)
 				}
 			case mysql.ComInitDB:
 				stmt.Raw = string(data[1:])
@@ -103,6 +99,13 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 				stmt.Effect = sql.Effect{UseDB: stmt.Raw}
 			case mysql.ComStmtPrepare:
 				stmt.Raw = string(data[1:])
+				if cfg.ParseAST {
+					parseStatementAST(stmt, stmt.Raw)
+				}
+			case mysql.ComStmtExecute, mysql.ComStmtReset, mysql.ComStmtClose:
+				if len(data) >= 5 {
+					stmt.StmtID = binary.LittleEndian.Uint32(data[1:5])
+				}
 			}
 		}
 
@@ -157,6 +160,17 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 		default:
 			_ = writeERR(front, 1047, "08S01", fmt.Sprintf("command %d not supported yet", data[0]))
 		}
+	}
+}
+
+func parseStatementAST(stmt *sql.Statement, raw string) {
+	res, err := sqlparser.Parse(raw)
+	if err != nil {
+		stmt.Err = err
+		return
+	}
+	if len(res.Stmts) == 1 {
+		stmt.AST = res.Stmts[0]
 	}
 }
 

@@ -35,3 +35,12 @@ func TestState_StmtTable(t *testing.T) {
 	st.Reset()
 	require.Zero(t, st.Stmts().Len(), "COM_RESET_CONNECTION clears prepared statements")
 }
+
+func TestState_NextStmtID(t *testing.T) {
+	st := session.NewState()
+	require.Equal(t, uint32(1), st.NextStmtID())
+	require.Equal(t, uint32(2), st.NextStmtID())
+
+	st.Reset()
+	require.Equal(t, uint32(1), st.NextStmtID(), "reset restarts proxy statement ids")
+}

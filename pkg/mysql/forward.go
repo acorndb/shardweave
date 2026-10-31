@@ -73,36 +73,56 @@ func ForwardResponseInfo(dst, src *packet.Conn, deprecateEOF bool) (ResponseInfo
 // ForwardPrepareResponse copies COM_STMT_PREPARE_OK plus optional param/column
 // definition sections (go-mysql / MySQL binary prepare reply).
 func ForwardPrepareResponse(dst, src *packet.Conn, deprecateEOF bool) error {
+	_, _, err := forwardPrepareResponse(dst, src, deprecateEOF, 0, false)
+	return err
+}
+
+// ForwardPrepareResponseWithID forwards a prepare response while replacing the
+// backend statement id with clientID. It returns the backend id for the
+// per-slice statement table.
+func ForwardPrepareResponseWithID(dst, src *packet.Conn, deprecateEOF bool, clientID uint32) (backendID uint32, serverErr bool, err error) {
+	return forwardPrepareResponse(dst, src, deprecateEOF, clientID, true)
+}
+
+func forwardPrepareResponse(
+	dst, src *packet.Conn, deprecateEOF bool, clientID uint32, rewrite bool,
+) (backendID uint32, serverErr bool, err error) {
 	data, err := src.ReadPacket()
 	if err != nil {
-		return err
-	}
-	if err := writePayload(dst, data); err != nil {
-		return err
+		return 0, false, err
 	}
 	if len(data) == 0 {
-		return nil
+		return 0, false, writePayload(dst, data)
 	}
 	if data[0] == ErrHeader {
-		return nil
+		return 0, true, writePayload(dst, data)
 	}
 	if data[0] != OKHeader || len(data) < 12 {
-		return fmt.Errorf("mysql: expected COM_STMT_PREPARE_OK, got hdr=0x%02x len=%d", data[0], len(data))
+		return 0, false, fmt.Errorf("mysql: expected COM_STMT_PREPARE_OK, got hdr=0x%02x len=%d", data[0], len(data))
+	}
+	backendID = binary.LittleEndian.Uint32(data[1:5])
+	out := data
+	if rewrite {
+		out = append([]byte(nil), data...)
+		binary.LittleEndian.PutUint32(out[1:5], clientID)
+	}
+	if err := writePayload(dst, out); err != nil {
+		return backendID, false, err
 	}
 	numColumns := binary.LittleEndian.Uint16(data[5:7])
 	numParams := binary.LittleEndian.Uint16(data[7:9])
 
 	if numParams > 0 {
 		if err := forwardDefinitions(dst, src, uint64(numParams), deprecateEOF); err != nil {
-			return err
+			return backendID, false, err
 		}
 	}
 	if numColumns > 0 {
 		if err := forwardDefinitions(dst, src, uint64(numColumns), deprecateEOF); err != nil {
-			return err
+			return backendID, false, err
 		}
 	}
-	return nil
+	return backendID, false, nil
 }
 
 func forwardOne(dst, src *packet.Conn, deprecateEOF bool) (info ResponseInfo, more bool, err error) {

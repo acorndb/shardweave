@@ -9,6 +9,7 @@ import (
 // Stmt is one frontend prepared statement and its per-slice backend ids.
 type Stmt struct {
 	ID      uint32
+	Slice   string
 	SQL     string
 	AST     ast.StmtNode
 	Params  uint16

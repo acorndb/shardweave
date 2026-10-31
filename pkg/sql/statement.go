@@ -30,6 +30,7 @@ type Statement struct {
 	Cmd     byte
 	Payload []byte
 	Raw     string
+	StmtID  uint32 // COM_STMT_* client statement id (proxy-owned)
 	AST     ast.StmtNode
 	Kind    Kind
 	Effect  Effect

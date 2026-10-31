@@ -2,6 +2,7 @@ package execute
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"sync"
@@ -30,6 +31,7 @@ type fakeConn struct {
 	affectedRows uint64
 	lastInsertID uint64
 	resultSet    bool
+	prepareID    uint32
 	alignErr     error
 	execErr      error
 	execCalls    int
@@ -52,6 +54,7 @@ func (c *fakeConn) Exec(_ context.Context, req backend.ExecRequest) (result.Stre
 	c.lastReq = req
 	status, serverErr, err := c.status, c.serverErr, c.execErr
 	affected, lastID, resultSet := c.affectedRows, c.lastInsertID, c.resultSet
+	prepareID := c.prepareID
 	c.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -62,6 +65,7 @@ func (c *fakeConn) Exec(_ context.Context, req backend.ExecRequest) (result.Stre
 		affectedRows: affected,
 		lastInsertID: lastID,
 		resultSet:    resultSet,
+		prepareID:    prepareID,
 	}, nil
 }
 
@@ -94,7 +98,14 @@ type fakeStream struct {
 	affectedRows uint64
 	lastInsertID uint64
 	resultSet    bool
+	prepareID    uint32
 	closed       bool
+}
+
+var _ prepareForwarder = (*fakeStream)(nil)
+
+func (s *fakeStream) ForwardPrepareTo(*packet.Conn, uint32) (mysql.ResponseInfo, uint32, error) {
+	return mysql.ResponseInfo{ServerErr: s.serverErr}, s.prepareID, nil
 }
 
 func (s *fakeStream) ForwardTo(context.Context, *packet.Conn) (mysql.ResponseInfo, error) {
@@ -616,15 +627,73 @@ func (r sqlTargetRouter) Route(context.Context, *session.State, *sql.Statement) 
 func TestPayloadFor(t *testing.T) {
 	original := append([]byte{mysql.ComQuery}, []byte("SELECT 1")...)
 	stmt := &sql.Statement{Cmd: mysql.ComQuery, Payload: original, Raw: "SELECT 1"}
+	rt := newRuntime()
+	p := &Pipeline{}
 
-	require.Equal(t, append([]byte{mysql.ComQuery}, []byte("SELECT 2")...),
-		payloadFor(stmt, route.Target{SQL: "SELECT 2"}))
-	require.Equal(t, original, payloadFor(stmt, route.Target{}),
-		"empty target SQL must fall back to the original payload")
+	got, err := p.payloadFor(rt, stmt, route.Target{SQL: "SELECT 2"})
+	require.NoError(t, err)
+	require.Equal(t, append([]byte{mysql.ComQuery}, []byte("SELECT 2")...), got)
 
-	execStmt := &sql.Statement{Cmd: mysql.ComStmtExecute, Payload: []byte{mysql.ComStmtExecute}}
-	require.Equal(t, execStmt.Payload, payloadFor(execStmt, route.Target{SQL: "SELECT 2"}),
-		"non-COM_QUERY commands must never use Target.SQL")
+	got, err = p.payloadFor(rt, stmt, route.Target{})
+	require.NoError(t, err)
+	require.Equal(t, original, got, "empty target SQL must fall back to the original payload")
+
+	execStmt := &sql.Statement{
+		Cmd: mysql.ComStmtExecute, StmtID: 1,
+		Payload: []byte{mysql.ComStmtExecute, 0x01, 0x00, 0x00, 0x00},
+	}
+	require.NoError(t, rt.State.Stmts().Add(&session.Stmt{
+		ID: 1, Slice: "default", Targets: map[string]uint32{"default": 9},
+	}))
+	ps := &Pipeline{sharding: true}
+	got, err = ps.payloadFor(rt, execStmt, route.Target{Slice: "default", SQL: "ignored"})
+	require.NoError(t, err)
+	require.Equal(t, uint32(9), binary.LittleEndian.Uint32(got[1:5]),
+		"prepared commands must use the backend statement id, not Target.SQL")
+
+	_, err = ps.payloadFor(rt, &sql.Statement{Cmd: mysql.ComStmtExecute, StmtID: 99, Payload: execStmt.Payload},
+		route.Target{Slice: "default"})
+	require.Error(t, err)
+}
+
+func TestPipeline_PrepareLifecycle(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
+		c.prepareID = 9
+		c.resultSet = true
+	}))), plan.Builder{Router: source.AllMaster{}, Sharding: true})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	prep := &sql.Statement{
+		Cmd:     mysql.ComStmtPrepare,
+		Raw:     "SELECT amount FROM orders WHERE user_id = ?",
+		Payload: append([]byte{mysql.ComStmtPrepare}, []byte("SELECT amount FROM orders WHERE user_id = ?")...),
+	}
+	require.NoError(t, p.Handle(context.Background(), rt, prep))
+	require.True(t, rt.State.Reserved())
+	require.Len(t, rt.leases, 1, "prepare must pin the backend connection")
+
+	entry, ok := rt.State.Stmts().Get(1)
+	require.True(t, ok)
+	require.Equal(t, "default", entry.Slice)
+	require.Equal(t, uint32(9), entry.Targets["default"])
+
+	exec := &sql.Statement{
+		Cmd:     mysql.ComStmtExecute,
+		StmtID:  1,
+		Payload: []byte{mysql.ComStmtExecute, 0x01, 0x00, 0x00, 0x00},
+	}
+	require.NoError(t, p.Handle(context.Background(), rt, exec))
+	require.Equal(t, uint32(9), binary.LittleEndian.Uint32(tr.last(t).lastReq.Payload[1:5]))
+
+	closeStmt := &sql.Statement{
+		Cmd:     mysql.ComStmtClose,
+		StmtID:  1,
+		Payload: []byte{mysql.ComStmtClose, 0x01, 0x00, 0x00, 0x00},
+	}
+	require.NoError(t, p.Handle(context.Background(), rt, closeStmt))
+	require.Zero(t, rt.State.Stmts().Len())
 }
 
 func TestPipeline_UsesTargetSQL(t *testing.T) {

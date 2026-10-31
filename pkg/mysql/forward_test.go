@@ -1,6 +1,7 @@
 package mysql_test
 
 import (
+	"encoding/binary"
 	"net"
 	"testing"
 
@@ -239,6 +240,43 @@ func TestForwardPrepareResponse(t *testing.T) {
 	require.NoError(t, mysql.ForwardPrepareResponse(dst, src, true))
 	require.NoError(t, <-werr)
 	require.Equal(t, packets, <-front)
+}
+
+func TestForwardPrepareResponseWithID(t *testing.T) {
+	src, dst, bw, fr := pipePair(t)
+
+	prepareOK := []byte{
+		0x00,                   // OK
+		0x01, 0x00, 0x00, 0x00, // backend statement_id=1
+		0x01, 0x00, // num_columns=1
+		0x01, 0x00, // num_params=1
+		0x00,       // reserved
+		0x00, 0x00, // warnings
+	}
+	paramDef := []byte{
+		0x03, 'd', 'e', 'f', 0x00, 0x00, 0x00, 0x01, '?', 0x00, 0x0c,
+		0x3f, 0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+	colDef := []byte{
+		0x03, 'd', 'e', 'f', 0x00, 0x00, 0x00, 0x01, '1', 0x00, 0x0c,
+		0x3f, 0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+
+	werr := writePackets(t, bw, [][]byte{prepareOK, paramDef, colDef})
+	front := drainFront(t, fr, 3)
+
+	backendID, serverErr, err := mysql.ForwardPrepareResponseWithID(dst, src, true, 42)
+	require.NoError(t, err)
+	require.False(t, serverErr)
+	require.Equal(t, uint32(1), backendID)
+	require.NoError(t, <-werr)
+
+	got := <-front
+	require.Len(t, got, 3)
+	require.Equal(t, byte(mysql.OKHeader), got[0][0])
+	require.Equal(t, uint32(42), binary.LittleEndian.Uint32(got[0][1:5]))
+	require.Equal(t, paramDef, got[1])
+	require.Equal(t, colDef, got[2])
 }
 
 func TestForwardResponse_MultiResult(t *testing.T) {

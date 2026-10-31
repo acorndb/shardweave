@@ -53,6 +53,14 @@ func TestRouter_SingleShard(t *testing.T) {
 		{"delete", "DELETE FROM orders WHERE user_id = 1", false, "s1", constant.RoleMaster},
 		{"insert_single_row", "INSERT INTO orders (id, user_id, amount) VALUES (1, 2, 10)", false, "s0", constant.RoleMaster},
 		{"insert_same_slice_rows", "INSERT INTO orders (id, user_id, amount) VALUES (1, 2, 10), (2, 4, 20)", false, "s0", constant.RoleMaster},
+		{"use", "USE bench", false, "s0", constant.RoleMaster},
+		{"set_names", "SET NAMES utf8mb4", false, "s0", constant.RoleMaster},
+		{"show_tables", "SHOW TABLES", false, "s0", constant.RoleSlave},
+		{"show_columns", "SHOW COLUMNS FROM orders", false, "s0", constant.RoleSlave},
+		{"show_create", "SHOW CREATE TABLE orders", false, "s0", constant.RoleSlave},
+		{"show_index", "SHOW INDEX FROM orders", false, "s0", constant.RoleSlave},
+		{"show_variables", "SHOW VARIABLES LIKE 'sql_mode'", false, "s0", constant.RoleSlave},
+		{"describe", "DESC orders", false, "s0", constant.RoleSlave},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -86,9 +94,12 @@ func TestRouter_Rejects(t *testing.T) {
 		{"insert_cross_shard", "INSERT INTO orders (id, user_id) VALUES (1, 1), (2, 2)", mysql.ComQuery},
 		{"insert_select", "INSERT INTO orders (id, user_id) SELECT id, user_id FROM orders WHERE user_id = 1", mysql.ComQuery},
 		{"ddl", "CREATE TABLE t (id INT)", mysql.ComQuery},
-		{"show", "SHOW TABLES", mysql.ComQuery},
+		{"show_master", "SHOW MASTER STATUS", mysql.ComQuery},
+		{"show_status", "SHOW STATUS", mysql.ComQuery},
+		{"explain", "EXPLAIN SELECT * FROM orders WHERE user_id = 1", mysql.ComQuery},
+		{"set_other", "SET sql_mode = 'ANSI_QUOTES'", mysql.ComQuery},
 		{"transaction", "BEGIN", mysql.ComQuery},
-		{"prepared", "SELECT * FROM orders WHERE user_id = 1", mysql.ComStmtPrepare},
+		{"prepare_insert", "INSERT INTO orders (id, user_id) VALUES (1, 2)", mysql.ComStmtPrepare},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -98,6 +109,45 @@ func TestRouter_Rejects(t *testing.T) {
 			require.Equal(t, uint16(1235), rej.Code)
 		})
 	}
+}
+
+func TestRouter_Prepared(t *testing.T) {
+	r := newRouter(t)
+	st := session.NewState()
+
+	prep := statement(t, "SELECT * FROM orders WHERE user_id = 1", mysql.ComStmtPrepare)
+	targets, err := r.Route(context.Background(), st, prep)
+	require.NoError(t, err)
+	require.Equal(t, "s1", targets[0].Slice)
+	require.Equal(t, constant.RoleMaster, targets[0].Role)
+
+	require.NoError(t, st.Stmts().Add(&session.Stmt{
+		ID: 7, Slice: "s1", Targets: map[string]uint32{"s1": 3},
+	}))
+	for _, cmd := range []byte{mysql.ComStmtExecute, mysql.ComStmtReset, mysql.ComStmtClose} {
+		targets, err = r.Route(context.Background(), st, &sql.Statement{Cmd: cmd, StmtID: 7})
+		require.NoError(t, err)
+		require.Equal(t, "s1", targets[0].Slice)
+		require.Equal(t, constant.RoleMaster, targets[0].Role)
+	}
+
+	_, err = r.Route(context.Background(), st, &sql.Statement{Cmd: mysql.ComStmtExecute, StmtID: 99})
+	var rej *plan.RejectError
+	require.ErrorAs(t, err, &rej)
+
+	_, err = r.Route(context.Background(), st, &sql.Statement{Cmd: mysql.ComStmtPrepare})
+	require.ErrorAs(t, err, &rej)
+}
+
+func TestRouter_InitDB(t *testing.T) {
+	targets, err := newRouter(t).Route(context.Background(), session.NewState(), &sql.Statement{
+		Cmd: mysql.ComInitDB,
+		Raw: "bench",
+	})
+	require.NoError(t, err)
+	require.Len(t, targets, 1)
+	require.Equal(t, "s0", targets[0].Slice)
+	require.Equal(t, constant.RoleMaster, targets[0].Role)
 }
 
 func TestNew_RejectsInvalidRules(t *testing.T) {

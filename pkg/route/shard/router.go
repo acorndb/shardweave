@@ -69,8 +69,33 @@ func (r *Router) Route(_ context.Context, st *session.State, stmt *sql.Statement
 	if stmt == nil {
 		return nil, reject("nil statement")
 	}
-	if stmt.Cmd != mysql.ComQuery {
-		return nil, reject("prepared statements are not supported in sharding mode")
+	switch stmt.Cmd {
+	case mysql.ComInitDB:
+		return r.defaultTargets(constant.RoleMaster), nil
+	case mysql.ComStmtExecute, mysql.ComStmtReset, mysql.ComStmtClose:
+		if st == nil {
+			return nil, reject("nil session for prepared statement")
+		}
+		entry, ok := st.Stmts().Get(stmt.StmtID)
+		if !ok {
+			return nil, reject("unknown prepared statement %d", stmt.StmtID)
+		}
+		return []route.Target{{Slice: entry.Slice, Role: constant.RoleMaster}}, nil
+	case mysql.ComStmtPrepare:
+		if stmt.AST == nil {
+			return nil, reject("cannot route prepared statement without AST")
+		}
+		sel, ok := stmt.AST.(*ast.SelectStmt)
+		if !ok {
+			return nil, reject("only prepared SELECT is supported")
+		}
+		if sel.From == nil {
+			return nil, reject("prepared constant SELECT is not supported")
+		}
+	case mysql.ComQuery:
+		// handled below
+	default:
+		return nil, reject("command %d is not supported in sharding mode", stmt.Cmd)
 	}
 	if stmt.AST == nil {
 		return nil, reject("cannot route statement without AST")
@@ -83,6 +108,23 @@ func (r *Router) Route(_ context.Context, st *session.State, stmt *sql.Statement
 		err    error
 	)
 	switch s := stmt.AST.(type) {
+	case *ast.UseStmt:
+		return r.defaultTargets(constant.RoleMaster), nil
+	case *ast.SetStmt:
+		if isSetNames(stmt.Raw) {
+			return r.defaultTargets(constant.RoleMaster), nil
+		}
+		return nil, reject("SET is not supported in sharding mode")
+	case *ast.ShowStmt:
+		if isSafeShow(s.Tp) {
+			return r.defaultTargets(source.PickRole(st, stmt.Cmd, stmt.Raw)), nil
+		}
+		return nil, reject("SHOW type is not supported in sharding mode")
+	case *ast.ExplainStmt:
+		if isDescribe(stmt.Raw) {
+			return r.defaultTargets(source.PickRole(st, stmt.Cmd, stmt.Raw)), nil
+		}
+		return nil, reject("EXPLAIN is not supported in sharding mode; use EXPLAIN ROUTE")
 	case *ast.SelectStmt:
 		if s.From == nil {
 			// Constant selects and the proxy's rewritten LAST_INSERT_ID()/
@@ -154,6 +196,51 @@ func (r *Router) lookupRule(tn *ast.TableName) (Rule, error) {
 		return Rule{}, reject("table %q is not sharded", tn.Name.O)
 	}
 	return rule, nil
+}
+
+func (r *Router) defaultTargets(role constant.Role) []route.Target {
+	return []route.Target{{Slice: r.defaultSlice, Role: role}}
+}
+
+func isSetNames(raw string) bool {
+	s := strings.TrimSpace(raw)
+	upper := strings.ToUpper(s)
+	if !hasWordPrefix(upper, "SET") {
+		return false
+	}
+	rest := strings.TrimSpace(s[len("SET"):])
+	return hasWordPrefix(strings.ToUpper(rest), "NAMES")
+}
+
+func isDescribe(raw string) bool {
+	s := strings.TrimSpace(raw)
+	upper := strings.ToUpper(s)
+	return hasWordPrefix(upper, "DESC") || hasWordPrefix(upper, "DESCRIBE")
+}
+
+func isSafeShow(tp ast.ShowStmtType) bool {
+	switch tp {
+	case ast.ShowTables, ast.ShowColumns, ast.ShowCreateTable, ast.ShowIndex,
+		ast.ShowVariables, ast.ShowDatabases:
+		return true
+	default:
+		return false
+	}
+}
+
+func hasWordPrefix(s, prefix string) bool {
+	if !strings.HasPrefix(s, prefix) {
+		return false
+	}
+	if len(s) == len(prefix) {
+		return true
+	}
+	switch s[len(prefix)] {
+	case ' ', '\t', '\n', '\r', ';':
+		return true
+	default:
+		return false
+	}
 }
 
 // singleTable accepts exactly one plain table and rejects joins, derived tables
