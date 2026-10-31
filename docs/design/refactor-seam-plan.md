@@ -83,10 +83,10 @@
 |---|---|---|---|---|
 | R1 | P1a | 包归属：`backend` / `route/source` / `constant.Role` | 无 | 迁移后的既有测试 + 差分 |
 | R2 | P1b | `sql.Statement` + `plan.Plan`；single/rwsplit 生成 N=1 Plan | 无 | plan/sql 单测 + 差分 |
-| R3 | P1c | `result.Stream` + `execute.Pipeline`；N=1 raw；删 sharding 桩 | 无 | execute 单测 + 差分 |
+| R3 | P1c | execution seam：`result.Stream` + `backend.Conn.Exec/Align` + `execute.Pipeline`；N=1 raw；删 sharding 桩 | 无 | fake Conn 单测 + 差分 |
 | R4 | P2a | USE/SET 语义移到 `sql`；会话状态"成功后更新" | 小（错误路径修正） | sql/session/proxy 单测 + 差分 |
 | R5 | P2b | 配置切到 `backend` + `slices`；`SameTopology` | 配置 breaking | config 单测 + 差分 + rwsplit 冒烟 |
-| R6 | P2c | `backend.Conn.Exec/Align`；`Cluster`；去向下转型 | 无 | fake Conn 单测 + 差分 |
+| R6 | P2c | `Cluster` 与多 Slice 装配；`Runtime.leases` map | 无 | Cluster/lease 单测 + rwsplit 冒烟 |
 | R7 | P3 | 分片规则、单分片、Reject、EXPLAIN ROUTE | 新功能 | 见 `sharding-p0-design.md` |
 
 R1–R6 属于本次重构；R7 是 P3 的分片实现，列在这里只说明衔接点，不在重构范围。
@@ -191,55 +191,104 @@ type Statement struct {
 
 ---
 
-### R3：`result.Stream` + `execute.Pipeline`
+### R3：execution seam（`result.Stream` + `backend.Conn.Exec` + `execute.Pipeline`）
 
-**目标**：执行层统一成一条 Pipeline；N=1 走 raw stream；删除 `shardingExecutor`。
+**目标**：一次把执行缝打通，避免 R3/R6 之间留下一个“改了执行器但仍不可 fake”的中间态：
+
+- `pkg/result` 定义逻辑结果（Field/Row/Stream）。
+- `backend.Conn` 提供 `Exec/Align`；`MySQLConn.Exec` 返回 packet-backed `rawStream`。
+- `pkg/execute` 成为唯一执行器，N=1 走 raw stream，删除 `shardingExecutor`。
+- `execute` 不再对 `*MySQLConn` 做类型断言，可以用 fake `Conn` 单测。
 
 **文件动作**
 
 | 当前 | 目标 |
 |---|---|
 | `pkg/executor/` | `pkg/execute/` |
-| `pkg/executor/executor.go` | `pkg/execute/execute.go` |
-| `pkg/executor/forward.go` | `pkg/execute/forward.go` |
-| `pkg/executor/executor_test.go` | `pkg/execute/execute_test.go` |
-| 新增 | `pkg/result/result.go`（`Field`/`Row`/`Stream`） |
+| `pkg/executor/executor.go` | `pkg/execute/pipeline.go` |
+| `pkg/executor/forward.go` | `pkg/execute/forward.go`（rawForwarder 适配） |
+| `pkg/executor/executor_test.go` | `pkg/execute/pipeline_test.go` |
+| 新增 | `pkg/result/result.go` |
+| 新增 | `pkg/backend/stream.go`（rawStream / noReplyStream） |
+| `pkg/backend/conn.go` | `Conn` 加 `Exec/Align`；`MySQLConn.Exec` |
+| `pkg/proxy/session.go` | 用 `execute.Runtime` / `Executor` |
+| `pkg/server/server.go` | 按 mode 选 `plan.Builder`，再 `execute.New` |
 
-- `execute.Runtime` 持有 `*session.State` + 单条 lease（P3 再扩成 map）。
-- `execute` 内部定义最小 `rawForwarder` 接口：
+接口草案：
 
 ```go
+// pkg/backend
+type AlignSettings struct {
+    Database string
+    Charset  string
+}
+
+type ExecRequest struct {
+    Payload []byte // 完整命令包（含 cmd 字节）
+    Prepare bool   // COM_STMT_PREPARE 响应
+    NoReply bool   // COM_STMT_CLOSE 等无响应命令
+}
+
+type Conn interface {
+    Exec(ctx context.Context, req ExecRequest) (result.Stream, error)
+    Align(ctx context.Context, s AlignSettings) error
+    Reset(ctx context.Context) error
+    Close() error
+}
+
+// pkg/execute
+type Runtime struct {
+    Front *packet.Conn
+    State *session.State
+    lease *lease // single until R6
+}
+
+type Executor interface {
+    Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement) error
+    Release(rt *Runtime, discard bool) error
+    Close() error
+}
+
 type rawForwarder interface {
-    ForwardTo(ctx context.Context, front *packet.Conn) error
+    ForwardTo(ctx context.Context, front *packet.Conn) (status uint16, err error)
 }
 ```
 
-- R3 暂时保留 `MySQLConn.Packet()` 与 `execute` 内部的 raw 适配；R6 用
-  `Conn.Exec` 替换，去掉这个临时缝。
-- 删除 `shardingExecutor`、`ErrShardingNotImplemented`；`mode=sharding` 仍由
-  `config.Validate` 拒绝。
-- `executor.New(mode, group)` → `execute.NewPipeline(builder, slice)`；mode 只在
-  `pkg/server` 用于选择 Router。
+- `rawStream.ForwardTo` 调用现有的 `mysql.ForwardResponse` / `ForwardPrepareResponse`；
+  **不改 `pkg/mysql/forward.go` 的包处理逻辑**。
+- `execute.Handle`：Plan → acquire/reuse lease → `Conn.Align` → `Conn.Exec` →
+  `rawForwarder.ForwardTo` → 根据 status 更新 `State.InTx` → 非 sticky 时 release。
+- `ComStmtClose` 用 `NoReply=true`；`ComStmtPrepare` 用 `Prepare=true`；其余走
+  `ForwardResponse`。
+- `mode` 不再进入 `execute`：`pkg/server` 按 mode 选择 `source.AllMaster{}` 或
+  `source.Pick{}`，构造 `plan.Builder` 后传给 `execute.New`。
 
 **Red / Green**
 
-- `pkg/result`：Stream 接口的最小契约测试（fake stream）。
-- `pkg/execute`：fake `rawForwarder` + fake backend，覆盖：
-  - 单目标 raw 转发；
-  - sticky 会话不释放；
-  - 非 sticky 释放；
-  - 连接断开时 discard。
-- `pkg/proxy`：只改 import/类型，行为不变。
+- `pkg/result`：Stream 接口契约 + fake stream。
+- `pkg/execute`：fake `Conn`/`Stream` 覆盖：
+  - single/rwsplit 角色选择；
+  - sticky 会话不释放、非 sticky 释放；
+  - align 失败、exec 失败、release 失败；
+  - `Prepare` / `NoReply` 标志；
+  - PlanReject 不 acquire。
+- `pkg/backend`：`Exec` 写入完整命令包；`rawStream.ForwardTo` 转发 OK/ERR/结果集；
+  `NoReply` 不读响应。
+- `pkg/proxy`：fake Executor 跑命令循环（PING/QUERY/INIT_DB/RESET/未知命令/断开）。
 
 **退出条件**
 
 - 聚焦测试全绿；差分全绿；
-- `grep -r "shardingExecutor\|ErrShardingNotImplemented" pkg/` 为空。
+- `grep -r "shardingExecutor\|ErrShardingNotImplemented" pkg/` 为空；
+- `grep -rn "MySQLBackend\|\.Packet()" pkg/execute` 为空；
+- `pkg/execute` 覆盖率 ≥ 70%（fake Conn 路径）。
 
 **风险 / 回滚**
 
 - 风险：`ForwardResponse` 的 sequence/EOF 行为被包装层改变。缓解：包装层只负责
   acquire/release 与调用原函数，不改 `pkg/mysql/forward.go`。
+- 风险：`Exec` 的四种响应模式（OK/ERR/结果集/prepare/no-reply）漏测。缓解：
+  fake Stream + `pkg/mysql/forward_test.go` 的既有包级用例。
 - 回滚：revert；Pipeline 与旧 executor 行为等价。
 
 ---
@@ -320,41 +369,33 @@ type rawForwarder interface {
 
 ---
 
-### R6：`backend.Conn` 接口与 Cluster
+### R6：`Cluster` 与多 Slice 装配
 
-**目标**：执行层不再向下转型；`Conn` 提供 `Exec/Align`；`Cluster` 统一承载 Slices。
+**目标**：把单 Slice 装配升级到 `Cluster`，为 P3/P4 多分片留位置；执行层 lease
+从单条扩成 map。
 
 **文件动作**
 
-- `pkg/backend/conn.go`：
-
-```go
-type Conn interface {
-    Exec(ctx context.Context, db, query string) (result.Stream, error)
-    Align(ctx context.Context, s AlignSettings) error
-    Reset(ctx context.Context) error
-    Close() error
-}
-```
-
-- `MySQLConn` 实现 `Exec`：发送命令并返回 packet-backed `RawStream`。
 - `pkg/backend/cluster.go`：`Cluster{Get, Names}`；`server` 从 `slices` 构建。
 - `pkg/execute`：
-  - 删除 `writeBackend` / `execCommand` 中对 `*MySQLBackend` 的断言；
-  - 使用 `Conn.Exec`，N=1 从 `RawStream` 直通；
-  - `Runtime.leases` 改为 `map[string]*lease`（single/rwsplit 仍只有 1 个 key）。
-- `pkg/backend` 依赖 `pkg/result`；`result` 仍是叶子。
+  - `Runtime.lease` → `leases map[string]*lease`；
+  - 按 `plan.Targets[0].Slice` 解析 `Cluster.Get`；
+  - `Release` 释放该目标 lease；会话关闭时释放全部。
+- `MySQLConn.Packet()` 降为包内实现细节；`execute` 不再触碰。
+- R3 已删除 `writeBackend` / `execCommand` 的向下转型；R6 只补 Cluster/多 lease。
 
 **Red / Green**
 
-- fake `Conn`：脚本化返回 `RawStream`，覆盖 Exec/Align/Reset/Close。
-- `execute` 测试：fake Plan + fake Conn + fake Stream，不依赖 MySQL。
-- `backend` 池测试：fake Conn，覆盖 Release/Discard/Reset 失败。
+- fake `Conn` + 两个 Slice：按 Target.Slice 选到正确 slice；single/rwsplit 仍只有
+  1 个 key。
+- `Runtime.leases` 的 acquire/release/discard 覆盖；`Release` 只释放目标 slice。
+- `Cluster.Get` 未知 slice 返回明确错误。
 
 **退出条件**
 
-- 聚焦测试全绿；差分全绿；rwsplit 冒烟；
-- `grep -rn "MySQLBackend\|\\.Packet()" pkg/execute` 为空。
+- 聚焦测试全绿；rwsplit 冒烟；
+- `grep -rn "\.Packet()" pkg/execute` 为空（R3 已保证，R6 复核）；
+- `Runtime` 不再假设只有一个 lease。
 
 **风险 / 回滚**
 

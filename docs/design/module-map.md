@@ -289,8 +289,19 @@ RawStream 可以延迟实现 `Fields/Next`；`execute` 在 N=1 时只调用 `For
 ### 5.5 Backend（pkg/backend，proposed）
 
 ```go
+type AlignSettings struct {
+    Database string
+    Charset  string
+}
+
+type ExecRequest struct {
+    Payload []byte // 完整命令包（含 cmd 字节）
+    Prepare bool   // COM_STMT_PREPARE 响应
+    NoReply bool   // COM_STMT_CLOSE 等无响应命令
+}
+
 type Conn interface { // 原 backend_server.Backend
-    Exec(ctx context.Context, db, query string) (result.Stream, error)
+    Exec(ctx context.Context, req ExecRequest) (result.Stream, error)
     Align(ctx context.Context, s AlignSettings) error
     Reset(ctx context.Context) error
     Close() error
@@ -301,7 +312,8 @@ type Slice struct {
     // master/slaves/pool/LB 内部持有
 }
 
-func (s *Slice) Acquire(ctx context.Context, role constant.Role) (Conn, error)
+// R1 暂时保留 (Conn, *Pool, error)；R6 引入 Cluster/lease 时收敛为 (Conn, error)。
+func (s *Slice) Acquire(ctx context.Context, role constant.Role) (Conn, *Pool, error)
 
 type Cluster struct { /* map[string]*Slice */ }
 
@@ -311,6 +323,8 @@ func (c *Cluster) Names() []string
 
 `AlignSettings` 包含物理库、charset、需要对齐的会话变量；由 `execute` 从
 `session.State + route.Target` 组装。`backend` 不认识 `session` 类型。
+`Exec` 只负责发完整命令包并返回响应流；OK/ERR/结果集/prepare/no-reply 的包处理
+仍由 `pkg/mysql` 的 forward 函数完成。
 
 ### 5.6 Session（pkg/session，proposed）
 
@@ -337,19 +351,21 @@ type StmtTable struct { /* map[uint32]*Stmt */ }
 
 ```go
 type Runtime struct {
-    State  *session.State
-    leases map[string]*lease // slice -> 后端连接
+    Front *packet.Conn
+    State *session.State
+    lease *lease // single until R6; R6 → leases map[string]*lease
 }
 
 type Executor interface {
     Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement) error
-    CloseSession(rt *Runtime) error
+    Release(rt *Runtime, discard bool) error
     Close() error
 }
 ```
 
-`Handle` 内部：`plan.Build → acquire/align → Exec → merge（可选）→ write`。
-这是唯一 import `backend` 的数据面模块。
+`Handle` 内部：`plan.Build → acquire/align → Conn.Exec → rawForwarder.ForwardTo`。
+这是唯一 import `backend` 的数据面模块。R3 用 fake `Conn`/`Stream` 做单测，
+不依赖真实 MySQL；R6 把单条 lease 扩成按 Slice 的 map。
 
 ### 5.8 Merger（pkg/merge，proposed）
 
