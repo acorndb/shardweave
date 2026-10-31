@@ -131,6 +131,17 @@ func newPool(t *testing.T, tag string, tr *tracker, configure func(*fakeConn)) *
 	return p
 }
 
+func sliceWith(name string, master *backend.Pool, slaves ...*backend.Pool) *backend.Slice {
+	return &backend.Slice{Name: name, Master: master, Slaves: slaves}
+}
+
+func clusterOf(t *testing.T, slices ...*backend.Slice) *backend.Cluster {
+	t.Helper()
+	c, err := backend.NewCluster(slices...)
+	require.NoError(t, err)
+	return c
+}
+
 func newRuntime() *Runtime {
 	return &Runtime{State: session.NewState()}
 }
@@ -165,22 +176,26 @@ func TestNew_Errors(t *testing.T) {
 	_, err := New(nil, plan.Builder{Router: source.AllMaster{}})
 	require.Error(t, err)
 
-	_, err = New(&backend.Slice{}, plan.Builder{Router: source.AllMaster{}})
+	tr := &tracker{}
+	c := clusterOf(t, sliceWith("default", newPool(t, "master", tr, nil)))
+	_, err = New(c, plan.Builder{})
 	require.Error(t, err)
+}
 
-	p := backend.NewPool(backend.PoolConfig{MaxCapacity: 1}, nil)
-	t.Cleanup(func() { _ = p.Close() })
-	_, err = New(&backend.Slice{Master: p}, plan.Builder{})
-	require.Error(t, err)
+func TestPipeline_Close(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, nil))),
+		plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+	require.NoError(t, p.Close())
 }
 
 func TestPipeline_SingleUsesMaster(t *testing.T) {
 	tr := &tracker{}
-	g := &backend.Slice{
-		Master: newPool(t, "master", tr, nil),
-		Slaves: []*backend.Pool{newPool(t, "slave", tr, nil)},
-	}
-	p, err := New(g, plan.Builder{Router: source.AllMaster{}})
+	g := sliceWith("default",
+		newPool(t, "master", tr, nil),
+		newPool(t, "slave", tr, nil))
+	p, err := New(clusterOf(t, g), plan.Builder{Router: source.AllMaster{}})
 	require.NoError(t, err)
 
 	rt := newRuntime()
@@ -189,7 +204,7 @@ func TestPipeline_SingleUsesMaster(t *testing.T) {
 	require.Equal(t, "master", c.tag)
 	require.Equal(t, 1, c.execCalls)
 	require.Equal(t, 1, c.resets, "non-sticky must return the lease")
-	require.Nil(t, rt.lease)
+	require.Empty(t, rt.leases)
 }
 
 func TestPipeline_RWSplitRoutes(t *testing.T) {
@@ -204,11 +219,10 @@ func TestPipeline_RWSplitRoutes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tr := &tracker{}
-			g := &backend.Slice{
-				Master: newPool(t, "master", tr, nil),
-				Slaves: []*backend.Pool{newPool(t, "slave", tr, nil)},
-			}
-			p, err := New(g, plan.Builder{Router: source.Pick{}})
+			g := sliceWith("default",
+				newPool(t, "master", tr, nil),
+				newPool(t, "slave", tr, nil))
+			p, err := New(clusterOf(t, g), plan.Builder{Router: source.Pick{}})
 			require.NoError(t, err)
 
 			require.NoError(t, p.Handle(context.Background(), newRuntime(), query(tc.raw)))
@@ -219,15 +233,16 @@ func TestPipeline_RWSplitRoutes(t *testing.T) {
 
 func TestPipeline_StickyKeepsLease(t *testing.T) {
 	tr := &tracker{}
-	g := &backend.Slice{Master: newPool(t, "master", tr, func(c *fakeConn) {
+	g := sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
 		c.status = mysql.ServerStatusAutocommit | mysql.ServerStatusInTrans
-	})}
-	p, err := New(g, plan.Builder{Router: source.AllMaster{}})
+	}))
+	p, err := New(clusterOf(t, g), plan.Builder{Router: source.AllMaster{}})
 	require.NoError(t, err)
 
 	rt := newRuntime()
 	require.NoError(t, p.Handle(context.Background(), rt, query("BEGIN")))
-	require.NotNil(t, rt.lease)
+	require.Len(t, rt.leases, 1)
+	require.NotNil(t, rt.leases["default"])
 	require.True(t, rt.State.InTx())
 	c := tr.last(t)
 	require.Equal(t, 1, c.execCalls)
@@ -238,16 +253,16 @@ func TestPipeline_StickyKeepsLease(t *testing.T) {
 	require.Equal(t, 1, tr.opens(), "sticky must reuse the lease")
 
 	require.NoError(t, p.Release(rt, false))
-	require.Nil(t, rt.lease)
+	require.Empty(t, rt.leases)
 	require.Equal(t, 1, c.resets)
 }
 
 func TestPipeline_ReleaseDiscard(t *testing.T) {
 	tr := &tracker{}
-	g := &backend.Slice{Master: newPool(t, "master", tr, func(c *fakeConn) {
+	g := sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
 		c.status = mysql.ServerStatusAutocommit | mysql.ServerStatusInTrans
-	})}
-	p, err := New(g, plan.Builder{Router: source.AllMaster{}})
+	}))
+	p, err := New(clusterOf(t, g), plan.Builder{Router: source.AllMaster{}})
 	require.NoError(t, err)
 
 	rt := newRuntime()
@@ -256,19 +271,20 @@ func TestPipeline_ReleaseDiscard(t *testing.T) {
 	c := tr.last(t)
 	require.True(t, c.closed)
 	require.Equal(t, 0, c.resets)
+	require.Empty(t, rt.leases)
 }
 
 func TestPipeline_AlignFailureReleases(t *testing.T) {
 	tr := &tracker{}
-	g := &backend.Slice{Master: newPool(t, "master", tr, func(c *fakeConn) {
+	g := sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
 		c.alignErr = errors.New("align failed")
-	})}
-	p, err := New(g, plan.Builder{Router: source.AllMaster{}})
+	}))
+	p, err := New(clusterOf(t, g), plan.Builder{Router: source.AllMaster{}})
 	require.NoError(t, err)
 
 	rt := newRuntime()
 	require.Error(t, p.Handle(context.Background(), rt, query("SELECT 1")))
-	require.Nil(t, rt.lease)
+	require.Empty(t, rt.leases)
 	c := tr.last(t)
 	require.Equal(t, 1, c.resets)
 	require.Equal(t, 0, c.execCalls)
@@ -276,15 +292,15 @@ func TestPipeline_AlignFailureReleases(t *testing.T) {
 
 func TestPipeline_ExecFailureReleases(t *testing.T) {
 	tr := &tracker{}
-	g := &backend.Slice{Master: newPool(t, "master", tr, func(c *fakeConn) {
+	g := sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
 		c.execErr = errors.New("exec failed")
-	})}
-	p, err := New(g, plan.Builder{Router: source.AllMaster{}})
+	}))
+	p, err := New(clusterOf(t, g), plan.Builder{Router: source.AllMaster{}})
 	require.NoError(t, err)
 
 	rt := newRuntime()
 	require.Error(t, p.Handle(context.Background(), rt, query("SELECT 1")))
-	require.Nil(t, rt.lease)
+	require.Empty(t, rt.leases)
 	c := tr.last(t)
 	require.Equal(t, 1, c.execCalls)
 	require.Equal(t, 1, c.resets)
@@ -292,8 +308,8 @@ func TestPipeline_ExecFailureReleases(t *testing.T) {
 
 func TestPipeline_EffectAppliedAfterSuccess(t *testing.T) {
 	tr := &tracker{}
-	g := &backend.Slice{Master: newPool(t, "master", tr, nil)}
-	p, err := New(g, plan.Builder{Router: source.AllMaster{}})
+	g := sliceWith("default", newPool(t, "master", tr, nil))
+	p, err := New(clusterOf(t, g), plan.Builder{Router: source.AllMaster{}})
 	require.NoError(t, err)
 
 	rt := newRuntime()
@@ -304,16 +320,16 @@ func TestPipeline_EffectAppliedAfterSuccess(t *testing.T) {
 	require.Equal(t, "app", rt.State.Database())
 	require.Equal(t, "utf8mb4", rt.State.Charset())
 	require.False(t, rt.State.Autocommit())
-	require.NotNil(t, rt.lease, "autocommit=0 must keep the lease")
+	require.Len(t, rt.leases, 1, "autocommit=0 must keep the lease")
 	require.NoError(t, p.Release(rt, false))
 }
 
 func TestPipeline_EffectSkippedOnServerErr(t *testing.T) {
 	tr := &tracker{}
-	g := &backend.Slice{Master: newPool(t, "master", tr, func(c *fakeConn) {
+	g := sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
 		c.serverErr = true
-	})}
-	p, err := New(g, plan.Builder{Router: source.AllMaster{}})
+	}))
+	p, err := New(clusterOf(t, g), plan.Builder{Router: source.AllMaster{}})
 	require.NoError(t, err)
 
 	rt := newRuntime()
@@ -323,23 +339,23 @@ func TestPipeline_EffectSkippedOnServerErr(t *testing.T) {
 
 	require.Empty(t, rt.State.Database())
 	require.True(t, rt.State.Autocommit())
-	require.Nil(t, rt.lease, "non-sticky server error must release")
+	require.Empty(t, rt.leases, "non-sticky server error must release")
 	require.Equal(t, 1, tr.last(t).resets)
 }
 
 func TestPipeline_ServerErrKeepsInTx(t *testing.T) {
 	tr := &tracker{}
-	g := &backend.Slice{Master: newPool(t, "master", tr, func(c *fakeConn) {
+	g := sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
 		c.serverErr = true
-	})}
-	p, err := New(g, plan.Builder{Router: source.AllMaster{}})
+	}))
+	p, err := New(clusterOf(t, g), plan.Builder{Router: source.AllMaster{}})
 	require.NoError(t, err)
 
 	rt := newRuntime()
 	rt.State.SetInTx(true)
 	require.NoError(t, p.Handle(context.Background(), rt, query("SELECT 1")))
 	require.True(t, rt.State.InTx(), "ERR must not clear transaction state")
-	require.NotNil(t, rt.lease)
+	require.Len(t, rt.leases, 1)
 	require.Equal(t, 0, tr.last(t).resets)
 	require.NoError(t, p.Release(rt, true))
 }
@@ -357,10 +373,10 @@ func TestPipeline_ExecFlags(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tr := &tracker{}
-			g := &backend.Slice{Master: newPool(t, "master", tr, func(c *fakeConn) {
+			g := sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
 				c.status = mysql.ServerStatusAutocommit | mysql.ServerStatusInTrans
-			})}
-			p, err := New(g, plan.Builder{Router: source.AllMaster{}})
+			}))
+			p, err := New(clusterOf(t, g), plan.Builder{Router: source.AllMaster{}})
 			require.NoError(t, err)
 
 			rt := newRuntime()
@@ -382,10 +398,31 @@ func (r fakeRouter) Route(context.Context, *session.State, *sql.Statement) ([]ro
 	return r.targets, r.err
 }
 
+type seqRouter struct {
+	mu      sync.Mutex
+	targets [][]route.Target
+	i       int
+}
+
+func (r *seqRouter) Route(context.Context, *session.State, *sql.Statement) ([]route.Target, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.targets) == 0 {
+		return nil, errors.New("no targets")
+	}
+	idx := r.i
+	if idx >= len(r.targets) {
+		idx = len(r.targets) - 1
+	} else {
+		r.i++
+	}
+	return r.targets[idx], nil
+}
+
 func TestPipeline_RejectPlan(t *testing.T) {
 	tr := &tracker{}
-	g := &backend.Slice{Master: newPool(t, "master", tr, nil)}
-	p, err := New(g, plan.Builder{Router: fakeRouter{targets: []route.Target{
+	g := sliceWith("default", newPool(t, "master", tr, nil))
+	p, err := New(clusterOf(t, g), plan.Builder{Router: fakeRouter{targets: []route.Target{
 		{Slice: "s0", Role: constant.RoleMaster},
 		{Slice: "s1", Role: constant.RoleMaster},
 	}}})
@@ -397,10 +434,51 @@ func TestPipeline_RejectPlan(t *testing.T) {
 	require.Equal(t, 0, tr.opens())
 }
 
+func TestPipeline_MultiSliceLeases(t *testing.T) {
+	tr0, tr1 := &tracker{}, &tracker{}
+	hold := func(c *fakeConn) {
+		c.status = mysql.ServerStatusAutocommit | mysql.ServerStatusInTrans
+	}
+	s0 := sliceWith("s0", newPool(t, "s0-master", tr0, hold))
+	s1 := sliceWith("s1", newPool(t, "s1-master", tr1, hold))
+	router := &seqRouter{targets: [][]route.Target{
+		{{Slice: "s0", Role: constant.RoleMaster}},
+		{{Slice: "s1", Role: constant.RoleMaster}},
+	}}
+	p, err := New(clusterOf(t, s0, s1), plan.Builder{Router: router})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	rt.State.SetInTx(true)
+	require.NoError(t, p.Handle(context.Background(), rt, query("SELECT 1")))
+	require.NoError(t, p.Handle(context.Background(), rt, query("SELECT 1")))
+	require.Len(t, rt.leases, 2)
+	require.Equal(t, 1, tr0.last(t).execCalls)
+	require.Equal(t, 1, tr1.last(t).execCalls)
+
+	require.NoError(t, p.Release(rt, false))
+	require.Empty(t, rt.leases)
+	require.Equal(t, 1, tr0.last(t).resets)
+	require.Equal(t, 1, tr1.last(t).resets)
+}
+
+func TestPipeline_UnknownSlice(t *testing.T) {
+	tr := &tracker{}
+	g := sliceWith("default", newPool(t, "master", tr, nil))
+	p, err := New(clusterOf(t, g), plan.Builder{Router: fakeRouter{targets: []route.Target{
+		{Slice: "nope", Role: constant.RoleMaster},
+	}}})
+	require.NoError(t, err)
+
+	err = p.Handle(context.Background(), newRuntime(), query("SELECT 1"))
+	require.ErrorContains(t, err, "not found")
+	require.Equal(t, 0, tr.opens())
+}
+
 func TestPipeline_NilInputs(t *testing.T) {
 	tr := &tracker{}
-	g := &backend.Slice{Master: newPool(t, "master", tr, nil)}
-	p, err := New(g, plan.Builder{Router: source.AllMaster{}})
+	g := sliceWith("default", newPool(t, "master", tr, nil))
+	p, err := New(clusterOf(t, g), plan.Builder{Router: source.AllMaster{}})
 	require.NoError(t, err)
 
 	require.Error(t, p.Handle(context.Background(), nil, query("SELECT 1")))

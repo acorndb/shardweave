@@ -386,11 +386,17 @@ type rawForwarder interface {
 
 **文件动作**
 
-- `pkg/backend/cluster.go`：`Cluster{Get, Names}`；`server` 从 `slices` 构建。
+- `pkg/backend/slice.go`：增加 `Slice.Name`；`cluster.go` 增加
+  `Cluster{Get, Names, Close}`，校验空名/重名/空集群。
+- `pkg/route/source`：`AllMaster` / `Pick` 增加 `Slice` 字段；空值回退
+  `route.DefaultSlice`。
+- `pkg/server`：从 `BackendConfig.Slices` 构建 `Slice` → `Cluster`；Router 携带
+  `Slice.Name`，保证单 slice 自定义名称也能匹配。
 - `pkg/execute`：
   - `Runtime.lease` → `leases map[string]*lease`；
   - 按 `plan.Targets[0].Slice` 解析 `Cluster.Get`；
-  - `Release` 释放该目标 lease；会话关闭时释放全部。
+  - `Release` 释放会话上的全部 lease（非 sticky 语句结束/会话关闭），避免多片
+    事务后残留；align 失败只释放本次新 acquire 的 lease。
 - `MySQLConn.Packet()` 降为包内实现细节；`execute` 不再触碰。
 - R3 已删除 `writeBackend` / `execCommand` 的向下转型；R6 只补 Cluster/多 lease。
 
@@ -398,8 +404,9 @@ type rawForwarder interface {
 
 - fake `Conn` + 两个 Slice：按 Target.Slice 选到正确 slice；single/rwsplit 仍只有
   1 个 key。
-- `Runtime.leases` 的 acquire/release/discard 覆盖；`Release` 只释放目标 slice。
+- `Runtime.leases` 的 acquire/release/discard 覆盖；`Release` 清空全部 lease。
 - `Cluster.Get` 未知 slice 返回明确错误。
+- `source` 的显式 Slice 名与默认 `route.DefaultSlice` 都有测试。
 
 **退出条件**
 

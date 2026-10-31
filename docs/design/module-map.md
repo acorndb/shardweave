@@ -86,13 +86,13 @@
 | 模块 | 现状 | 目标 |
 |---|---|---|
 | `pkg/mysql` | 已实现，协议保真 | 不动 |
-| `pkg/backend` | 已落地 `Conn`/`Pool`/`Slice` + `Exec/Align`（R1/R3） | 增加 `Cluster` 与多 Slice 装配（R6） |
+| `pkg/backend` | 已落地 `Conn`/`Pool`/`Slice`/`Exec`/`Cluster`（R1/R3/R6） | P3 分片规则接线 |
 | `pkg/session` | 只有 database/inTx/autocommit/reserved/charset | 增加变量；`StmtTable` 在 P3 落地 |
 | `pkg/sql` | `Statement` 骨架（R2）+ tidb parser 包装 | 分类 + AST 上数据面 |
-| `pkg/route` | `source` 已拆出（R1），产出单目标 | 新增 `shard`；Target 带物理库/改写 SQL |
+| `pkg/route` | `source` 已拆出（R1），`Slice` 可配置 | 新增 `shard`；Target 带物理库/改写 SQL |
 | `pkg/plan` | N=1 `Passthrough` Plan 骨架（R2） | `EXPLAIN ROUTE` + `SingleShard`/`Reject`（P3） |
 | `pkg/result` | raw `Stream`（R3）；逻辑 Stream 接口已定 | decoded/merge 在 P4 |
-| `pkg/execute` | 单 Pipeline + `Runtime`/single lease；fake Conn 单测（R3） | R6 扩成按 Slice 的 lease map |
+| `pkg/execute` | 单 Pipeline + `Runtime`/按 Slice 的 lease map（R6） | P4 多分片 dispatch/merge |
 | `pkg/merge` | 不存在 | identity；P4 order/aggregate |
 | `pkg/proxy` | COM 循环 + USE/SET/autocommit 字符串解析 | 只做 COM 循环与 `Statement` 构造 |
 | `pkg/config` | `backend` + `slices`（R5）；`sharding` 仍拒绝 | 分片规则接线（P3） |
@@ -316,7 +316,7 @@ type Slice struct {
     // master/slaves/pool/LB 内部持有
 }
 
-// R1 暂时保留 (Conn, *Pool, error)；R6 引入 Cluster/lease 时收敛为 (Conn, error)。
+// Cluster/lease 仍用 (Conn, *Pool, error)：execute 需要 pool 做 Release/Discard。
 func (s *Slice) Acquire(ctx context.Context, role constant.Role) (Conn, *Pool, error)
 
 type Cluster struct { /* map[string]*Slice */ }
@@ -355,9 +355,9 @@ type StmtTable struct { /* map[uint32]*Stmt */ }
 
 ```go
 type Runtime struct {
-    Front *packet.Conn
-    State *session.State
-    lease *lease // single until R6; R6 → leases map[string]*lease
+    Front  *packet.Conn
+    State  *session.State
+    leases map[string]*lease // slice name -> lease（R6）
 }
 
 type Executor interface {
@@ -370,7 +370,7 @@ type Executor interface {
 `Handle` 内部：`plan.Build → acquire/align → Conn.Exec → rawForwarder.ForwardTo`；
 后端返回 OK（非 ERR）后更新 `InTx` 并应用 `Statement.Effect`，再做 sticky 判断。
 这是唯一 import `backend` 的数据面模块。R3 用 fake `Conn`/`Stream` 做单测，
-不依赖真实 MySQL；R6 把单条 lease 扩成按 Slice 的 map。
+不依赖真实 MySQL；R6 已按 Slice 持有 lease，`Release` 会释放会话上的全部 lease。
 
 ### 5.8 Merger（pkg/merge，proposed）
 

@@ -54,7 +54,10 @@ func TestPassthrough_Select1(t *testing.T) {
 		func(ctx context.Context) (backend.Conn, error) {
 			return backend.DialMySQL(ctx, mysqlAddr, "smoke", "smoke-pass", "smoke")
 		})
-	exec, err := execute.New(&backend.Slice{Master: p}, plan.Builder{Router: source.AllMaster{}})
+	slice := &backend.Slice{Name: "default", Master: p}
+	cluster, err := backend.NewCluster(slice)
+	require.NoError(t, err)
+	exec, err := execute.New(cluster, plan.Builder{Router: source.AllMaster{Slice: "default"}})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = exec.Close() })
 

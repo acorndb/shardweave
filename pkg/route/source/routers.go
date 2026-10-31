@@ -10,28 +10,46 @@ import (
 	"github.com/acorndb/prism/pkg/sql"
 )
 
-// AllMaster routes every statement to the master of the default slice.
-type AllMaster struct{}
+// AllMaster routes every statement to the master of a slice.
+type AllMaster struct {
+	Slice string // empty → route.DefaultSlice
+}
 
 var _ route.Router = AllMaster{}
 
 // Route implements route.Router.
-func (AllMaster) Route(context.Context, *session.State, *sql.Statement) ([]route.Target, error) {
-	return []route.Target{{Slice: route.DefaultSlice, Role: constant.RoleMaster}}, nil
+func (r AllMaster) Route(context.Context, *session.State, *sql.Statement) ([]route.Target, error) {
+	return []route.Target{{Slice: r.sliceName(), Role: constant.RoleMaster}}, nil
 }
 
-// Pick routes one statement to master or slave of the default slice.
-type Pick struct{}
+// Pick routes one statement to master or slave of a slice.
+type Pick struct {
+	Slice string // empty → route.DefaultSlice
+}
 
 var _ route.Router = Pick{}
 
+func (r AllMaster) sliceName() string {
+	if r.Slice == "" {
+		return route.DefaultSlice
+	}
+	return r.Slice
+}
+
+func (r Pick) sliceName() string {
+	if r.Slice == "" {
+		return route.DefaultSlice
+	}
+	return r.Slice
+}
+
 // Route implements route.Router.
-func (Pick) Route(_ context.Context, st *session.State, stmt *sql.Statement) ([]route.Target, error) {
+func (r Pick) Route(_ context.Context, st *session.State, stmt *sql.Statement) ([]route.Target, error) {
 	if stmt == nil {
 		return nil, fmt.Errorf("source: nil statement")
 	}
 	return []route.Target{{
-		Slice: route.DefaultSlice,
+		Slice: r.sliceName(),
 		Role:  PickRole(st, stmt.Cmd, stmt.Raw),
 	}}, nil
 }

@@ -15,14 +15,15 @@ import (
 
 // Runtime is per frontend-connection mutable state.
 type Runtime struct {
-	Front *packet.Conn
-	State *session.State
-	lease *lease
+	Front  *packet.Conn
+	State  *session.State
+	leases map[string]*lease // slice name -> lease
 }
 
 type lease struct {
-	conn backend.Conn
-	pool *backend.Pool
+	slice *backend.Slice
+	conn  backend.Conn
+	pool  *backend.Pool
 }
 
 // Executor is the process-shared execution strategy.
@@ -34,45 +35,61 @@ type Executor interface {
 
 // Pipeline is the single execution implementation shared by all modes.
 type Pipeline struct {
-	group   *backend.Slice
+	cluster *backend.Cluster
 	builder plan.Builder
 }
 
-// New builds a Pipeline for one backend slice and a mode-specific planner.
-func New(g *backend.Slice, builder plan.Builder) (*Pipeline, error) {
-	if g == nil || g.Master == nil {
-		return nil, fmt.Errorf("execute: requires master pool")
+// New builds a Pipeline for a runtime cluster and a mode-specific planner.
+func New(c *backend.Cluster, builder plan.Builder) (*Pipeline, error) {
+	if c == nil || len(c.Names()) == 0 {
+		return nil, fmt.Errorf("execute: requires cluster")
 	}
 	if builder.Router == nil {
 		return nil, fmt.Errorf("execute: requires router")
 	}
-	return &Pipeline{group: g, builder: builder}, nil
+	return &Pipeline{cluster: c, builder: builder}, nil
 }
 
-// Close closes the underlying slice pools.
+// Close closes the underlying cluster pools.
 func (p *Pipeline) Close() error {
-	if p == nil || p.group == nil {
+	if p == nil || p.cluster == nil {
 		return nil
 	}
-	return p.group.Close()
+	return p.cluster.Close()
 }
 
-// Release returns the current lease. discard drops it without reset-to-idle.
-func (p *Pipeline) Release(rt *Runtime, discard bool) error {
-	if p == nil || p.group == nil || rt == nil || rt.lease == nil {
+func (p *Pipeline) releaseOne(rt *Runtime, sliceName string, discard bool) error {
+	if rt == nil || rt.leases == nil {
 		return nil
 	}
-	l := rt.lease
-	rt.lease = nil
-	if discard {
-		return p.group.Discard(l.pool, l.conn)
+	l := rt.leases[sliceName]
+	if l == nil {
+		return nil
 	}
-	return p.group.Release(l.pool, l.conn)
+	delete(rt.leases, sliceName)
+	if discard {
+		return l.slice.Discard(l.pool, l.conn)
+	}
+	return l.slice.Release(l.pool, l.conn)
+}
+
+// Release returns or discards every lease held by the session.
+func (p *Pipeline) Release(rt *Runtime, discard bool) error {
+	if p == nil || p.cluster == nil || rt == nil || len(rt.leases) == 0 {
+		return nil
+	}
+	var first error
+	for name := range rt.leases {
+		if err := p.releaseOne(rt, name, discard); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 // Handle builds a Plan, acquires/reuses a lease, executes and forwards the result.
 func (p *Pipeline) Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement) error {
-	if p == nil || p.group == nil {
+	if p == nil || p.cluster == nil {
 		return fmt.Errorf("execute: nil pipeline")
 	}
 	if rt == nil || rt.State == nil {
@@ -94,13 +111,22 @@ func (p *Pipeline) Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement)
 	}
 	target := pl.Targets[0]
 
+	if rt.leases == nil {
+		rt.leases = make(map[string]*lease)
+	}
+	l := rt.leases[target.Slice]
 	acquired := false
-	if rt.lease == nil {
-		conn, pool, err := p.group.Acquire(ctx, target.Role)
+	if l == nil {
+		slice, err := p.cluster.Get(target.Slice)
 		if err != nil {
 			return err
 		}
-		rt.lease = &lease{conn: conn, pool: pool}
+		conn, pool, err := slice.Acquire(ctx, target.Role)
+		if err != nil {
+			return err
+		}
+		l = &lease{slice: slice, conn: conn, pool: pool}
+		rt.leases[target.Slice] = l
 		acquired = true
 	}
 	// Evaluate stickiness after execution: BEGIN sets InTx from the backend status.
@@ -114,9 +140,9 @@ func (p *Pipeline) Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement)
 	if db == "" {
 		db = rt.State.Database()
 	}
-	if err := rt.lease.conn.Align(ctx, backend.AlignSettings{Database: db, Charset: rt.State.Charset()}); err != nil {
+	if err := l.conn.Align(ctx, backend.AlignSettings{Database: db, Charset: rt.State.Charset()}); err != nil {
 		if acquired {
-			_ = p.Release(rt, false)
+			_ = p.releaseOne(rt, target.Slice, false)
 		}
 		return err
 	}
@@ -126,7 +152,7 @@ func (p *Pipeline) Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement)
 		Prepare: stmt.Cmd == mysql.ComStmtPrepare,
 		NoReply: stmt.Cmd == mysql.ComStmtClose,
 	}
-	stream, err := rt.lease.conn.Exec(ctx, req)
+	stream, err := l.conn.Exec(ctx, req)
 	if err != nil {
 		return err
 	}

@@ -93,7 +93,7 @@ prism/
 
 | 重构前 | 目标 | 阶段 |
 |---|---|---|
-| `pkg/backend_server`（Backend/Pool） | `pkg/backend`（Conn/Pool/Slice/Exec；Cluster 在 R6） | **R1/R3 完成** |
+| `pkg/backend_server`（Backend/Pool） | `pkg/backend`（Conn/Pool/Slice/Exec/Cluster） | **R1/R3/R6 完成** |
 | `pkg/router.Group` | `pkg/backend.Slice` | **R1 完成** |
 | `pkg/router.Pick` / `ClassifyWantSlave` | `pkg/route/source` | **R1 完成** |
 | `pkg/executor.passthrough` | `pkg/execute` Pipeline | **R3 完成** |

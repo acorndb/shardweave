@@ -92,14 +92,15 @@ func newExecutor(rt *config.Runtime, cfg *config.Config) (execute.Executor, erro
 			return nil, fmt.Errorf("server: single requires exactly 1 slice")
 		}
 		s := bs.Slices[0]
-		g = &backend.Slice{Master: backend.NewPool(pcfg, open(s.Master))}
-		builder = plan.Builder{Router: source.AllMaster{}}
+		g = &backend.Slice{Name: s.Name, Master: backend.NewPool(pcfg, open(s.Master))}
+		builder = plan.Builder{Router: source.AllMaster{Slice: s.Name}}
 	case constant.ModeRWSplit:
 		if len(bs.Slices) != 1 {
 			return nil, fmt.Errorf("server: rwsplit requires exactly 1 slice")
 		}
 		s := bs.Slices[0]
 		g = &backend.Slice{
+			Name:        s.Name,
 			Master:      backend.NewPool(pcfg, open(s.Master)),
 			LoadBalance: bs.LoadBalance,
 		}
@@ -109,12 +110,16 @@ func newExecutor(rt *config.Runtime, cfg *config.Config) (execute.Executor, erro
 		for i := range s.Slaves {
 			g.Slaves = append(g.Slaves, backend.NewPool(pcfg, open(s.Slaves[i])))
 		}
-		builder = plan.Builder{Router: source.Pick{}}
+		builder = plan.Builder{Router: source.Pick{Slice: s.Name}}
 		_ = rt // pools dial from cfg snapshot at open; address reload still rejected
 	default:
 		return nil, fmt.Errorf("server: unsupported backend.mode %q", mode)
 	}
-	return execute.New(g, builder)
+	cluster, err := backend.NewCluster(g)
+	if err != nil {
+		return nil, err
+	}
+	return execute.New(cluster, builder)
 }
 
 // Addr returns the bound listen address.

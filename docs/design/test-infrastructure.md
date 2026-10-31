@@ -20,13 +20,13 @@
 |---|---|
 | `pkg/sql` | 93.4%（R4 session effect 后） |
 | `pkg/plan` | 95.0% |
-| `pkg/execute` | 87.9%（R4 后） |
-| `pkg/route/source` | 82.5% |
+| `pkg/execute` | 89.0%（R6 后） |
+| `pkg/route/source` | 83.5% |
 | `pkg/proxy` | 73.3%（R4 后；解析测试迁到 `pkg/sql`） |
 | `pkg/config` | 93.8%（R5 后） |
 | `pkg/mysql` | 69.0% |
-| `pkg/backend` | 66.8% |
-| `pkg/server` | 64.0% |
+| `pkg/backend` | 73.1% |
+| `pkg/server` | 64.1% |
 
 ### 0.2 缺口
 

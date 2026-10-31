@@ -19,6 +19,10 @@ func TestAllMaster_Route(t *testing.T) {
 	require.Len(t, targets, 1)
 	require.Equal(t, route.DefaultSlice, targets[0].Slice)
 	require.Equal(t, constant.RoleMaster, targets[0].Role)
+
+	targets, err = (source.AllMaster{Slice: "primary"}).Route(context.Background(), session.NewState(), &sql.Statement{})
+	require.NoError(t, err)
+	require.Equal(t, "primary", targets[0].Slice)
 }
 
 func TestPick_Route(t *testing.T) {
@@ -51,4 +55,11 @@ func TestPick_Route(t *testing.T) {
 func TestPick_RouteNilStatement(t *testing.T) {
 	_, err := (source.Pick{}).Route(context.Background(), session.NewState(), nil)
 	require.Error(t, err)
+}
+
+func TestPick_RouteExplicitSlice(t *testing.T) {
+	targets, err := (source.Pick{Slice: "primary"}).Route(
+		context.Background(), session.NewState(), &sql.Statement{Cmd: mysql.ComQuery, Raw: "SELECT 1"})
+	require.NoError(t, err)
+	require.Equal(t, "primary", targets[0].Slice)
 }

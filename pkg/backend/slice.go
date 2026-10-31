@@ -11,6 +11,7 @@ import (
 // Slice is one logical topology: master pool + optional slave pools (design §5.5).
 // Pool leaves stay mode-agnostic; Slice only chooses which pool to Acquire.
 type Slice struct {
+	Name        string
 	Master      *Pool
 	Slaves      []*Pool
 	LoadBalance string
