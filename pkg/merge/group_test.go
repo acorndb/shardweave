@@ -168,3 +168,28 @@ func TestGroup_ValidationErrors(t *testing.T) {
 		require.Equal(t, uint16(1235), me.Number)
 	}
 }
+
+func TestGroup_KeyTypes(t *testing.T) {
+	cases := []struct {
+		name   string
+		field  result.Field
+		values []string
+	}{
+		{"int", result.Field{Name: "k", OrgName: "k", Type: result.TypeLong}, []string{"1", "2"}},
+		{"uint", result.Field{Name: "k", OrgName: "k", Type: result.TypeLongLong, Flags: result.FlagUnsigned}, []string{"1", "2"}},
+		{"float", result.Field{Name: "k", OrgName: "k", Type: result.TypeDouble}, []string{"1.5", "2.5"}},
+		{"decimal", result.Field{Name: "k", OrgName: "k", Type: result.TypeNewDecimal}, []string{"1.10", "2.20"}},
+		{"datetime", result.Field{Name: "k", OrgName: "k", Type: result.TypeDateTime}, []string{"2024-01-01 00:00:00", "2024-01-02 00:00:00"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fields := []result.Field{tc.field}
+			streams := []result.Stream{&scriptStream{fields: fields, rows: []result.Row{
+				{[]byte(tc.values[0])}, {[]byte(tc.values[1])}, {[]byte(tc.values[0])},
+			}}}
+			s, err := merge.Group(streams, fields, []int{0}, nil, []int{0})
+			require.NoError(t, err)
+			require.Equal(t, [][]string{{tc.values[0]}, {tc.values[1]}}, collectValues(t, s))
+		})
+	}
+}
