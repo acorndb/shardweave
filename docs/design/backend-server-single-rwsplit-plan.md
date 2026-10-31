@@ -1,6 +1,7 @@
 # 实现计划：`backend_server` single + rwsplit
 
-> 状态：**P0–P5 已完成**（2026-10-30，`986ce02`）；**P6/P7 待跑**  
+> 状态：**P0–P5 已完成**；**P7 stub 选源冒烟已定**（无 Docker）；**P6 差分仍待用户明示再跑**  
+
 > 设计：[backend-server-single-rwsplit-design.md](backend-server-single-rwsplit-design.md)  
 > 约束：TDD；聚焦包测试；**禁止**未要求时跑全量 `make test-unit`；未实现 mode 拒绝；规则禁止自创（对照设计 §5 + 附录 A）
 
@@ -122,12 +123,16 @@ flowchart LR
 
 ---
 
-## P7 — rwsplit 冒烟（可后置夹具）
+## P7 — rwsplit 选源冒烟（stub，无 Docker）
 
-1. 单测已覆盖规则；可选 Docker 一主一从  
-2. 手工：`BEGIN; SELECT` 打主；自动提交 `SELECT` 可从  
-3. code review 报告：`docs/code-review/review-backend-server-rwsplit.md`  
-4. 设计文状态 → **已定稿/已实现（single+rwsplit）**；`sharding` 仍拒绝  
+1. **已定**：用 tagged stub 池证明 SELECT→slave、写/事务→master（见 [rwsplit-route-smoke-design.md](rwsplit-route-smoke-design.md)）  
+2. 不强制 Docker 一主一从；真拓扑冒烟后置  
+3. code review 可并入 executor 报告或本切片短报  
+4. `sharding` 仍拒绝  
+
+## 执行顺序口令（更新）
+
+**P7 stub 冒烟** →（可选）P6 single 差分 → M1 收尾 / M2。
 
 ---
 
@@ -140,8 +145,3 @@ flowchart LR
 - 完整 SQL AST 依赖  
 
 ---
-
-## 执行顺序口令
-
-**已完成**：P0–P5（config / session sticky / router Pick / Group / proxy·server 接线 + `pkg/pool`→`pkg/backend_server`）。  
-**建议下一刀**：P6 single 差分回归（用户明示再跑）→ P7 rwsplit 冒烟（可选 Docker 一主一从）→ 再谈 M1 收尾或 M2。

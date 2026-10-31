@@ -113,6 +113,60 @@ func TestRWSplit_SelectUsesSlave(t *testing.T) {
 	require.Equal(t, 1, slaveOpens)
 }
 
+// P7 stub smoke: prove route to slave vs master without real MySQL (design rwsplit-route-smoke).
+func TestRWSplit_RouteSmoke(t *testing.T) {
+	cases := []struct {
+		name        string
+		sql         string
+		wantTag     string
+		setupSticky bool // BEGIN+InTx before the statement
+	}{
+		{name: "select_slave", sql: "SELECT 1", wantTag: "slave"},
+		{name: "show_slave", sql: "SHOW TABLES", wantTag: "slave"},
+		{name: "explain_slave", sql: "EXPLAIN SELECT 1", wantTag: "slave"},
+		{name: "insert_master", sql: "INSERT INTO t VALUES (1)", wantTag: "master"},
+		{name: "update_master", sql: "UPDATE t SET a=1", wantTag: "master"},
+		{name: "delete_master", sql: "DELETE FROM t", wantTag: "master"},
+		{name: "set_master", sql: "SET NAMES utf8mb4", wantTag: "master"},
+		{name: "begin_master", sql: "BEGIN", wantTag: "master"},
+		{name: "select_for_update_master", sql: "SELECT id FROM t FOR UPDATE", wantTag: "master"},
+		{name: "tx_select_sticky_master", sql: "SELECT 1", wantTag: "master", setupSticky: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var masterOpens, slaveOpens int
+			g := &router.Group{
+				Master: newTaggedPool(t, "master", &masterOpens),
+				Slaves: []*backend_server.Pool{newTaggedPool(t, "slave", &slaveOpens)},
+			}
+			e, err := New(config.ModeRWSplit, g)
+			require.NoError(t, err)
+			pt := e.(*passthrough)
+			c := &Conn{State: session.NewState()}
+			ctx := context.Background()
+
+			if tc.setupSticky {
+				require.NoError(t, pt.withBackend(ctx, c, Request{Cmd: mysql.ComQuery, SQL: "BEGIN"}, func(backend_server.Backend) error {
+					c.State.SetInTx(true)
+					return nil
+				}))
+				require.Equal(t, 1, masterOpens)
+				masterOpens, slaveOpens = 0, 0 // focus on the follow-up statement's new opens
+			}
+
+			var gotTag string
+			require.NoError(t, pt.withBackend(ctx, c, Request{Cmd: mysql.ComQuery, SQL: tc.sql}, func(b backend_server.Backend) error {
+				gotTag = b.(*recordingBackend).tag
+				return nil
+			}))
+			require.Equal(t, tc.wantTag, gotTag)
+			if tc.setupSticky {
+				require.Equal(t, 0, masterOpens+slaveOpens, "sticky must not open a new pool conn")
+			}
+		})
+	}
+}
+
 func TestRWSplit_TxSelectStaysSticky(t *testing.T) {
 	var masterOpens, slaveOpens int
 	g := &router.Group{
