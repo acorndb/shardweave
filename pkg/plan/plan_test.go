@@ -131,3 +131,25 @@ func TestKind_String(t *testing.T) {
 		require.Equal(t, want, k.String())
 	}
 }
+
+func TestPlan_ShardingContracts(t *testing.T) {
+	p := plan.Plan{
+		Kind: plan.SingleShard,
+		Tx:   plan.TxSingleShard,
+		Merge: plan.MergeSpec{
+			OrderBy:    []plan.OrderKey{{Column: 0, Desc: true}},
+			Limit:      &plan.Limit{Offset: 1, Count: 2},
+			Aggregates: []plan.AggregateSpec{{Func: plan.AggSum, Column: 1, Output: 0}},
+			GroupBy:    []int{0},
+			Distinct:   true,
+			Output:     []int{0},
+		},
+	}
+	require.Equal(t, plan.SingleShard, p.Kind)
+	require.Equal(t, plan.TxSingleShard, p.Tx)
+	require.Equal(t, "TxSingleShard", p.Tx.String())
+	require.Equal(t, int64(1), p.Merge.Limit.Offset)
+	require.Equal(t, plan.AggSum, p.Merge.Aggregates[0].Func)
+	require.Equal(t, "TxNone", plan.TxNone.String())
+	require.Equal(t, "TxReject", plan.TxReject.String())
+}

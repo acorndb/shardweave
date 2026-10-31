@@ -14,6 +14,7 @@ import (
 	"github.com/acorndb/shardweave/pkg/plan"
 	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/acorndb/shardweave/pkg/sql"
+	sqlparser "github.com/acorndb/shardweave/pkg/sql/parser"
 )
 
 // SessionConfig wires frontend auth and backend executor for passthrough.
@@ -23,6 +24,9 @@ type SessionConfig struct {
 	ReadTimeout      time.Duration
 	WriteTimeout     time.Duration
 	MaxAllowedPacket int
+	// ParseAST enables one TiDB-parser pass per COM_QUERY. It is off for
+	// single/rwsplit and on for sharding (routing/rewrite need the AST).
+	ParseAST bool
 }
 
 // Serve runs one frontend connection: handshake then command loop.
@@ -76,6 +80,14 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 				stmt.Raw = string(data[1:])
 				stmt.Kind = sql.KindQuery
 				stmt.Effect = sql.ParseSessionEffect(stmt.Raw)
+				if cfg.ParseAST {
+					res, perr := sqlparser.Parse(stmt.Raw)
+					if perr != nil {
+						stmt.Err = perr
+					} else if len(res.Stmts) == 1 {
+						stmt.AST = res.Stmts[0]
+					}
+				}
 			case mysql.ComInitDB:
 				stmt.Raw = string(data[1:])
 				stmt.Kind = sql.KindUse

@@ -17,11 +17,15 @@ type State struct {
 	// from these fields, not by the backend connection currently in use.
 	lastInsertID uint64
 	rowCount     int64
+
+	stmts *StmtTable
 }
 
 // NewState returns a session state with MySQL-default autocommit=ON.
 // ROW_COUNT() is -1 until a statement sets it.
-func NewState() *State { return &State{autocommit: true, rowCount: -1} }
+func NewState() *State {
+	return &State{autocommit: true, rowCount: -1, stmts: NewStmtTable()}
+}
 
 func (s *State) Database() string { return s.database }
 func (s *State) SetDatabase(db string) {
@@ -77,6 +81,14 @@ func (s *State) SetRowCount(n int64) {
 	s.rowCount = n
 }
 
+// Stmts returns the session prepared statement table.
+func (s *State) Stmts() *StmtTable {
+	if s.stmts == nil {
+		s.stmts = NewStmtTable()
+	}
+	return s.stmts
+}
+
 // Reset clears transaction/reserved/charset state for COM_RESET_CONNECTION.
 // Current database is preserved (MySQL COM_RESET_CONNECTION semantics).
 func (s *State) Reset() {
@@ -86,6 +98,7 @@ func (s *State) Reset() {
 	s.charset = ""
 	s.lastInsertID = 0
 	s.rowCount = -1
+	s.Stmts().Reset()
 }
 
 // NeedsSticky reports whether the session must keep the same backend connection.

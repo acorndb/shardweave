@@ -32,6 +32,7 @@ type Server struct {
 	writeTimeout     time.Duration
 	maxAllowedPacket int
 	maxConns         int
+	parseAST         bool
 	activeConns      atomic.Int64
 
 	listener net.Listener
@@ -65,6 +66,10 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	mode := cfg.Backend.Mode
+	if mode == "" {
+		mode = constant.ModeSingle
+	}
 	s := &Server{
 		path:             configPath,
 		rt:               rt,
@@ -73,6 +78,7 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 		writeTimeout:     cfg.Server.WriteTimeout,
 		maxAllowedPacket: cfg.Server.MaxAllowedPacket,
 		maxConns:         cfg.Server.MaxConnections,
+		parseAST:         mode == constant.ModeSharding,
 		listener:         ln,
 		ctx:              ctx,
 		cancel:           cancel,
@@ -253,6 +259,7 @@ func (s *Server) onConn(c net.Conn) {
 		ReadTimeout:      s.readTimeout,
 		WriteTimeout:     s.writeTimeout,
 		MaxAllowedPacket: s.maxAllowedPacket,
+		ParseAST:         s.parseAST,
 	})
 }
 

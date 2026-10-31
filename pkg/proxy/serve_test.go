@@ -112,6 +112,11 @@ func (f *fakeExec) lastRelease(t *testing.T) bool {
 
 func newProxySession(t *testing.T, exec *fakeExec) (*packet.Conn, <-chan error) {
 	t.Helper()
+	return newProxySessionWithConfig(t, exec, nil)
+}
+
+func newProxySessionWithConfig(t *testing.T, exec *fakeExec, mutate func(*SessionConfig)) (*packet.Conn, <-chan error) {
+	t.Helper()
 	serverConn, clientConn := net.Pipe()
 	require.NoError(t, clientConn.SetDeadline(time.Now().Add(10*time.Second)))
 	t.Cleanup(func() {
@@ -121,12 +126,16 @@ func newProxySession(t *testing.T, exec *fakeExec) (*packet.Conn, <-chan error) 
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	cfg := SessionConfig{
+		Users: testUsers{"app": "pw"},
+		Exec:  exec,
+	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
 	serveErr := make(chan error, 1)
 	go func() {
-		serveErr <- Serve(ctx, serverConn, SessionConfig{
-			Users: testUsers{"app": "pw"},
-			Exec:  exec,
-		})
+		serveErr <- Serve(ctx, serverConn, cfg)
 	}()
 
 	cli, err := client.Dial(clientConn, "app", "pw", "")
@@ -327,4 +336,45 @@ func TestServe_RejectErrorWrites1235AndContinues(t *testing.T) {
 	require.Equal(t, byte(mysql.OKHeader), data[0])
 
 	quit(t, pc, serveErr)
+}
+
+func TestServe_ParseAST(t *testing.T) {
+	t.Run("enabled", func(t *testing.T) {
+		exec := newFakeExec()
+		pc, serveErr := newProxySessionWithConfig(t, exec, func(c *SessionConfig) {
+			c.ParseAST = true
+		})
+
+		writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("SELECT 1")...))
+		call := exec.waitCall(t)
+		require.NotNil(t, call.stmt.AST)
+		require.NoError(t, call.stmt.Err)
+
+		quit(t, pc, serveErr)
+	})
+
+	t.Run("disabled_by_default", func(t *testing.T) {
+		exec := newFakeExec()
+		pc, serveErr := newProxySession(t, exec)
+
+		writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("SELECT 1")...))
+		call := exec.waitCall(t)
+		require.Nil(t, call.stmt.AST)
+
+		quit(t, pc, serveErr)
+	})
+
+	t.Run("parse_error_keeps_forwarding", func(t *testing.T) {
+		exec := newFakeExec()
+		pc, serveErr := newProxySessionWithConfig(t, exec, func(c *SessionConfig) {
+			c.ParseAST = true
+		})
+
+		writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("SELEKT 1")...))
+		call := exec.waitCall(t)
+		require.Nil(t, call.stmt.AST)
+		require.Error(t, call.stmt.Err)
+
+		quit(t, pc, serveErr)
+	})
 }

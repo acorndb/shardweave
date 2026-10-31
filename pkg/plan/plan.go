@@ -35,8 +35,69 @@ func (k Kind) String() string {
 	}
 }
 
-// MergeSpec is the merge hint for MultiShard plans. P3 uses the zero value.
-type MergeSpec struct{}
+// TxPolicy is the transaction constraint attached to a sharding plan.
+type TxPolicy uint8
+
+const (
+	TxNone TxPolicy = iota
+	TxSingleShard
+	TxReject
+)
+
+func (p TxPolicy) String() string {
+	switch p {
+	case TxNone:
+		return "TxNone"
+	case TxSingleShard:
+		return "TxSingleShard"
+	case TxReject:
+		return "TxReject"
+	default:
+		return "Unknown"
+	}
+}
+
+// OrderKey is one ORDER BY column index in the rewritten result.
+type OrderKey struct {
+	Column int
+	Desc   bool
+}
+
+// Limit is the final LIMIT/OFFSET after merge; Count < 0 means no limit.
+type Limit struct {
+	Offset int64
+	Count  int64
+}
+
+// AggregateFunc is a mergeable aggregate.
+type AggregateFunc uint8
+
+const (
+	AggCount AggregateFunc = iota
+	AggSum
+	AggMin
+	AggMax
+	AggAvg
+)
+
+// AggregateSpec describes one aggregate output column.
+type AggregateSpec struct {
+	Func     AggregateFunc
+	Column   int
+	Output   int
+	Distinct bool
+}
+
+// MergeSpec is the pure merge description for MultiShard plans. Column indexes
+// refer to the rewritten per-shard result, including hidden columns.
+type MergeSpec struct {
+	OrderBy    []OrderKey
+	Limit      *Limit
+	Aggregates []AggregateSpec
+	GroupBy    []int
+	Distinct   bool
+	Output     []int
+}
 
 // RejectError is a stable, documented rejection. P3 defines the final codes.
 type RejectError struct {
@@ -57,6 +118,7 @@ type Plan struct {
 	Kind    Kind
 	Targets []route.Target
 	Merge   MergeSpec
+	Tx      TxPolicy
 	Reject  *RejectError
 }
 
