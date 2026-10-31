@@ -31,6 +31,8 @@ type Server struct {
 	readTimeout      time.Duration
 	writeTimeout     time.Duration
 	maxAllowedPacket int
+	maxConns         int
+	activeConns      atomic.Int64
 
 	listener net.Listener
 	running  atomic.Bool
@@ -70,6 +72,7 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 		readTimeout:      cfg.Server.ReadTimeout,
 		writeTimeout:     cfg.Server.WriteTimeout,
 		maxAllowedPacket: cfg.Server.MaxAllowedPacket,
+		maxConns:         cfg.Server.MaxConnections,
 		listener:         ln,
 		ctx:              ctx,
 		cancel:           cancel,
@@ -166,12 +169,46 @@ func (s *Server) Run() error {
 			slog.Error("server accept", "err", err)
 			continue
 		}
+		if !s.acquireConn() {
+			slog.Warn("server max connections reached", "remote", conn.RemoteAddr().String(), "max", s.maxConns)
+			_ = conn.Close()
+			continue
+		}
 		go s.onConn(conn)
 	}
 	return nil
 }
 
+func (s *Server) acquireConn() bool {
+	if s.maxConns <= 0 {
+		s.activeConns.Add(1)
+		return true
+	}
+	for {
+		cur := s.activeConns.Load()
+		if cur >= int64(s.maxConns) {
+			return false
+		}
+		if s.activeConns.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+func (s *Server) releaseConn() {
+	s.activeConns.Add(-1)
+}
+
+// ActiveConnections returns the number of accepted frontend sessions.
+func (s *Server) ActiveConnections() int {
+	if s == nil {
+		return 0
+	}
+	return int(s.activeConns.Load())
+}
+
 func (s *Server) onConn(c net.Conn) {
+	defer s.releaseConn()
 	defer func() {
 		if err := recover(); err != nil {
 			buf := make([]byte, 4096)

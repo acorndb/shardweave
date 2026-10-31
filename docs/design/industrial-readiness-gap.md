@@ -93,7 +93,7 @@
 | 缺口 | 证据 | 影响 |
 |---|---|---|
 | 查询总超时 / `MAX_EXECUTION_TIME` | `pkg/execute/pipeline.go:155-172` | 慢查询仍不可控（read timeout 只是单次 I/O） |
-| 无最大连接数 / 每用户/IP 限制 | `pkg/server/server.go:143-157` | 连接洪泛 DoS |
+| 每用户/IP 限流 | 未实现 | 单实例 `server.max_connections` 已补；细粒度限流仍缺 |
 | 无优雅退出/drain | `pkg/server/server.go:181-195` | `Close` 取消 ctx 但阻塞中的 session 不会退出；`termination_drain` 未使用 |
 | 无 accept 退避 | `server.go:145-153` | accept 错误时忙循环 |
 | `termination_drain` 配置未生效 | `pkg/config/config.go` 仅解析 | 假配置项 |
@@ -248,7 +248,7 @@
 2. 无前端/后端 TLS。
 3. 客户端未协商 `CLIENT_DEPRECATE_EOF` 时结果集可能错帧。
 4. 查询/后端仍无总超时；read/write timeout 只是单次 I/O，慢查询/半开连接仍可能长期占用。
-5. 已有 `max_allowed_packet` 逻辑包上限，但仍无最大连接数/查询大小/每用户限流。
+5. 已有 `max_connections`/`max_allowed_packet`，但仍缺每用户/IP 限流和查询大小限制。
 6. 池已补健康检查/idle/lifetime/预热，但查询失败不重试、不换库，池也还没有指标。
 7. 优雅退出/drain 未实现，`termination_drain` 未生效。
 8. `COM_STMT_SEND_LONG_DATA`、`COM_CHANGE_USER` 等常用命令不支持。

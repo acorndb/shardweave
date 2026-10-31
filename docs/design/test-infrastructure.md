@@ -23,11 +23,11 @@
 | `pkg/execute` | 89.0%（R6 后） |
 | `pkg/route/source` | 83.5% |
 | `pkg/proxy` | 73.3%（R4 后；解析测试迁到 `pkg/sql`） |
-| `pkg/config` | 93.8%（R5 后） |
+| `pkg/config` | 94.1%（R5 后） |
 | `pkg/mysql` | 69.0% |
 | `pkg/mysql/packet` | 75.5% |
 | `pkg/backend` | 72.1% |
-| `pkg/server` | 64.1% |
+| `pkg/server` | 77.3% |
 
 ### 0.2 缺口
 

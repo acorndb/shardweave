@@ -28,6 +28,7 @@ type Server struct {
 	ReadTimeout      time.Duration `yaml:"read_timeout"`
 	WriteTimeout     time.Duration `yaml:"write_timeout"`
 	MaxAllowedPacket int           `yaml:"max_allowed_packet"` // bytes; 0 = 64 MiB
+	MaxConnections   int           `yaml:"max_connections"`    // 0 = unlimited
 }
 
 // User is a proxy frontend credential.
@@ -125,6 +126,9 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Server.MaxAllowedPacket < 0 {
 		return fmt.Errorf("config: server.max_allowed_packet must be >= 0")
+	}
+	if cfg.Server.MaxConnections < 0 {
+		return fmt.Errorf("config: server.max_connections must be >= 0")
 	}
 	for i, u := range cfg.Users {
 		if u.Name == "" {

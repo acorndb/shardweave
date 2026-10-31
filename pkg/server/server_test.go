@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,6 +33,32 @@ func TestServer_RunExitsOnClose(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after Close")
 	}
+}
+
+func TestServer_MaxConnections(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Server.MaxConnections = 1
+	path := writeConfig(t, cfg)
+
+	srv, err := New(cfg, path)
+	require.NoError(t, err)
+	t.Cleanup(srv.Close)
+	go func() { _ = srv.Run() }()
+
+	c1, err := net.Dial("tcp", srv.Addr())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c1.Close() })
+	require.Eventually(t, func() bool { return srv.ActiveConnections() == 1 }, time.Second, time.Millisecond)
+
+	c2, err := net.Dial("tcp", srv.Addr())
+	require.NoError(t, err)
+	defer func() { _ = c2.Close() }()
+	require.NoError(t, c2.SetReadDeadline(time.Now().Add(time.Second)))
+	_, err = c2.Read(make([]byte, 1))
+	require.Error(t, err, "second connection must be rejected")
+
+	require.NoError(t, c1.Close())
+	require.Eventually(t, func() bool { return srv.ActiveConnections() == 0 }, time.Second, time.Millisecond)
 }
 
 func TestServer_UpdateConfigUsers(t *testing.T) {

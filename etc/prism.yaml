@@ -12,6 +12,7 @@ server:
   read_timeout: 30s
   write_timeout: 30s
   max_allowed_packet: 67108864  # 64 MiB
+  max_connections: 1024         # 0 = unlimited
 
 backend:
   mode: single

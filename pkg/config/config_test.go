@@ -28,6 +28,7 @@ server:
   read_timeout: 20s
   write_timeout: 21s
   max_allowed_packet: 8388608
+  max_connections: 128
 pool:
   capacity: 2
   max_capacity: 8
@@ -68,6 +69,7 @@ func TestLoadFile_OK_Single(t *testing.T) {
 	require.Equal(t, 20*time.Second, cfg.Server.ReadTimeout)
 	require.Equal(t, 21*time.Second, cfg.Server.WriteTimeout)
 	require.Equal(t, 8388608, cfg.Server.MaxAllowedPacket)
+	require.Equal(t, 128, cfg.Server.MaxConnections)
 	require.Equal(t, "info", cfg.Log.Level)
 	require.Equal(t, 2*time.Second, cfg.TerminationDrain)
 }
@@ -165,6 +167,10 @@ func TestValidate_RejectShardingAndUnknownMode(t *testing.T) {
 	cfg = validSingle()
 	cfg.Server.MaxAllowedPacket = -1
 	require.ErrorContains(t, Validate(cfg), "max_allowed_packet")
+
+	cfg = validSingle()
+	cfg.Server.MaxConnections = -1
+	require.ErrorContains(t, Validate(cfg), "max_connections")
 }
 
 func TestValidate_SingleConstraints(t *testing.T) {
@@ -355,6 +361,7 @@ server:
   read_timeout: 20s
   write_timeout: 21s
   max_allowed_packet: 8388608
+  max_connections: 128
 pool:
   capacity: 2
   max_capacity: 8
