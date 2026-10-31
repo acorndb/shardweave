@@ -95,7 +95,7 @@
 | `pkg/execute` | 单 Pipeline + `Runtime`/single lease；fake Conn 单测（R3） | R6 扩成按 Slice 的 lease map |
 | `pkg/merge` | 不存在 | identity；P4 order/aggregate |
 | `pkg/proxy` | COM 循环 + USE/SET/autocommit 字符串解析 | 只做 COM 循环与 `Statement` 构造 |
-| `pkg/config` | `backend_server` 字段拍平 | `backend` + `slices` + `sharding.rules` |
+| `pkg/config` | `backend` + `slices`（R5）；`sharding` 仍拒绝 | 分片规则接线（P3） |
 | `pkg/server` | 按 mode 手工建 Group + executor | 唯一 mode 分支；装配 Cluster/Router/Builder/Executor |
 
 ## 4. 依赖规则
@@ -521,7 +521,9 @@ type ShardRule struct {
 
 ### 7.4 归一化与兼容
 
-目标运行时只有一种拓扑模型：`[]Slice`。`single`/`rwsplit` 是"1 个 Slice"的预设。
+R5 已落地统一 `slices`：`single`/`rwsplit` 都是"1 个 Slice"的预设，旧
+`backend_server` / `address` / `master/slaves` 字段会被 `KnownFields(true)` 拒绝。
+`mode=sharding` 仍由 `Validate` 明确拒绝；规则模型已解析但未生效。
 
 - **推荐（pre-1.0）**：直接切到 `backend.slices`，旧 `backend_server`、
   `address`、`master/slaves` 字段全部拒绝；`KnownFields(true)` 会让旧配置报错。

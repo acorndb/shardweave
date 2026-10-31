@@ -23,7 +23,7 @@ M1 透传进行中。P0–P2 已可用：协议握手、后端池、`COM_QUERY` 
 - `pkg/result`：Field/Row/Stream（raw packet 与逻辑行两种形态）
 - `pkg/execute`：单 Pipeline；`backend.Conn.Exec` + raw stream；single/rwsplit 共用
 - `pkg/proxy`：命令循环；预处理会话字段后交给 Executor
-- `pkg/config` + `cmd/prism`：YAML `-config`、Accept 循环、简单 `SIGUSR1` 热更
+- `pkg/config` + `cmd/prism`：YAML `backend` + `slices`、Accept 循环、简单 `SIGUSR1` 热更
 
 ```sh
 make build            # 编译

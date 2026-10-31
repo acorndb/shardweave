@@ -1,7 +1,8 @@
 # 三 Executor（single / rwsplit / sharding）
 
-> 状态：**已定稿（本切片实现）**  
-> 日期：2026-10-30  
+> 状态：**已被 [module-map.md](module-map.md) 取代**：改为单 Pipeline + 三个 Router，
+> 不再使用三 Executor；本文保留为历史决策记录。
+> 日期：2026-10-30
 > 上位：[backend-server-single-rwsplit-design.md](backend-server-single-rwsplit-design.md)、[m1-passthrough-pipeline-design.md](m1-passthrough-pipeline-design.md)
 
 ## 0. 一句话

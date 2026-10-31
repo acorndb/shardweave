@@ -72,7 +72,7 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 
 func newExecutor(rt *config.Runtime, cfg *config.Config) (execute.Executor, error) {
 	pcfg := toPoolConfig(cfg.Pool)
-	bs := cfg.BackendServer
+	bs := cfg.Backend
 	mode := bs.Mode
 	if mode == "" {
 		mode = constant.ModeSingle
@@ -88,31 +88,31 @@ func newExecutor(rt *config.Runtime, cfg *config.Config) (execute.Executor, erro
 	var builder plan.Builder
 	switch mode {
 	case constant.ModeSingle:
-		ep, err := bs.Primary()
-		if err != nil {
-			return nil, err
+		if len(bs.Slices) != 1 {
+			return nil, fmt.Errorf("server: single requires exactly 1 slice")
 		}
-		g = &backend.Slice{Master: backend.NewPool(pcfg, open(ep))}
+		s := bs.Slices[0]
+		g = &backend.Slice{Master: backend.NewPool(pcfg, open(s.Master))}
 		builder = plan.Builder{Router: source.AllMaster{}}
 	case constant.ModeRWSplit:
-		if bs.Master == nil {
-			return nil, fmt.Errorf("server: rwsplit master required")
+		if len(bs.Slices) != 1 {
+			return nil, fmt.Errorf("server: rwsplit requires exactly 1 slice")
 		}
+		s := bs.Slices[0]
 		g = &backend.Slice{
-			Master:      backend.NewPool(pcfg, open(*bs.Master)),
+			Master:      backend.NewPool(pcfg, open(s.Master)),
 			LoadBalance: bs.LoadBalance,
 		}
 		if g.LoadBalance == "" {
 			g.LoadBalance = constant.LoadBalanceRoundRobin
 		}
-		for i := range bs.Slaves {
-			ep := bs.Slaves[i]
-			g.Slaves = append(g.Slaves, backend.NewPool(pcfg, open(ep)))
+		for i := range s.Slaves {
+			g.Slaves = append(g.Slaves, backend.NewPool(pcfg, open(s.Slaves[i])))
 		}
 		builder = plan.Builder{Router: source.Pick{}}
 		_ = rt // pools dial from cfg snapshot at open; address reload still rejected
 	default:
-		return nil, fmt.Errorf("server: unsupported backend_server.mode %q", mode)
+		return nil, fmt.Errorf("server: unsupported backend.mode %q", mode)
 	}
 	return execute.New(g, builder)
 }
@@ -168,7 +168,7 @@ func (s *Server) onConn(c net.Conn) {
 }
 
 // UpdateConfig applies an already-parsed config (kingshard UpdateConfig).
-// listen / backend_server identity changes are rejected by config.Runtime.Apply.
+// listen / backend topology changes are rejected by config.Runtime.Apply.
 func (s *Server) UpdateConfig(cfg *config.Config) error {
 	return s.rt.Apply(cfg)
 }

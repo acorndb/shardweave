@@ -1,7 +1,8 @@
-# 后端拓扑：`backend_server`（single / rwsplit，sharding 预留）
+# 后端拓扑：`backend`（single / rwsplit，sharding 预留）
 
-> 状态：**已定稿 / 已实现（single+rwsplit）** — `sharding` 仍 Validate 拒绝；集成冒烟见 plan P6/P7；附录 A 通读见文末  
-> 实现计划：[backend-server-single-rwsplit-plan.md](backend-server-single-rwsplit-plan.md)  
+> 状态：**已被 [architecture.md v0.2](../architecture.md) 与 [module-map.md](module-map.md) 取代**
+> （配置段已改为 `backend` + `slices`）；本文保留为历史调研与选源规则参考。
+> 实现计划：[backend-server-single-rwsplit-plan.md](backend-server-single-rwsplit-plan.md)
 
 > 日期：2026-10-30  
 > 范围：配置与选源；**先落地 `single` + `rwsplit`**；`sharding` 仅占位并拒绝  

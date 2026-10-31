@@ -2,14 +2,14 @@
 // Keep this package dependency-free so config/router/executor can share it.
 package constant
 
-// backend_server.mode
+// backend.mode
 const (
 	ModeSingle   = "single"
 	ModeRWSplit  = "rwsplit"
 	ModeSharding = "sharding"
 )
 
-// backend_server.load_balance
+// backend.load_balance
 const (
 	LoadBalanceRoundRobin = "round_robin"
 	LoadBalanceRandom     = "random"

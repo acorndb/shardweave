@@ -8,22 +8,27 @@ users:
   - name: root
     password: "root"
 
-backend_server:
+backend:
   mode: single
-  address: "127.0.0.1:3306"
-  user: root
-  password: "root"
-  database: ""
+  slices:
+    - name: default
+      master:
+        address: "127.0.0.1:3306"
+        user: root
+        password: "root"
+        database: ""
   # rwsplit example (stub-tested; flip mode + fill master/slaves):
   # mode: rwsplit
-  # master:
-  #   address: "127.0.0.1:3306"
-  #   user: root
-  #   password: "root"
-  # slaves:
-  #   - address: "127.0.0.1:3307"
-  #     user: root
-  #     password: "root"
+  # slices:
+  #   - name: default
+  #     master:
+  #       address: "127.0.0.1:3306"
+  #       user: root
+  #       password: "root"
+  #     slaves:
+  #       - address: "127.0.0.1:3307"
+  #         user: root
+  #         password: "root"
   # load_balance: round_robin
 
 pool:

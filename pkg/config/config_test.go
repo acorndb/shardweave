@@ -10,18 +10,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLoadFile_OK_Single(t *testing.T) {
-	path := writeYAML(t, `
+const singleYAML = `
 listen: "127.0.0.1:3307"
 users:
   - name: app
     password: secret
-backend_server:
+backend:
   mode: single
-  address: "127.0.0.1:3306"
-  user: app
-  password: secret
-  database: appdb
+  slices:
+    - name: default
+      master:
+        address: "127.0.0.1:3306"
+        user: app
+        password: secret
+        database: appdb
 pool:
   capacity: 2
   max_capacity: 8
@@ -29,17 +31,19 @@ pool:
 log:
   level: info
 termination_drain: 2s
-`)
-	cfg, err := LoadFile(path)
+`
+
+func TestLoadFile_OK_Single(t *testing.T) {
+	cfg, err := LoadFile(writeYAML(t, singleYAML))
 	require.NoError(t, err)
 	require.Equal(t, "127.0.0.1:3307", cfg.Listen)
 	require.Len(t, cfg.Users, 1)
-	require.Equal(t, constant.ModeSingle, cfg.BackendServer.Mode)
-	ep, err := cfg.BackendServer.Primary()
-	require.NoError(t, err)
-	require.Equal(t, "127.0.0.1:3306", ep.Address)
-	require.Equal(t, "app", ep.User)
-	require.Equal(t, "appdb", ep.Database)
+	require.Equal(t, constant.ModeSingle, cfg.Backend.Mode)
+	require.Len(t, cfg.Backend.Slices, 1)
+	require.Equal(t, "default", cfg.Backend.Slices[0].Name)
+	require.Equal(t, "127.0.0.1:3306", cfg.Backend.Slices[0].Master.Address)
+	require.Equal(t, "app", cfg.Backend.Slices[0].Master.User)
+	require.Equal(t, "appdb", cfg.Backend.Slices[0].Master.Database)
 	require.Equal(t, 2, cfg.Pool.Capacity)
 	require.Equal(t, 8, cfg.Pool.MaxCapacity)
 	require.Equal(t, 3*time.Second, cfg.Pool.GetTimeout)
@@ -48,49 +52,67 @@ termination_drain: 2s
 }
 
 func TestLoadFile_ModeDefaultSingle(t *testing.T) {
-	path := writeYAML(t, `
+	cfg, err := LoadFile(writeYAML(t, `
 listen: "127.0.0.1:3307"
 users:
   - name: app
     password: secret
-backend_server:
-  address: "127.0.0.1:3306"
-  user: app
-  password: secret
-`)
-	cfg, err := LoadFile(path)
+backend:
+  slices:
+    - name: default
+      master:
+        address: "127.0.0.1:3306"
+        user: app
+        password: secret
+`))
 	require.NoError(t, err)
-	require.Equal(t, constant.ModeSingle, cfg.BackendServer.Mode)
+	require.Equal(t, constant.ModeSingle, cfg.Backend.Mode)
 }
 
 func TestLoadFile_OK_RWSplit(t *testing.T) {
-	path := writeYAML(t, `
+	cfg, err := LoadFile(writeYAML(t, `
+listen: "127.0.0.1:3307"
+users:
+  - name: app
+    password: secret
+backend:
+  mode: rwsplit
+  slices:
+    - name: default
+      master:
+        address: "127.0.0.1:3306"
+        user: app
+        password: secret
+      slaves:
+        - address: "127.0.0.1:3307"
+          user: app
+          password: secret
+`))
+	require.NoError(t, err)
+	require.Equal(t, constant.ModeRWSplit, cfg.Backend.Mode)
+	require.Len(t, cfg.Backend.Slices, 1)
+	require.Len(t, cfg.Backend.Slices[0].Slaves, 1)
+	require.Equal(t, constant.LoadBalanceRoundRobin, cfg.Backend.LoadBalance)
+}
+
+func TestLoadFile_RejectOldBackendServerKey(t *testing.T) {
+	_, err := LoadFile(writeYAML(t, `
 listen: "127.0.0.1:3307"
 users:
   - name: app
     password: secret
 backend_server:
-  mode: rwsplit
-  master:
-    address: "127.0.0.1:3306"
-    user: app
-    password: secret
-  slaves:
-    - address: "127.0.0.1:3307"
-      user: app
-      password: secret
-  load_balance: round_robin
-`)
-	cfg, err := LoadFile(path)
-	require.NoError(t, err)
-	require.Equal(t, constant.ModeRWSplit, cfg.BackendServer.Mode)
-	require.Equal(t, "127.0.0.1:3306", cfg.BackendServer.Master.Address)
-	require.Len(t, cfg.BackendServer.Slaves, 1)
-	require.Equal(t, constant.LoadBalanceRoundRobin, cfg.BackendServer.LoadBalance)
+  mode: single
+  address: "127.0.0.1:3306"
+  user: app
+  password: secret
+`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "backend_server")
 }
 
-func TestLoadFile_RejectOldBackendKey(t *testing.T) {
-	path := writeYAML(t, `
+func TestLoadFile_RejectFlattenedBackend(t *testing.T) {
+	_, err := LoadFile(writeYAML(t, `
 listen: "127.0.0.1:3307"
 users:
   - name: app
@@ -99,60 +121,153 @@ backend:
   address: "127.0.0.1:3306"
   user: app
   password: secret
-`)
-	_, err := LoadFile(path)
+`))
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "backend")
+	require.Contains(t, err.Error(), "address")
 }
 
 func TestLoadFile_RejectUnknownField(t *testing.T) {
-	path := writeYAML(t, `
-listen: "127.0.0.1:3307"
-users:
-  - name: app
-    password: secret
-backend_server:
-  mode: single
-  address: "127.0.0.1:3306"
-  user: app
-  password: secret
-not_a_real_field: true
-`)
-	_, err := LoadFile(path)
+	_, err := LoadFile(writeYAML(t, singleYAML+"\nnot_a_real_field: true\n"))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not_a_real_field")
 }
 
 func TestValidate_RejectShardingAndUnknownMode(t *testing.T) {
-	base := validSingle()
-	base.BackendServer.Mode = constant.ModeSharding
-	require.Error(t, Validate(base))
-
-	base = validSingle()
-	base.BackendServer.Mode = "weird"
-	require.Error(t, Validate(base))
-}
-
-func TestValidate_RWSplitRequiresMaster(t *testing.T) {
 	cfg := validSingle()
-	cfg.BackendServer = BackendServer{Mode: constant.ModeRWSplit}
-	require.Error(t, Validate(cfg))
+	cfg.Backend.Mode = constant.ModeSharding
+	require.ErrorContains(t, Validate(cfg), "not implemented")
 
-	cfg.BackendServer.Master = &BackendEndpoint{Address: "127.0.0.1:3306", User: "a", Password: "b"}
-	require.NoError(t, Validate(cfg))
+	cfg = validSingle()
+	cfg.Backend.Mode = "weird"
+	require.ErrorContains(t, Validate(cfg), "unsupported")
 }
 
-func TestValidate_SingleRejectsMasterBlock(t *testing.T) {
+func TestValidate_SingleConstraints(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{name: "no_slices", mutate: func(c *Config) { c.Backend.Slices = nil }, want: "exactly 1 slice"},
+		{name: "two_slices", mutate: func(c *Config) {
+			c.Backend.Slices = append(c.Backend.Slices, c.Backend.Slices[0])
+		}, want: "duplicated"},
+		{name: "slaves", mutate: func(c *Config) {
+			c.Backend.Slices[0].Slaves = []BackendEndpoint{{Address: "x", User: "u"}}
+		}, want: "must not set slaves"},
+		{name: "sharding", mutate: func(c *Config) {
+			c.Backend.Sharding = &ShardingConfig{}
+		}, want: "must not set sharding"},
+		{name: "load_balance", mutate: func(c *Config) {
+			c.Backend.LoadBalance = constant.LoadBalanceRoundRobin
+		}, want: "must not set load_balance"},
+		{name: "empty_name", mutate: func(c *Config) {
+			c.Backend.Slices[0].Name = ""
+		}, want: "name is required"},
+		{name: "missing_master_address", mutate: func(c *Config) {
+			c.Backend.Slices[0].Master.Address = ""
+		}, want: "master.address is required"},
+		{name: "missing_master_user", mutate: func(c *Config) {
+			c.Backend.Slices[0].Master.User = ""
+		}, want: "master.user is required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validSingle()
+			tc.mutate(cfg)
+			require.ErrorContains(t, Validate(cfg), tc.want)
+		})
+	}
+}
+
+func TestValidate_RWSplitConstraints(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{name: "no_slices", mutate: func(c *Config) { c.Backend.Slices = nil }, want: "exactly 1 slice"},
+		{name: "two_slices", mutate: func(c *Config) {
+			second := c.Backend.Slices[0]
+			second.Name = "other"
+			c.Backend.Slices = append(c.Backend.Slices, second)
+		}, want: "exactly 1 slice"},
+		{name: "no_slaves", mutate: func(c *Config) {
+			c.Backend.Slices[0].Slaves = nil
+		}, want: "at least 1 slave"},
+		{name: "bad_slave", mutate: func(c *Config) {
+			c.Backend.Slices[0].Slaves[0].Address = ""
+		}, want: "slaves[0].address is required"},
+		{name: "bad_load_balance", mutate: func(c *Config) {
+			c.Backend.LoadBalance = "nearest"
+		}, want: "unsupported"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validRWSplit()
+			tc.mutate(cfg)
+			require.ErrorContains(t, Validate(cfg), tc.want)
+		})
+	}
+}
+
+func TestValidate_RequiresListenUsers(t *testing.T) {
+	require.ErrorContains(t, Validate(&Config{}), "listen")
+
 	cfg := validSingle()
-	cfg.BackendServer.Master = &BackendEndpoint{Address: "x", User: "a"}
-	require.Error(t, Validate(cfg))
+	cfg.Users = nil
+	require.ErrorContains(t, Validate(cfg), "users is required")
+
+	cfg = validSingle()
+	cfg.Users[0].Name = ""
+	require.ErrorContains(t, Validate(cfg), "users[0].name")
 }
 
-func TestValidate_RequiresListenUsersBackendServer(t *testing.T) {
-	err := Validate(&Config{})
-	require.Error(t, err)
+func TestValidate_DuplicateSliceName(t *testing.T) {
+	cfg := validSingle()
+	second := cfg.Backend.Slices[0]
+	cfg.Backend.Slices = append(cfg.Backend.Slices, second)
+	require.ErrorContains(t, Validate(cfg), "duplicated")
+}
 
-	require.NoError(t, Validate(validSingle()))
+func TestSameTopology(t *testing.T) {
+	base := validRWSplit()
+	require.NoError(t, Validate(base))
+
+	same := base.Clone()
+	require.True(t, base.Backend.SameTopology(same.Backend))
+
+	modeChanged := base.Clone()
+	modeChanged.Backend.Mode = constant.ModeSingle
+	require.False(t, base.Backend.SameTopology(modeChanged.Backend))
+
+	lbChanged := base.Clone()
+	lbChanged.Backend.LoadBalance = constant.LoadBalanceRandom
+	require.False(t, base.Backend.SameTopology(lbChanged.Backend))
+
+	sliceChanged := base.Clone()
+	sliceChanged.Backend.Slices[0].Master.Address = "10.0.0.1:3306"
+	require.False(t, base.Backend.SameTopology(sliceChanged.Backend))
+
+	shardingChanged := base.Clone()
+	shardingChanged.Backend.Sharding = &ShardingConfig{Rules: []ShardRule{{Table: "t"}}}
+	require.False(t, base.Backend.SameTopology(shardingChanged.Backend))
+}
+
+func TestClone_DeepCopy(t *testing.T) {
+	base := validRWSplit()
+	base.Backend.Sharding = &ShardingConfig{Rules: []ShardRule{{Table: "t", Slices: []string{"default"}}}}
+
+	clone := base.Clone()
+	clone.Users[0].Password = "changed"
+	clone.Backend.Slices[0].Master.Address = "10.0.0.1:3306"
+	clone.Backend.Slices[0].Slaves[0].Address = "10.0.0.2:3306"
+	clone.Backend.Sharding.Rules[0].Slices[0] = "changed"
+
+	require.Equal(t, "secret", base.Users[0].Password)
+	require.Equal(t, "127.0.0.1:3306", base.Backend.Slices[0].Master.Address)
+	require.Equal(t, "127.0.0.1:3307", base.Backend.Slices[0].Slaves[0].Address)
+	require.Equal(t, "default", base.Backend.Sharding.Rules[0].Slices[0])
 }
 
 func TestRuntime_ReloadUsers(t *testing.T) {
@@ -161,7 +276,7 @@ func TestRuntime_ReloadUsers(t *testing.T) {
 	rt := NewRuntime(base)
 	require.Equal(t, "old", rt.Load().Users[0].Password)
 
-	next := cloneConfig(base)
+	next := base.Clone()
 	next.Users = []User{{Name: "a", Password: "new"}}
 	require.NoError(t, rt.Apply(next))
 	require.Equal(t, "new", rt.Load().Users[0].Password)
@@ -170,38 +285,25 @@ func TestRuntime_ReloadUsers(t *testing.T) {
 func TestRuntime_RejectListenChange(t *testing.T) {
 	base := validSingle()
 	rt := NewRuntime(base)
-	next := cloneConfig(base)
+	next := base.Clone()
 	next.Listen = "127.0.0.1:3308"
 	err := rt.Apply(next)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "listen")
+	require.ErrorContains(t, err, "listen")
 	require.Equal(t, "127.0.0.1:3307", rt.Load().Listen)
 }
 
-func TestRuntime_RejectBackendServerChange(t *testing.T) {
+func TestRuntime_RejectBackendChange(t *testing.T) {
 	base := validSingle()
 	rt := NewRuntime(base)
-	next := cloneConfig(base)
-	next.BackendServer.Address = "10.0.0.1:3306"
+	next := base.Clone()
+	next.Backend.Slices[0].Master.Address = "10.0.0.1:3306"
 	err := rt.Apply(next)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "backend_server")
+	require.ErrorContains(t, err, "backend")
+	require.Equal(t, "127.0.0.1:3306", rt.Load().Backend.Slices[0].Master.Address)
 }
 
 func TestRuntime_ReloadFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "prism.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`
-listen: "127.0.0.1:3307"
-users:
-  - name: app
-    password: p1
-backend_server:
-  mode: single
-  address: "127.0.0.1:3306"
-  user: app
-  password: p1
-`), 0o600))
+	path := writeYAML(t, singleYAML)
 	cfg, err := LoadFile(path)
 	require.NoError(t, err)
 	rt := NewRuntime(cfg)
@@ -211,11 +313,15 @@ listen: "127.0.0.1:3307"
 users:
   - name: app
     password: p2
-backend_server:
+backend:
   mode: single
-  address: "127.0.0.1:3306"
-  user: app
-  password: p1
+  slices:
+    - name: default
+      master:
+        address: "127.0.0.1:3306"
+        user: app
+        password: secret
+        database: appdb
 `), 0o600))
 	require.NoError(t, rt.ReloadFile(path))
 	require.Equal(t, "p2", rt.Load().Users[0].Password)
@@ -244,15 +350,33 @@ func validSingle() *Config {
 	return &Config{
 		Listen: "127.0.0.1:3307",
 		Users:  []User{{Name: "app", Password: "secret"}},
-		BackendServer: BackendServer{
-			Mode:     constant.ModeSingle,
-			Address:  "127.0.0.1:3306",
-			User:     "app",
-			Password: "secret",
-			Database: "appdb",
+		Backend: BackendConfig{
+			Mode: constant.ModeSingle,
+			Slices: []SliceConfig{{
+				Name: "default",
+				Master: BackendEndpoint{
+					Address:  "127.0.0.1:3306",
+					User:     "app",
+					Password: "secret",
+					Database: "appdb",
+				},
+			}},
 		},
 		Log: Log{Level: "info"},
 	}
+}
+
+func validRWSplit() *Config {
+	cfg := validSingle()
+	cfg.Backend = BackendConfig{
+		Mode: constant.ModeRWSplit,
+		Slices: []SliceConfig{{
+			Name:   "default",
+			Master: BackendEndpoint{Address: "127.0.0.1:3306", User: "app", Password: "secret"},
+			Slaves: []BackendEndpoint{{Address: "127.0.0.1:3307", User: "app", Password: "secret"}},
+		}},
+	}
+	return cfg
 }
 
 func writeYAML(t *testing.T, body string) string {
@@ -261,8 +385,4 @@ func writeYAML(t *testing.T, body string) string {
 	path := filepath.Join(dir, "prism.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 	return path
-}
-
-func cloneConfig(c *Config) *Config {
-	return c.Clone()
 }

@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 type Config struct {
 	Listen           string        `yaml:"listen"`
 	Users            []User        `yaml:"users"`
-	BackendServer    BackendServer `yaml:"backend_server"`
+	Backend          BackendConfig `yaml:"backend"`
 	Pool             Pool          `yaml:"pool"`
 	Log              Log           `yaml:"log"`
 	TerminationDrain time.Duration `yaml:"termination_drain"`
@@ -27,20 +28,19 @@ type User struct {
 	Password string `yaml:"password"`
 }
 
-// BackendServer is the top-level backend topology (single / rwsplit / sharding).
-type BackendServer struct {
-	Mode string `yaml:"mode"`
+// BackendConfig is the backend topology: slices + mode-specific constraints.
+type BackendConfig struct {
+	Mode        string          `yaml:"mode"`
+	Slices      []SliceConfig   `yaml:"slices"`
+	LoadBalance string          `yaml:"load_balance,omitempty"`
+	Sharding    *ShardingConfig `yaml:"sharding,omitempty"`
+}
 
-	// single: endpoint fields inline
-	Address  string `yaml:"address,omitempty"`
-	User     string `yaml:"user,omitempty"`
-	Password string `yaml:"password,omitempty"`
-	Database string `yaml:"database,omitempty"`
-
-	// rwsplit
-	Master      *BackendEndpoint  `yaml:"master,omitempty"`
-	Slaves      []BackendEndpoint `yaml:"slaves,omitempty"`
-	LoadBalance string            `yaml:"load_balance,omitempty"`
+// SliceConfig is one logical topology unit: master + optional slaves.
+type SliceConfig struct {
+	Name   string            `yaml:"name"`
+	Master BackendEndpoint   `yaml:"master"`
+	Slaves []BackendEndpoint `yaml:"slaves,omitempty"`
 }
 
 // BackendEndpoint is one MySQL address (one pool leaf).
@@ -49,6 +49,19 @@ type BackendEndpoint struct {
 	User     string `yaml:"user"`
 	Password string `yaml:"password"`
 	Database string `yaml:"database"`
+}
+
+// ShardingConfig describes table sharding rules. Parsed now, rejected until P3.
+type ShardingConfig struct {
+	Rules []ShardRule `yaml:"rules"`
+}
+
+// ShardRule maps one logical table to slices.
+type ShardRule struct {
+	Table     string   `yaml:"table"`
+	Key       string   `yaml:"key"`
+	Algorithm string   `yaml:"algorithm"`
+	Slices    []string `yaml:"slices"`
 }
 
 // Pool maps to backend.PoolConfig fields.
@@ -85,7 +98,7 @@ func LoadFile(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// Validate checks required fields for backend_server modes.
+// Validate checks required fields and backend mode constraints.
 func Validate(cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config: nil")
@@ -101,53 +114,84 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("config: users[%d].name is required", i)
 		}
 	}
-	return validateBackendServer(&cfg.BackendServer)
+	return validateBackend(&cfg.Backend)
 }
 
-func validateBackendServer(bs *BackendServer) error {
-	mode := strings.TrimSpace(bs.Mode)
+func validateBackend(b *BackendConfig) error {
+	mode := strings.TrimSpace(b.Mode)
 	if mode == "" {
 		mode = constant.ModeSingle
-		bs.Mode = constant.ModeSingle
+		b.Mode = constant.ModeSingle
 	}
+
+	seen := make(map[string]bool, len(b.Slices))
+	for i := range b.Slices {
+		name := b.Slices[i].Name
+		if name == "" {
+			continue // reported by validateSlice in supported modes
+		}
+		if seen[name] {
+			return fmt.Errorf("config: backend.slices[%d].name %q is duplicated", i, name)
+		}
+		seen[name] = true
+	}
+
 	switch mode {
 	case constant.ModeSingle:
-		if bs.Master != nil || len(bs.Slaves) > 0 {
-			return fmt.Errorf("config: backend_server.mode=single must not set master/slaves")
+		if len(b.Slices) != 1 {
+			return fmt.Errorf("config: backend.mode=single requires exactly 1 slice")
 		}
-		if bs.Address == "" {
-			return fmt.Errorf("config: backend_server.address is required")
+		if len(b.Slices[0].Slaves) > 0 {
+			return fmt.Errorf("config: backend.mode=single must not set slaves")
 		}
-		if bs.User == "" {
-			return fmt.Errorf("config: backend_server.user is required")
+		if b.Sharding != nil {
+			return fmt.Errorf("config: backend.mode=single must not set sharding")
 		}
-		return nil
+		if b.LoadBalance != "" {
+			return fmt.Errorf("config: backend.mode=single must not set load_balance")
+		}
+		return validateSlice("backend.slices[0]", &b.Slices[0])
 	case constant.ModeRWSplit:
-		if bs.Address != "" || bs.User != "" || bs.Password != "" || bs.Database != "" {
-			return fmt.Errorf("config: backend_server.mode=rwsplit must use master/slaves, not top-level address")
+		if len(b.Slices) != 1 {
+			return fmt.Errorf("config: backend.mode=rwsplit requires exactly 1 slice")
 		}
-		if bs.Master == nil {
-			return fmt.Errorf("config: backend_server.master is required for rwsplit")
+		if b.Sharding != nil {
+			return fmt.Errorf("config: backend.mode=rwsplit must not set sharding")
 		}
-		if err := validateEndpoint("backend_server.master", bs.Master); err != nil {
+		if len(b.Slices[0].Slaves) == 0 {
+			return fmt.Errorf("config: backend.mode=rwsplit requires at least 1 slave")
+		}
+		if err := validateSlice("backend.slices[0]", &b.Slices[0]); err != nil {
 			return err
 		}
-		for i := range bs.Slaves {
-			if err := validateEndpoint(fmt.Sprintf("backend_server.slaves[%d]", i), &bs.Slaves[i]); err != nil {
-				return err
-			}
-		}
-		switch bs.LoadBalance {
-		case "", constant.LoadBalanceRoundRobin, constant.LoadBalanceRandom:
+		switch b.LoadBalance {
+		case "":
+			b.LoadBalance = constant.LoadBalanceRoundRobin
+		case constant.LoadBalanceRoundRobin, constant.LoadBalanceRandom:
 		default:
-			return fmt.Errorf("config: backend_server.load_balance %q unsupported", bs.LoadBalance)
+			return fmt.Errorf("config: backend.load_balance %q unsupported", b.LoadBalance)
 		}
 		return nil
 	case constant.ModeSharding:
-		return fmt.Errorf("config: backend_server.mode=sharding is not implemented")
+		return fmt.Errorf("config: backend.mode=sharding is not implemented")
 	default:
-		return fmt.Errorf("config: backend_server.mode %q unsupported (want single|rwsplit|sharding)", mode)
+		return fmt.Errorf("config: backend.mode %q unsupported (want single|rwsplit|sharding)", mode)
 	}
+}
+
+func validateSlice(prefix string, s *SliceConfig) error {
+	if s.Name == "" {
+		return fmt.Errorf("config: %s.name is required", prefix)
+	}
+	if err := validateEndpoint(prefix+".master", &s.Master); err != nil {
+		return err
+	}
+	for i := range s.Slaves {
+		if err := validateEndpoint(fmt.Sprintf("%s.slaves[%d]", prefix, i), &s.Slaves[i]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateEndpoint(prefix string, ep *BackendEndpoint) error {
@@ -160,58 +204,25 @@ func validateEndpoint(prefix string, ep *BackendEndpoint) error {
 	return nil
 }
 
-// Primary returns the writable/primary endpoint for single or rwsplit.
-func (bs BackendServer) Primary() (BackendEndpoint, error) {
-	mode := bs.Mode
-	if mode == "" {
-		mode = constant.ModeSingle
+func normalizeMode(mode string) string {
+	if strings.TrimSpace(mode) == "" {
+		return constant.ModeSingle
 	}
-	switch mode {
-	case constant.ModeSingle:
-		return BackendEndpoint{
-			Address:  bs.Address,
-			User:     bs.User,
-			Password: bs.Password,
-			Database: bs.Database,
-		}, nil
-	case constant.ModeRWSplit:
-		if bs.Master == nil {
-			return BackendEndpoint{}, fmt.Errorf("config: rwsplit master missing")
-		}
-		return *bs.Master, nil
-	default:
-		return BackendEndpoint{}, fmt.Errorf("config: primary unsupported for mode %q", mode)
-	}
+	return mode
 }
 
-// SameIdentity reports whether topology endpoints/credentials are unchanged (reload gate).
-func (bs BackendServer) SameIdentity(other BackendServer) bool {
-	if strings.TrimSpace(bs.Mode) == "" {
-		bs.Mode = constant.ModeSingle
-	}
-	if strings.TrimSpace(other.Mode) == "" {
-		other.Mode = constant.ModeSingle
-	}
-	if bs.Mode != other.Mode || bs.LoadBalance != other.LoadBalance {
+// SameTopology reports whether mode/slices/rules/LB are unchanged (reload gate).
+func (b BackendConfig) SameTopology(other BackendConfig) bool {
+	if normalizeMode(b.Mode) != normalizeMode(other.Mode) {
 		return false
 	}
-	a, errA := bs.Primary()
-	b, errB := other.Primary()
-	if errA != nil || errB != nil {
+	if b.LoadBalance != other.LoadBalance {
 		return false
 	}
-	if a != b {
+	if !reflect.DeepEqual(b.Slices, other.Slices) {
 		return false
 	}
-	if len(bs.Slaves) != len(other.Slaves) {
-		return false
-	}
-	for i := range bs.Slaves {
-		if bs.Slaves[i] != other.Slaves[i] {
-			return false
-		}
-	}
-	return true
+	return reflect.DeepEqual(b.Sharding, other.Sharding)
 }
 
 // Clone returns a deep copy suitable for mutation before Apply.
@@ -223,19 +234,34 @@ func (c *Config) Clone() *Config {
 	if c.Users != nil {
 		out.Users = append([]User(nil), c.Users...)
 	}
-	out.BackendServer = c.BackendServer.Clone()
+	out.Backend = c.Backend.Clone()
 	return &out
 }
 
-// Clone deep-copies BackendServer.
-func (bs BackendServer) Clone() BackendServer {
-	out := bs
-	if bs.Master != nil {
-		m := *bs.Master
-		out.Master = &m
+// Clone deep-copies BackendConfig.
+func (b BackendConfig) Clone() BackendConfig {
+	out := b
+	if b.Slices != nil {
+		out.Slices = make([]SliceConfig, len(b.Slices))
+		for i := range b.Slices {
+			out.Slices[i] = b.Slices[i]
+			if b.Slices[i].Slaves != nil {
+				out.Slices[i].Slaves = append([]BackendEndpoint(nil), b.Slices[i].Slaves...)
+			}
+		}
 	}
-	if bs.Slaves != nil {
-		out.Slaves = append([]BackendEndpoint(nil), bs.Slaves...)
+	if b.Sharding != nil {
+		sc := *b.Sharding
+		if b.Sharding.Rules != nil {
+			sc.Rules = make([]ShardRule, len(b.Sharding.Rules))
+			for i := range b.Sharding.Rules {
+				sc.Rules[i] = b.Sharding.Rules[i]
+				if b.Sharding.Rules[i].Slices != nil {
+					sc.Rules[i].Slices = append([]string(nil), b.Sharding.Rules[i].Slices...)
+				}
+			}
+		}
+		out.Sharding = &sc
 	}
 	return out
 }
