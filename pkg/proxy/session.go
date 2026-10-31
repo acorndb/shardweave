@@ -93,23 +93,23 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 			}
 		case mysql.ComInitDB:
 			if err := cfg.Exec.Handle(ctx, ec, stmt); err != nil {
-				return err
+				return handleExecError(front, err)
 			}
 		case mysql.ComQuery:
 			if session.DetectReservedSQL(stmt.Raw) {
 				st.MarkReserved()
 			}
 			if err := cfg.Exec.Handle(ctx, ec, stmt); err != nil {
-				return err
+				return handleExecError(front, err)
 			}
 		case mysql.ComStmtPrepare:
 			st.MarkReserved()
 			if err := cfg.Exec.Handle(ctx, ec, stmt); err != nil {
-				return err
+				return handleExecError(front, err)
 			}
 		case mysql.ComStmtExecute, mysql.ComStmtReset, mysql.ComStmtClose:
 			if err := cfg.Exec.Handle(ctx, ec, stmt); err != nil {
-				return err
+				return handleExecError(front, err)
 			}
 		case mysql.ComResetConnection:
 			// Match prior behavior: Release failure still clears proxy state.
@@ -122,6 +122,13 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 			_ = writeERR(front, 1047, "08S01", fmt.Sprintf("command %d not supported yet", data[0]))
 		}
 	}
+}
+
+func handleExecError(front *packet.Conn, err error) error {
+	if errors.Is(err, execute.ErrPoolExhausted) {
+		_ = writeERR(front, 1040, "08004", "Too many connections")
+	}
+	return err
 }
 
 func writeOK(front *packet.Conn) error {

@@ -4,6 +4,7 @@ files:
   - pkg/backend/pool.go
   - pkg/config/config.go
   - pkg/server/server.go
+  - pkg/proxy/session.go
 ---
 
 ## Must Fix
@@ -39,6 +40,14 @@ files:
 
 这是明确选择：池满说明 `max_capacity` 已打满，快速失败避免请求无限排队；
 需要吸收短突发时显式设置 `acquire_timeout > 0`。
+
+### 池满时前端连接会收到 1040 后关闭
+- status: fixed
+- file: pkg/proxy/session.go
+
+`execute.ErrPoolExhausted` 映射为 MySQL 1040（Too many connections），写回前端后
+关闭连接；不会让客户端只看到 EOF。连接级准入控制（`server.max_connections`）
+是下一项独立改动。
 
 ## 横向对照（调研结论）
 

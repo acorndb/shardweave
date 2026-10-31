@@ -13,6 +13,10 @@ import (
 	"github.com/acorndb/prism/pkg/sql"
 )
 
+// ErrPoolExhausted is returned when the backend pool is at capacity and
+// acquire_timeout is zero (fail-fast).
+var ErrPoolExhausted = backend.ErrPoolExhausted
+
 // Runtime is per frontend-connection mutable state.
 type Runtime struct {
 	Front  *packet.Conn

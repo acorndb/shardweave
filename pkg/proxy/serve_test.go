@@ -285,3 +285,22 @@ func TestServe_HandleErrorClosesAndDiscards(t *testing.T) {
 	}
 	require.True(t, exec.lastRelease(t), "session close must discard the sticky backend")
 }
+
+func TestServe_PoolExhaustedWrites1040(t *testing.T) {
+	exec := newFakeExec()
+	exec.handleErr = execute.ErrPoolExhausted
+	pc, serveErr := newProxySession(t, exec)
+
+	writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("SELECT 1")...))
+	data := readPacket(t, pc)
+	require.NotEmpty(t, data)
+	require.Equal(t, byte(mysql.ErrHeader), data[0])
+	require.Equal(t, uint16(1040), binary.LittleEndian.Uint16(data[1:3]))
+
+	select {
+	case err := <-serveErr:
+		require.ErrorIs(t, err, execute.ErrPoolExhausted)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not exit after pool exhaustion")
+	}
+}
