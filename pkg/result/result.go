@@ -3,12 +3,16 @@ package result
 
 // Field is one result-set column.
 type Field struct {
-	Name    string
-	Table   string
-	DB      string
-	Type    byte
-	Flags   uint16
-	Charset uint16
+	Name         string
+	OrgName      string
+	Table        string
+	OrgTable     string
+	DB           string
+	Type         byte
+	Flags        uint16
+	Charset      uint16
+	ColumnLength uint32
+	Decimals     byte
 }
 
 // Value is one logical cell value.
