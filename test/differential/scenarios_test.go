@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/acorndb/prism/pkg/backend"
-	"github.com/acorndb/prism/pkg/constant"
-	"github.com/acorndb/prism/pkg/executor"
+	"github.com/acorndb/prism/pkg/execute"
+	"github.com/acorndb/prism/pkg/plan"
 	"github.com/acorndb/prism/pkg/proxy"
+	"github.com/acorndb/prism/pkg/route/source"
 	"github.com/stretchr/testify/require"
 	mysqltc "github.com/testcontainers/testcontainers-go/modules/mysql"
 )
@@ -56,7 +57,7 @@ func TestPassthroughQueryScenarios(t *testing.T) {
 		func(ctx context.Context) (backend.Conn, error) {
 			return backend.DialMySQL(ctx, mysqlAddr, calibUser, calibPass, dbProxied)
 		})
-	exec, err := executor.New(constant.ModeSingle, &backend.Slice{Master: p})
+	exec, err := execute.New(&backend.Slice{Master: p}, plan.Builder{Router: source.AllMaster{}})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = exec.Close() })
 

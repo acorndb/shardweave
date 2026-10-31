@@ -19,12 +19,12 @@
 | 包 | 覆盖率 |
 |---|---|
 | `pkg/plan` | 95.0% |
+| `pkg/execute` | 86.2%（R3 execution seam 后） |
 | `pkg/route/source` | 82.5% |
+| `pkg/proxy` | 81.5%（H0-a fake Executor 后） |
 | `pkg/config` | 73.5% |
-| `pkg/backend` | 67.0% |
-| `pkg/server` | 52.8% |
-| `pkg/executor` | 44.1% |
-| `pkg/proxy` | 41.2% |
+| `pkg/backend` | 66.8% |
+| `pkg/server` | 53.3% |
 | `pkg/sql` | 无语句（纯类型） |
 
 ### 0.2 缺口
@@ -245,12 +245,10 @@ CI 分层：
 
 ## 8. 与重构计划的关系
 
-- **R3/R6 是测试可测性的关键**：`backend.Conn.Exec` + `result.Stream` 落地后，
-  `execute` 可以用 fake `Conn`/脚本化 Stream 单测，不再依赖真 MySQL。
-- 建议把 `backend.Conn.Exec` 的接口加宽**提前到 R3**（或把 R3/R6 合并为
-  execution seam），否则 R3 之后 `executor` 仍然是低覆盖率。
-- 在 R3 之前先做 **H0**：proxy 命令循环用 fake Executor、forwarding 用
-  `net.Pipe`，可以在不改接口的情况下补一批测试。
+- **R3/R6 是测试可测性的关键**：`backend.Conn.Exec` + `result.Stream` 已在 R3 落地，
+  `execute` 可以用 fake `Conn`/脚本化 Stream 单测，不再依赖真 MySQL（覆盖率 86.2%）。
+- R3 之前先做 **H0**：proxy 命令循环用 fake Executor、forwarding 用 `net.Pipe`。
+  H0-a 已完成；H0-b 的包级转发行为由 `pkg/mysql/forward_test.go` 与 R3 的 fake Conn 覆盖。
 - 每个重构 PR：
   - 聚焦测试必跑；
   - 差分由用户批准后跑（Docker 不可用时明确记录“未跑”）；

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acorndb/prism/pkg/executor"
+	"github.com/acorndb/prism/pkg/execute"
 	"github.com/acorndb/prism/pkg/mysql"
 	"github.com/acorndb/prism/pkg/mysql/client"
 	"github.com/acorndb/prism/pkg/mysql/packet"
@@ -44,9 +44,7 @@ func newFakeExec() *fakeExec {
 	return &fakeExec{signal: make(chan struct{}, 16)}
 }
 
-func (f *fakeExec) Mode() string { return "fake" }
-
-func (f *fakeExec) Handle(_ context.Context, c *executor.Conn, stmt *sql.Statement) error {
+func (f *fakeExec) Handle(_ context.Context, c *execute.Runtime, stmt *sql.Statement) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, handleCall{
 		stmt:       stmt,
@@ -59,7 +57,7 @@ func (f *fakeExec) Handle(_ context.Context, c *executor.Conn, stmt *sql.Stateme
 	return f.handleErr
 }
 
-func (f *fakeExec) ReleaseSticky(_ *executor.Conn, discard bool) error {
+func (f *fakeExec) Release(_ *execute.Runtime, discard bool) error {
 	f.mu.Lock()
 	f.releases = append(f.releases, discard)
 	f.mu.Unlock()

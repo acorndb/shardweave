@@ -15,15 +15,17 @@ import (
 	"github.com/acorndb/prism/pkg/backend"
 	"github.com/acorndb/prism/pkg/config"
 	"github.com/acorndb/prism/pkg/constant"
-	"github.com/acorndb/prism/pkg/executor"
+	"github.com/acorndb/prism/pkg/execute"
+	"github.com/acorndb/prism/pkg/plan"
 	"github.com/acorndb/prism/pkg/proxy"
+	"github.com/acorndb/prism/pkg/route/source"
 )
 
 // Server is one proxy process: listen address + executor + live config.
 type Server struct {
 	path string
 	rt   *config.Runtime
-	exec executor.Executor
+	exec execute.Executor
 
 	listener net.Listener
 	running  atomic.Bool
@@ -34,7 +36,7 @@ type Server struct {
 	closeOnce sync.Once
 }
 
-// New builds a Server and binds the listen address (kingshard NewServer).
+// New builds a Server and binds the listen address.
 func New(cfg *config.Config, configPath string) (*Server, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("server: nil config")
@@ -68,7 +70,7 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 	return s, nil
 }
 
-func newExecutor(rt *config.Runtime, cfg *config.Config) (executor.Executor, error) {
+func newExecutor(rt *config.Runtime, cfg *config.Config) (execute.Executor, error) {
 	pcfg := toPoolConfig(cfg.Pool)
 	bs := cfg.BackendServer
 	mode := bs.Mode
@@ -83,6 +85,7 @@ func newExecutor(rt *config.Runtime, cfg *config.Config) (executor.Executor, err
 	}
 
 	var g *backend.Slice
+	var builder plan.Builder
 	switch mode {
 	case constant.ModeSingle:
 		ep, err := bs.Primary()
@@ -90,6 +93,7 @@ func newExecutor(rt *config.Runtime, cfg *config.Config) (executor.Executor, err
 			return nil, err
 		}
 		g = &backend.Slice{Master: backend.NewPool(pcfg, open(ep))}
+		builder = plan.Builder{Router: source.AllMaster{}}
 	case constant.ModeRWSplit:
 		if bs.Master == nil {
 			return nil, fmt.Errorf("server: rwsplit master required")
@@ -105,11 +109,12 @@ func newExecutor(rt *config.Runtime, cfg *config.Config) (executor.Executor, err
 			ep := bs.Slaves[i]
 			g.Slaves = append(g.Slaves, backend.NewPool(pcfg, open(ep)))
 		}
+		builder = plan.Builder{Router: source.Pick{}}
 		_ = rt // pools dial from cfg snapshot at open; address reload still rejected
 	default:
 		return nil, fmt.Errorf("server: unsupported backend_server.mode %q", mode)
 	}
-	return executor.New(mode, g)
+	return execute.New(g, builder)
 }
 
 // Addr returns the bound listen address.
@@ -130,7 +135,7 @@ func (s *Server) ConfigPath() string {
 	return s.path
 }
 
-// Run accepts connections until Close (kingshard/Gaea Server.Run).
+// Run accepts connections until Close.
 func (s *Server) Run() error {
 	for s.running.Load() {
 		conn, err := s.listener.Accept()
@@ -168,7 +173,7 @@ func (s *Server) UpdateConfig(cfg *config.Config) error {
 	return s.rt.Apply(cfg)
 }
 
-// Close stops Accept and releases pools (kingshard/Gaea Close).
+// Close stops Accept and releases pools.
 func (s *Server) Close() {
 	s.closeOnce.Do(func() {
 		s.running.Store(false)

@@ -6,7 +6,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/acorndb/prism/pkg/executor"
+	"github.com/acorndb/prism/pkg/execute"
 	"github.com/acorndb/prism/pkg/mysql"
 	"github.com/acorndb/prism/pkg/mysql/packet"
 	"github.com/acorndb/prism/pkg/mysql/server"
@@ -17,7 +17,7 @@ import (
 // SessionConfig wires frontend auth and backend executor for passthrough.
 type SessionConfig struct {
 	Users server.UserProvider
-	Exec  executor.Executor
+	Exec  execute.Executor
 }
 
 // Serve runs one frontend connection: handshake then command loop.
@@ -35,9 +35,9 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 		st.SetDatabase(db)
 	}
 
-	ec := &executor.Conn{Front: front, State: st}
+	ec := &execute.Runtime{Front: front, State: st}
 	defer func() {
-		_ = cfg.Exec.ReleaseSticky(ec, true)
+		_ = cfg.Exec.Release(ec, true)
 	}()
 
 	for {
@@ -110,7 +110,7 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 			}
 		case mysql.ComResetConnection:
 			// Match prior behavior: Release failure still clears proxy state.
-			_ = cfg.Exec.ReleaseSticky(ec, false)
+			_ = cfg.Exec.Release(ec, false)
 			st.Reset()
 			if err := writeOK(front); err != nil {
 				return err

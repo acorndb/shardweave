@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/acorndb/prism/pkg/backend"
+	"github.com/acorndb/prism/pkg/result"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,6 +24,12 @@ func (s *stubConn) Reset(context.Context) error {
 	s.resetCalls.Add(1)
 	return s.resetErr
 }
+
+func (s *stubConn) Exec(context.Context, backend.ExecRequest) (result.Stream, error) {
+	return nil, nil
+}
+
+func (s *stubConn) Align(context.Context, backend.AlignSettings) error { return nil }
 
 func (s *stubConn) Close() error {
 	s.closeCalls.Add(1)

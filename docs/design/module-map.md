@@ -86,13 +86,13 @@
 | 模块 | 现状 | 目标 |
 |---|---|---|
 | `pkg/mysql` | 已实现，协议保真 | 不动 |
-| `pkg/backend` | 已落地 `Conn`/`Pool`/`Slice`（R1） | 增加 `Cluster` 与多 Slice 装配（R6） |
+| `pkg/backend` | 已落地 `Conn`/`Pool`/`Slice` + `Exec/Align`（R1/R3） | 增加 `Cluster` 与多 Slice 装配（R6） |
 | `pkg/session` | 只有 database/inTx/autocommit/reserved/charset | 增加变量；`StmtTable` 在 P3 落地 |
 | `pkg/sql` | `Statement` 骨架（R2）+ tidb parser 包装 | 分类 + AST 上数据面 |
 | `pkg/route` | `source` 已拆出（R1），产出单目标 | 新增 `shard`；Target 带物理库/改写 SQL |
 | `pkg/plan` | N=1 `Passthrough` Plan 骨架（R2） | `EXPLAIN ROUTE` + `SingleShard`/`Reject`（P3） |
-| `pkg/result` | 不存在 | Field/Row/Stream；raw 与 decoded 两形态 |
-| `pkg/execute` | 现为 `pkg/executor`：passthrough 已走 N=1 Plan；sharding 桩 | 单执行器；R3 改名 execute；R6 lease 集合 |
+| `pkg/result` | raw `Stream`（R3）；逻辑 Stream 接口已定 | decoded/merge 在 P4 |
+| `pkg/execute` | 单 Pipeline + `Runtime`/single lease；fake Conn 单测（R3） | R6 扩成按 Slice 的 lease map |
 | `pkg/merge` | 不存在 | identity；P4 order/aggregate |
 | `pkg/proxy` | COM 循环 + USE/SET/autocommit 字符串解析 | 只做 COM 循环与 `Statement` 构造 |
 | `pkg/config` | `backend_server` 字段拍平 | `backend` + `slices` + `sharding.rules` |

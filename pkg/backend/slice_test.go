@@ -9,6 +9,7 @@ import (
 
 	"github.com/acorndb/prism/pkg/backend"
 	"github.com/acorndb/prism/pkg/constant"
+	"github.com/acorndb/prism/pkg/result"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,6 +19,10 @@ type sliceStubConn struct {
 
 func (s *sliceStubConn) Reset(context.Context) error { return nil }
 func (s *sliceStubConn) Close() error                { return nil }
+func (s *sliceStubConn) Exec(context.Context, backend.ExecRequest) (result.Stream, error) {
+	return nil, nil
+}
+func (s *sliceStubConn) Align(context.Context, backend.AlignSettings) error { return nil }
 
 func newPool(t *testing.T, idBase int, fail bool) *backend.Pool {
 	t.Helper()

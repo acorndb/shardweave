@@ -93,12 +93,12 @@ prism/
 
 | 重构前 | 目标 | 阶段 |
 |---|---|---|
-| `pkg/backend_server`（Backend/Pool） | `pkg/backend`（Conn/Pool/Slice；Cluster 在 R6） | **R1 完成** |
+| `pkg/backend_server`（Backend/Pool） | `pkg/backend`（Conn/Pool/Slice/Exec；Cluster 在 R6） | **R1/R3 完成** |
 | `pkg/router.Group` | `pkg/backend.Slice` | **R1 完成** |
 | `pkg/router.Pick` / `ClassifyWantSlave` | `pkg/route/source` | **R1 完成** |
-| `pkg/executor.passthrough` | `pkg/execute` + `pkg/route/source` | R2 已接入 Plan；R3 迁 execute |
-| `pkg/executor.shardingExecutor` 桩 | 删除；sharding 变成 Router | P1（R3） |
-| `pkg/executor/forward.go` | `pkg/execute` + `pkg/backend.Conn` | P1（R3/R6） |
+| `pkg/executor.passthrough` | `pkg/execute` Pipeline | **R3 完成** |
+| `pkg/executor.shardingExecutor` 桩 | 删除；sharding 变成 Router | **R3 完成** |
+| `pkg/executor/forward.go` | `pkg/execute` + `pkg/backend.Conn` | **R3 完成** |
 | `pkg/session.State` | `pkg/session.State` + `StmtTable` | P3（StmtTable 随 prepare 落地） |
 | `pkg/proxy` 内的 USE/SET 解析 | `pkg/sql` 统一成 `Statement` | P2（R4） |
 | `pkg/config.BackendServer` | `pkg/config.BackendConfig`（YAML `backend`） | P2（R5） |
