@@ -285,13 +285,29 @@ func TestBuilder_MultiShard(t *testing.T) {
 		require.Equal(t, int64(5), p.Merge.Limit.Count)
 	})
 
-	t.Run("order_by_expression_rejected", func(t *testing.T) {
+	t.Run("order_by_expression", func(t *testing.T) {
+		st := selectStmt(t, "SELECT amount FROM orders ORDER BY amount + 1 DESC")
+		p, err := b.Build(context.Background(), session.NewState(), st)
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.OrderKey{{Kind: plan.OrderByPosition, Column: 1, Desc: true}}, p.Merge.OrderBy)
+		require.Equal(t, []int{0}, p.Merge.Output)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			sel := res.Stmts[0].(*ast.SelectStmt)
+			require.Len(t, sel.Fields.Fields, 2)
+		}
+		require.Len(t, st.AST.(*ast.SelectStmt).Fields.Fields, 1)
+	})
+
+	t.Run("order_by_expression_wildcard_rejected", func(t *testing.T) {
 		p, err := b.Build(context.Background(), session.NewState(),
-			selectStmt(t, "SELECT id FROM orders ORDER BY amount + 1"))
+			selectStmt(t, "SELECT * FROM orders ORDER BY amount + 1"))
 		require.NoError(t, err)
 		require.Equal(t, plan.Reject, p.Kind)
 		require.Equal(t, uint16(1235), p.Reject.Number)
-		require.Contains(t, p.Reject.Message, "ORDER BY")
+		require.Contains(t, p.Reject.Message, "explicit select")
 	})
 
 	t.Run("aggregate_count", func(t *testing.T) {

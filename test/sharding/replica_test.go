@@ -86,6 +86,7 @@ func TestShardedReplicas(t *testing.T) {
 	requireOrderedColumn(t, ctx, conn, "SELECT user_id FROM orders ORDER BY user_id DESC", []string{"2", "1"})
 	requireOrderedColumn(t, ctx, conn, "SELECT user_id FROM orders ORDER BY user_id LIMIT 1 OFFSET 1", []string{"2"})
 	requireOrderedColumn(t, ctx, conn, "SELECT amount FROM orders ORDER BY user_id", []string{"50", "100"})
+	requireOrderedColumn(t, ctx, conn, "SELECT amount FROM orders ORDER BY amount + 1", []string{"50", "100"})
 
 	var count, sum, min, max int
 	require.NoError(t, conn.QueryRowContext(ctx,

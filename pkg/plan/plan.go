@@ -366,7 +366,20 @@ func orderSpec(sel *ast.SelectStmt) ([]OrderKey, []rewrite.ExtraField, []int, *e
 				Kind: OrderByPosition, Column: base + len(extras) - 1, Desc: item.Desc,
 			})
 		default:
-			return nil, nil, nil, errs.Unsupported("multi-shard ORDER BY supports column names or positions only")
+			if hasWildcard {
+				return nil, nil, nil, errs.Unsupported("multi-shard ORDER BY expression requires an explicit select list")
+			}
+			if output == nil {
+				output = make([]int, base)
+				for i := range output {
+					output[i] = i
+				}
+			}
+			alias := fmt.Sprintf("__sw_order_%d", len(extras))
+			extras = append(extras, rewrite.ExtraField{Expr: item.Expr, Alias: alias})
+			keys = append(keys, OrderKey{
+				Kind: OrderByPosition, Column: base + len(extras) - 1, Desc: item.Desc,
+			})
 		}
 	}
 	return keys, extras, output, nil

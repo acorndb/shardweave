@@ -165,7 +165,13 @@ func TestSingleShardRouting(t *testing.T) {
 		[]string{"200", "50"})
 	requireOrderedColumn(t, ctx, conn, "SELECT amount FROM orders ORDER BY user_id LIMIT 1 OFFSET 1",
 		[]string{"200"})
-	assertReject(t, ctx, conn, "SELECT user_id FROM orders ORDER BY user_id + 1")
+	requireOrderedColumn(t, ctx, conn, "SELECT amount FROM orders ORDER BY amount + 1",
+		[]string{"50", "200"})
+	requireOrderedColumn(t, ctx, conn, "SELECT amount FROM orders ORDER BY -amount",
+		[]string{"200", "50"})
+	requireOrderedColumn(t, ctx, conn, "SELECT amount FROM orders ORDER BY amount % 100",
+		[]string{"200", "50"})
+	assertReject(t, ctx, conn, "SELECT * FROM orders ORDER BY amount + 1")
 	// String ORDER BY needs collation-aware comparison; reject instead of
 	// returning a byte-order result that may differ from MySQL.
 	assertReject(t, ctx, conn, "SELECT name FROM profiles ORDER BY name")

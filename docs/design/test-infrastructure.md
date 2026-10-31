@@ -274,7 +274,7 @@ go test -race -count=1 -timeout 10m -v ./test/rwsplit/
   MySQL oracle；同一份 24 行数据（含 NULL、负数）按 `user_id % 2` 分布，
   oracle 保存全量；
 - 对 `COUNT(*) / COUNT(amount) / SUM / MIN / MAX / AVG`、跨片 IN、
-  非键过滤、范围过滤、未投影列 ORDER BY 逐条比较列名与值；数值按 big.Rat 归一化，NULL 语义单独比较；
+  非键过滤、范围过滤、未投影列/表达式 ORDER BY 逐条比较列名与值；数值按 big.Rat 归一化，NULL 语义单独比较；
 - 这是聚合归并的独立 oracle，不再只依赖手写期望值。
 
 分片复制拓扑（2026-10-31）：
