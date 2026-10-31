@@ -66,11 +66,12 @@
 | `pkg/config` | YAML schema、严格校验、默认值、快照/热更门禁 | `Config`、`BackendConfig`、`Runtime` | 建池、import 运行时模块 | `constant`、yaml |
 | `pkg/backend` | 后端资源层：连接、池、Slice、Cluster | `Conn`、`Pool`、`Slice`、`Cluster`、`PoolConfig` | 解析 SQL、认识分片规则、持有 session | `mysql`、`result`、`constant` |
 | `pkg/session` | 前端会话意图与 prepared statement 表 | `State`、`StmtTable`、`Stmt` | 持有连接/lease、路由、执行 | `constant` |
-| `pkg/sql` | 语句理解：parser 包装、`Statement`、分类、rewrite | `Statement`、`Kind`、`Parse`、`rewrite` | 认识拓扑/规则/连接 | tidb parser |
+| `pkg/sql` | 语句理解：parser 包装、`Statement`、分类 | `Statement`、`Kind`、`Parse` | 认识拓扑/规则/连接 | tidb parser |
+| `pkg/sql/rewrite` | 纯 AST/SQL 改写：LIMIT、隐藏列（后续） | `Spec`、`Select` | 执行、连接、路由 | parser ast/format |
 | `pkg/route` | 纯路由：目标集合 | `Target`、`Router`、`source`、`shard` | acquire、执行、持有池、改写结果 | `sql`、`session`、`constant`、`errs` |
 | `pkg/plan` | 计划：三态 + 每目标 SQL + 归并提示 | `Plan`、`Kind`、`Builder`、`MergeSpec`、`Explain` | 执行、持有池 | `sql`、`sql/rewrite`、`route`、`session`、`errs` |
 | `pkg/result` | 逻辑结果：字段/行/流 | `Field`、`Row`、`Stream` | 认识协议、路由、连接 | stdlib |
-| `pkg/merge` | 结果归并 | `Merger`、identity/order/aggregate | acquire、执行 | `result`、`plan`（MergeSpec） |
+| `pkg/merge` | 结果归并 | `Merge`、`Concat`/`Limit`/`Ordered`/`Aggregate` | acquire、执行 | `result`、`plan`（MergeSpec） |
 | `pkg/execute` | 执行引擎：dispatch、lease、写回 | `Runtime`、`Executor`、`lease` | 解析 SQL、决定路由、按 mode 分支 | `plan`、`backend`、`session`、`merge`、`result`、`mysql`、`errs` |
 | `pkg/proxy` | 前端 COM 循环与会话字段 | `Serve`、`SessionConfig` | USE/SET 语义、路由、acquire | `mysql/server`、`mysql`、`sql`、`session`、`execute` |
 | `pkg/server` | 监听、Accept、唯一装配点 | `Server`、`New`、mode→Cluster/Router/Executor | 参与单条 SQL 执行 | 全部（装配例外） |
@@ -94,7 +95,7 @@
 | `pkg/plan` | N=1 `Passthrough` Plan 骨架（R2） | `EXPLAIN ROUTE` + `SingleShard`/`Reject`（P3） |
 | `pkg/result` | raw `Stream`（R3）；逻辑 Stream 接口已定 | decoded/merge 在 P4 |
 | `pkg/execute` | 单 Pipeline + `Runtime`/按 Slice 的 lease map（R6） | P4 多分片 dispatch/merge |
-| `pkg/merge` | `Concat`/`Limit`/`Ordered` 已落地 | aggregate/group/distinct |
+| `pkg/merge` | `Concat`/`Limit`/`Ordered`/`Aggregate` 已落地 | group/distinct |
 | `pkg/proxy` | COM 循环 + USE/SET/autocommit 字符串解析 | 只做 COM 循环与 `Statement` 构造 |
 | `pkg/config` | `backend` + `slices`（R5）；`sharding` 仍拒绝 | 分片规则接线（P3） |
 | `pkg/server` | 按 mode 手工建 Group + executor | 唯一 mode 分支；装配 Cluster/Router/Builder/Executor |
@@ -375,16 +376,16 @@ type Executor interface {
 这是唯一 import `backend` 的数据面模块。R3 用 fake `Conn`/`Stream` 做单测，
 不依赖真实 MySQL；R6 已按 Slice 持有 lease，`Release` 会释放会话上的全部 lease。
 
-### 5.8 Merger（pkg/merge，proposed）
+### 5.8 Merger（pkg/merge，已落地）
 
 ```go
-type Merger interface {
-    Merge(ctx context.Context, streams []result.Stream, spec plan.MergeSpec) (result.Stream, error)
-}
+func Validate(spec plan.MergeSpec) error
+func Merge(streams []result.Stream, fields []result.Field, spec plan.MergeSpec) (result.Stream, error)
 ```
 
-P0/P3：`Identity`（仅 `len(streams)==1`，否则拒绝）。
-P4：`Order`（k 路堆）、`Aggregate`（count/sum/min/max/avg）、`Limit`、`Distinct`。
+已落地：`Concat`、`Limit`、`Ordered`（k 路堆）、`Aggregate`
+（COUNT/SUM/MIN/MAX，无 GROUP BY）。`AVG`、`GROUP BY`、`Distinct` 仍 Reject；
+execute 只调用 `Merge`，不再选择算子。
 
 ## 6. 数据通路与所有权
 
@@ -558,7 +559,7 @@ PR 级拆分、文件动作、测试迁移与回滚方式见
 |---|---|---|
 | `pkg/route` | 规则→Target 表驱动；确定性；Reject 原因 | 否 |
 | `pkg/plan` | Kind/Reject/Explain；单分片证明 | 否 |
-| `pkg/merge` | identity；order/aggregate 用脚本化 Stream | 否 |
+| `pkg/merge` | concat/limit/ordered/aggregate 用脚本化 Stream | 否 |
 | `pkg/execute` | fake `Plan` + fake `backend.Conn` + 脚本化 Stream | 否 |
 | `pkg/backend` | 池/租约状态机；Align/Reset；fake conn | 否 |
 | `pkg/config` | 校验/归一化/热更门禁 | 否 |

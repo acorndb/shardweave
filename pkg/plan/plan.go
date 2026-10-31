@@ -4,6 +4,8 @@ package plan
 import (
 	"context"
 	"fmt"
+	"math"
+	"strings"
 
 	"github.com/pingcap/tidb/pkg/parser/ast"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/acorndb/shardweave/pkg/route"
 	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/acorndb/shardweave/pkg/sql"
+	"github.com/acorndb/shardweave/pkg/sql/rewrite"
 )
 
 // Kind is the three-state plan contract.
@@ -163,7 +166,7 @@ func (b Builder) Build(ctx context.Context, st *session.State, stmt *sql.Stateme
 				Reject: errs.Unsupported("%s", reason),
 			}, nil
 		}
-		merge, rej := multiShardMerge(stmt)
+		merge, rej := multiShardMerge(stmt, targets)
 		if rej != nil {
 			return &Plan{Kind: Reject, Reject: rej}, nil
 		}
@@ -171,20 +174,36 @@ func (b Builder) Build(ctx context.Context, st *session.State, stmt *sql.Stateme
 	}
 }
 
-// multiShardMerge extracts merge hints that need no SQL rewrite. ORDER BY is
-// evaluated by each shard and merged with a k-way heap; LIMIT without OFFSET
-// is safe after the merge (each shard already applied the same LIMIT).
-// OFFSET needs per-shard rewriting and is rejected until D5.1.
-func multiShardMerge(stmt *sql.Statement) (MergeSpec, *errs.MySQL) {
+// multiShardMerge extracts merge hints and rewrites LIMIT when OFFSET is used.
+// ORDER BY is evaluated by each shard and merged with a k-way heap. For
+// LIMIT m, n each shard receives LIMIT m+n and the merged stream skips m rows.
+func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *errs.MySQL) {
 	sel, ok := stmt.AST.(*ast.SelectStmt)
 	if !ok {
 		return MergeSpec{}, nil
 	}
-	keys, rej := orderKeys(sel)
+	aggs, rej := aggregateSpecs(sel)
 	if rej != nil {
 		return MergeSpec{}, rej
 	}
-	spec := MergeSpec{OrderBy: keys}
+	spec := MergeSpec{}
+	if len(aggs) > 0 {
+		if sel.OrderBy != nil {
+			return MergeSpec{}, errs.Unsupported("multi-shard aggregate with ORDER BY is not supported")
+		}
+		spec.Aggregates = aggs
+	} else {
+		keys, rej := orderKeys(sel)
+		if rej != nil {
+			return MergeSpec{}, rej
+		}
+		spec.OrderBy = keys
+	}
+	return attachLimit(sel, targets, spec)
+}
+
+// attachLimit parses LIMIT and rewrites per-shard SQL when OFFSET is used.
+func attachLimit(sel *ast.SelectStmt, targets []route.Target, spec MergeSpec) (MergeSpec, *errs.MySQL) {
 	if sel.Limit == nil {
 		return spec, nil
 	}
@@ -192,11 +211,65 @@ func multiShardMerge(stmt *sql.Statement) (MergeSpec, *errs.MySQL) {
 	if !ok {
 		return MergeSpec{}, errs.Unsupported("multi-shard LIMIT must be literal integers")
 	}
-	if offset != 0 {
-		return MergeSpec{}, errs.Unsupported("multi-shard LIMIT with OFFSET is not supported")
+	if offset > 0 {
+		if count > math.MaxInt64-offset {
+			return MergeSpec{}, errs.Unsupported("multi-shard LIMIT OFFSET is too large")
+		}
+		perShard := offset + count
+		sqlText, err := rewrite.Select(sel, rewrite.Spec{PerShardLimit: &perShard})
+		if err != nil {
+			return MergeSpec{}, errs.Unsupported("multi-shard LIMIT rewrite failed: %v", err)
+		}
+		for i := range targets {
+			targets[i].SQL = sqlText
+		}
 	}
 	spec.Limit = &Limit{Offset: offset, Count: count}
 	return spec, nil
+}
+
+// aggregateSpecs accepts aggregate-only projections without GROUP BY.
+// AVG needs a SUM/COUNT rewrite plus hidden columns and is rejected for now.
+func aggregateSpecs(sel *ast.SelectStmt) ([]AggregateSpec, *errs.MySQL) {
+	if sel.Fields == nil || len(sel.Fields.Fields) == 0 {
+		return nil, nil
+	}
+	specs := make([]AggregateSpec, 0, len(sel.Fields.Fields))
+	for i, field := range sel.Fields.Fields {
+		agg, ok := field.Expr.(*ast.AggregateFuncExpr)
+		if !ok {
+			if hasAggregate(field.Expr) {
+				return nil, errs.Unsupported("multi-shard aggregate must be a top-level aggregate field")
+			}
+			if len(specs) > 0 {
+				return nil, errs.Unsupported("multi-shard aggregate query must project only aggregate functions")
+			}
+			continue
+		}
+		if agg.Distinct {
+			return nil, errs.Unsupported("multi-shard aggregate DISTINCT is not supported")
+		}
+		var fn AggregateFunc
+		switch strings.ToLower(agg.F) {
+		case "count":
+			fn = AggCount
+		case "sum":
+			fn = AggSum
+		case "min":
+			fn = AggMin
+		case "max":
+			fn = AggMax
+		case "avg":
+			return nil, errs.Unsupported("multi-shard AVG requires SUM/COUNT rewrite and is not supported yet")
+		default:
+			return nil, errs.Unsupported("multi-shard aggregate %s is not supported", agg.F)
+		}
+		specs = append(specs, AggregateSpec{Func: fn, Column: i, Output: i})
+	}
+	if len(specs) > 0 && len(specs) != len(sel.Fields.Fields) {
+		return nil, errs.Unsupported("multi-shard aggregate query must project only aggregate functions")
+	}
+	return specs, nil
 }
 
 func orderKeys(sel *ast.SelectStmt) ([]OrderKey, *errs.MySQL) {
@@ -233,4 +306,24 @@ func multiShardRejectReason(st *session.State) string {
 		return "multi-shard statements are not supported in a transaction or pinned session"
 	}
 	return ""
+}
+
+type aggregateFinder struct{ found bool }
+
+func (v *aggregateFinder) Enter(n ast.Node) bool {
+	if _, ok := n.(*ast.AggregateFuncExpr); ok {
+		v.found = true
+	}
+	return v.found
+}
+
+func (v *aggregateFinder) Leave(ast.Node) bool { return !v.found }
+
+func hasAggregate(expr ast.ExprNode) bool {
+	if expr == nil {
+		return false
+	}
+	v := &aggregateFinder{}
+	ast.Walk(expr, v)
+	return v.found
 }

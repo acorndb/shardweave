@@ -100,7 +100,7 @@
 |---|---|---|
 | 表名/库名改写 | 否 | 同库同名；`Target.DB` 只影响 `USE` |
 | `INSERT` 分片键缺失检查 | 是 | 缺键或一行多片 → Reject |
-| `LIMIT/OFFSET` 下推 | 否 | P1 多分片读时改写为 `offset+limit` |
+| `LIMIT/OFFSET` 下推 | 是 | OFFSET=0 原样；OFFSET>0 时 per-shard 改写为 `offset+limit` |
 | 聚合改写（`AVG`→`SUM/COUNT` 等） | 否 | P1 |
 | `COUNT/SUM/MIN/MAX` 归并 | 否 | P1 |
 | `ORDER BY`/`GROUP BY` 列补齐 | 否 | P1 |
@@ -195,11 +195,11 @@ sql.Parse → route.Route → sql/rewrite.Rewrite → execute.Dispatch → merge
 | 包 | 职责 | 关键接口 |
 |---|---|---|
 | `pkg/sql` | `Statement.AST` 落地；分类；分片键提取辅助 | `Parse`（复用 parser）、`ShardKey(stmt)` |
-| `pkg/sql/rewrite`（新） | 按 Target 改写 SQL | `Rewriter.Rewrite(stmt, target, meta) (string, error)` |
+| `pkg/sql/rewrite` | 按 Target 改写 SQL | `Spec`、`Select(sel, spec) (string, error)` |
 | `pkg/route/shard`（新） | 静态规则、算法、路由 | `Rule`、`Algorithm`、`Router.Route → []Target` |
 | `pkg/plan` | `SingleShard/MultiShard`、`MergeSpec`、`TxPolicy` | `Builder` 组合 Router+Rewriter |
 | `pkg/result` | 逻辑 Row/Stream；解码/编码接口 | `Decoder`、`Encoder`/`Writer` |
-| `pkg/merge`（新） | identity/aggregate/order/limit | `Merger.Merge([]Stream, MergeSpec)` |
+| `pkg/merge` | concat/limit/ordered/aggregate | `Merge(streams, fields, MergeSpec)`、`Validate` |
 | `pkg/execute` | N 目标 dispatch、LeaseSet、写回 | `dispatchTargets`、`writeRaw`/`writeMerged` |
 | `pkg/session` | `StmtTable`、per-slice pin、vars | `StmtTable`、`Pin(slice, until)` |
 | `pkg/config` | sharding 规则/全局表/序列/默认片 | `Validate`、`SameTopology` |
@@ -366,9 +366,12 @@ route → []Target
   非键列 OR、跨片 `IN` 等），或键值映射到多个 slice；
 - 支持 `ORDER BY` 列名/位置（多列、ASC/DESC），由 k 路堆归并；字符串列、
   表达式、未投影列显式 1235；
-- 不支持 `GROUP BY / HAVING / DISTINCT / 窗口函数 / 聚合 / INTO / 锁定读 /
-  SQL_CALC_FOUND_ROWS`；`LIMIT ... OFFSET` 仍 1235；
-- `LIMIT n`（OFFSET=0）在各分片执行后由 `Limit` 流式截断到 n 行；
+- 支持无 GROUP BY 的 `COUNT/SUM/MIN/MAX` 聚合折叠；AVG/聚合 DISTINCT 仍 1235；
+- 支持 `COUNT/SUM/MIN/MAX`（无 GROUP BY）；
+- 不支持 `GROUP BY / HAVING / DISTINCT / 窗口函数 / AVG / 聚合 DISTINCT /
+  INTO / 锁定读 / SQL_CALC_FOUND_ROWS`；
+- `LIMIT n` / `LIMIT n OFFSET m`：OFFSET>0 时 per-shard 改写成 `LIMIT m+n`，
+  归并后由 `Limit` 截断/跳过；
 - 每个 target 顺序执行（D7 再并发）；先解码全部列元数据并校验一致，再写
   列头，最后按 target 顺序流式拼接行；LIMIT 提前结束时未读完的后端连接
   直接 Discard；
@@ -494,13 +497,13 @@ route → []Target
 
 已落地（B1.4，多分片 LIMIT，2026-10-31）：
 
-- 无 `ORDER BY` 的 `LIMIT n`（OFFSET=0）：各分片原 SQL 已带同一 LIMIT，
+- 无 `ORDER BY` 的 `LIMIT n`：各分片原 SQL 已带同一 LIMIT，
   `pkg/merge.Concat` 后由 `Limit` 截断到最终 n 行；
-- `LIMIT n OFFSET m` / `LIMIT m, n` 仍 1235（需要 per-shard 改写成
-  `LIMIT m+n` 再全局跳过 m 行）；
+- `LIMIT n OFFSET m` / `LIMIT m, n`：per-shard SQL 改写成 `LIMIT m+n`
+  （AST restore），归并后由 `Limit` 全局跳过 m 行；
 - 新增 `pkg/merge`（`Concat`、`Limit` 流式 operator，纯 `result.Stream`）；
 - LIMIT 提前结束时后端仍有未读 packet，dispatch 直接 Discard，不把连接放回池；
-- e2e：`LIMIT 0/1/100`、跨片 `IN + LIMIT`、OFFSET 拒绝与会话恢复。
+- e2e：`LIMIT 0/1/100`、跨片 `IN + LIMIT`、OFFSET 改写与会话恢复。
 
 已落地（B1.5，多分片 ORDER BY，2026-10-31）：
 
@@ -512,9 +515,21 @@ route → []Target
   排序不一致；
 - ORDER BY 列必须出现在结果集中（按输出名或 OrgName 解析）；未投影列、
   表达式（`ORDER BY a+1`）1235；类型/列校验在写列头前完成；
-- `ORDER BY ... LIMIT n`（OFFSET=0）可用：各片原 LIMIT 已裁剪，归并后截断；
-  OFFSET 仍需 per-shard 改写，暂 1235；
+- `ORDER BY ... LIMIT n OFFSET m` 可用：per-shard 改写成 `LIMIT m+n`，
+  有序归并后全局跳过 m 行；
 - e2e：ASC/DESC/位置/LIMIT、隐藏列/表达式/字符串排序的显式拒绝。
+
+已落地（B1.6，无 GROUP BY 聚合，2026-10-31）：
+
+- `COUNT(*)` / `COUNT(expr)` / `SUM` / `MIN` / `MAX` 的多分片归并：每片返回
+  一个部分聚合行，`pkg/merge.Aggregate` 折叠为最终行；
+- 支持聚合别名与多聚合投影；COUNT 求和，SUM 用 big.Rat/float 累加，
+  MIN/MAX 用与 ORDER BY 相同的类型比较；全 NULL/空输入按 MySQL 语义返回
+  NULL（COUNT 为 0）；
+- 新增 `pkg/sql/rewrite` 承接 per-shard SQL 改写（LIMIT OFFSET 已迁入）；
+  `pkg/merge.Merge` 统一装配 Concat/Ordered/Aggregate/Limit，execute 不再选算子；
+- 仍 1235：`AVG`（需 SUM/COUNT 隐藏列改写）、`COUNT(DISTINCT ...)`、
+  聚合与其他投影混合、聚合 + ORDER BY、GROUP BY/HAVING/DISTINCT。
 
 未落地（B1.2）：
 
@@ -537,7 +552,7 @@ DML/DDL 后置：
 | **D4.0** | 多分片 SELECT scatter + concat（`MultiShard`、`execute.dispatch`、列元数据校验、stmt pin 释放） | 2 片 e2e；无键/跨片 IN 行集合正确；merge 类语句 1235 |
 | **D4.2** | 分片键值域严格化：`hash_mod` 整数 / `hash_mod_str` 字符串；引号数字、负数、混合 IN | 表驱动单测；字符串键 e2e；类型不匹配 1235 |
 | **D4.1** | 从库健康/延迟探测：池内定期探测，选源屏蔽不可用从库，回落主库（**延后**，单机与分片共用） | `STOP REPLICA`/杀从库后读请求不落坏从库；恢复后重新纳入 |
-| **D5** | 多分片 SELECT rewrite 下推（LIMIT OFFSET/聚合/隐藏列）；ORDER BY + LIMIT(OFFSET=0) 与 `pkg/merge.Concat/Limit/Ordered` 已落地 | 分片 vs 单库一致 |
+| **D5** | 多分片 SELECT rewrite 下推（聚合/隐藏列）；ORDER BY、LIMIT/OFFSET 与 `pkg/merge.Concat/Limit/Ordered` 已落地 | 分片 vs 单库一致 |
 | **D6** | 流式 merge operator（concat/order/limit/aggregate/group/distinct） | 单测 + metamorphic |
 | **D7** | execute 并发 dispatch + 结果写回 | N 片 e2e；失败取消 |
 | **D8** | DQL corpus/randgen/metamorphic | CI/nightly |
@@ -579,14 +594,19 @@ B1.3（已落地，键类型严格化）：
 
 B1.4（已落地，多分片 LIMIT）：
 
-- 无 `ORDER BY` 的 `LIMIT n`（OFFSET=0）按片执行后在 concat 流上截断；
-- `LIMIT ... OFFSET` 仍 1235。
+- 无 `ORDER BY` 的 `LIMIT n` 按片执行后在 concat 流上截断；
+- `LIMIT ... OFFSET` per-shard 改写成 `LIMIT m+n`，归并后全局跳过 m 行。
 
 B1.5（已落地，多分片 ORDER BY）：
 
 - 列名/位置的 ASC/DESC、多列排序；整数/无符号/浮点/DECIMAL/日期文本；
 - 字符串/二进制/JSON、表达式、未投影列 1235；
-- `ORDER BY ... LIMIT n`（OFFSET=0）可用，OFFSET 仍 1235。
+- `ORDER BY ... LIMIT n OFFSET m` 可用（per-shard `LIMIT m+n` + 全局跳过）。
+
+B1.6（已落地，无 GROUP BY 聚合）：
+
+- `COUNT/SUM/MIN/MAX` 多分片归并；`pkg/merge.Aggregate`；
+- `AVG`、聚合 DISTINCT、混合投影、聚合 + ORDER BY 仍 1235。
 
 DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代理始终显式 Reject。
 
@@ -595,9 +615,9 @@ DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代�
 - 多分片写（INSERT/UPDATE/DELETE）；跨片 `IN` 的写语句；
 - 分片键字面量类型与算法值域不匹配（如 `hash_mod` 下的 `'abc'`、
   `hash_mod_str` 下的 `1`）；
-- 分片表上需要归并的 SELECT（GROUP BY/HAVING/DISTINCT/窗口/聚合/INTO/
-  锁定读/SQL_CALC_FOUND_ROWS）；字符串/表达式/未投影列的 ORDER BY；
-  `LIMIT ... OFFSET` 仍 1235；
+- 分片表上需要归并的 SELECT（GROUP BY/HAVING/DISTINCT/窗口/INTO/锁定读/
+  SQL_CALC_FOUND_ROWS）；子查询；AVG、聚合 DISTINCT、聚合与非聚合投影混合、
+  聚合 + ORDER BY；字符串/表达式/未投影列的 ORDER BY；
 - 事务 / `autocommit=0` / reserved / prepared pin 会话中的多分片语句；
 - 跨片/多表 JOIN、schema 限定表；
 - prepared 参数化分片键、prepared DML、prepared 多分片；

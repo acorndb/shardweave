@@ -13,6 +13,7 @@ import (
 	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/acorndb/shardweave/pkg/sql"
 	sqlparser "github.com/acorndb/shardweave/pkg/sql/parser"
+	"github.com/pingcap/tidb/pkg/parser/ast"
 	"github.com/stretchr/testify/require"
 )
 
@@ -156,6 +157,7 @@ func TestBuilder_MultiShard(t *testing.T) {
 		require.NotNil(t, p.Merge.Limit)
 		require.Equal(t, int64(0), p.Merge.Limit.Offset)
 		require.Equal(t, int64(5), p.Merge.Limit.Count)
+		require.Empty(t, p.Targets[0].SQL, "offset 0 needs no per-shard rewrite")
 	})
 
 	t.Run("limit_zero", func(t *testing.T) {
@@ -166,8 +168,35 @@ func TestBuilder_MultiShard(t *testing.T) {
 		require.Zero(t, p.Merge.Limit.Count)
 	})
 
-	t.Run("limit_offset_rejected", func(t *testing.T) {
-		p, err := b.Build(context.Background(), session.NewState(), selectStmt(t, "SELECT * FROM orders LIMIT 2, 3"))
+	t.Run("limit_offset_rewritten", func(t *testing.T) {
+		st := selectStmt(t, "SELECT id FROM orders ORDER BY id LIMIT 2, 3")
+		p, err := b.Build(context.Background(), session.NewState(), st)
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.NotNil(t, p.Merge.Limit)
+		require.Equal(t, int64(2), p.Merge.Limit.Offset)
+		require.Equal(t, int64(3), p.Merge.Limit.Count)
+		require.Len(t, p.Targets, 2)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			sel, ok := res.Stmts[0].(*ast.SelectStmt)
+			require.True(t, ok)
+			offset, count, ok := sql.ParseLimit(sel.Limit)
+			require.True(t, ok)
+			require.Zero(t, offset)
+			require.Equal(t, int64(5), count)
+		}
+		sel := st.AST.(*ast.SelectStmt)
+		offset, count, ok := sql.ParseLimit(sel.Limit)
+		require.True(t, ok)
+		require.Equal(t, int64(2), offset, "plan must restore the caller's AST")
+		require.Equal(t, int64(3), count)
+	})
+
+	t.Run("limit_offset_overflow_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT id FROM orders LIMIT 1 OFFSET 9223372036854775807"))
 		require.NoError(t, err)
 		require.Equal(t, plan.Reject, p.Kind)
 		require.Equal(t, uint16(1235), p.Reject.Number)
@@ -207,6 +236,80 @@ func TestBuilder_MultiShard(t *testing.T) {
 		require.Equal(t, plan.Reject, p.Kind)
 		require.Equal(t, uint16(1235), p.Reject.Number)
 		require.Contains(t, p.Reject.Message, "ORDER BY")
+	})
+
+	t.Run("aggregate_count", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT COUNT(*) FROM orders"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.AggregateSpec{{Func: plan.AggCount, Column: 0, Output: 0}}, p.Merge.Aggregates)
+	})
+
+	t.Run("aggregate_multi", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT COUNT(*), SUM(amount), MIN(amount), MAX(amount) FROM orders"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Len(t, p.Merge.Aggregates, 4)
+		require.Equal(t, plan.AggCount, p.Merge.Aggregates[0].Func)
+		require.Equal(t, plan.AggSum, p.Merge.Aggregates[1].Func)
+		require.Equal(t, plan.AggMin, p.Merge.Aggregates[2].Func)
+		require.Equal(t, plan.AggMax, p.Merge.Aggregates[3].Func)
+	})
+
+	t.Run("aggregate_distinct_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT COUNT(DISTINCT user_id) FROM orders"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Equal(t, uint16(1235), p.Reject.Number)
+		require.Contains(t, p.Reject.Message, "DISTINCT")
+	})
+
+	t.Run("aggregate_avg_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT AVG(amount) FROM orders"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Equal(t, uint16(1235), p.Reject.Number)
+		require.Contains(t, p.Reject.Message, "AVG")
+	})
+
+	t.Run("aggregate_mixed_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT COUNT(*), amount FROM orders"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Equal(t, uint16(1235), p.Reject.Number)
+		require.Contains(t, p.Reject.Message, "aggregate")
+	})
+
+	t.Run("aggregate_order_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT COUNT(*) FROM orders ORDER BY 1"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Equal(t, uint16(1235), p.Reject.Number)
+		require.Contains(t, p.Reject.Message, "ORDER BY")
+	})
+
+	t.Run("aggregate_expression_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT COUNT(*) + 1 FROM orders"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Equal(t, uint16(1235), p.Reject.Number)
+		require.Contains(t, p.Reject.Message, "aggregate")
+	})
+
+	t.Run("aggregate_subquery_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT (SELECT COUNT(*) FROM users) FROM orders"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Equal(t, uint16(1235), p.Reject.Number)
+		require.Contains(t, p.Reject.Message, "aggregate")
 	})
 }
 

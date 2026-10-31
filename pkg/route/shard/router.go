@@ -277,26 +277,44 @@ func checkScatterSelect(s *ast.SelectStmt) error {
 		return reject("multi-shard locking reads are not supported")
 	case s.SelectStmtOpts != nil && s.SelectStmtOpts.CalcFoundRows:
 		return reject("SQL_CALC_FOUND_ROWS is not supported in sharding mode")
-	case selectNeedsMerge(s):
-		return reject("multi-shard aggregate/window function is not supported")
+	case selectHasWindow(s):
+		return reject("multi-shard window function is not supported")
+	case selectHasSubquery(s):
+		return reject("multi-shard subqueries are not supported")
 	}
 	return nil
 }
 
-type mergeExprFinder struct{ found bool }
+type windowFinder struct{ found bool }
 
-func (v *mergeExprFinder) Enter(n ast.Node) bool {
-	switch n.(type) {
-	case *ast.AggregateFuncExpr, *ast.WindowFuncExpr:
+func (v *windowFinder) Enter(n ast.Node) bool {
+	if _, ok := n.(*ast.WindowFuncExpr); ok {
 		v.found = true
 	}
 	return v.found
 }
 
-func (v *mergeExprFinder) Leave(ast.Node) bool { return !v.found }
+func (v *windowFinder) Leave(ast.Node) bool { return !v.found }
 
-func selectNeedsMerge(s *ast.SelectStmt) bool {
-	v := &mergeExprFinder{}
+func selectHasWindow(s *ast.SelectStmt) bool {
+	v := &windowFinder{}
+	ast.Walk(s, v)
+	return v.found
+}
+
+type subqueryFinder struct{ found bool }
+
+func (v *subqueryFinder) Enter(n ast.Node) bool {
+	if _, ok := n.(*ast.SubqueryExpr); ok {
+		v.found = true
+	}
+	return v.found
+}
+
+func (v *subqueryFinder) Leave(ast.Node) bool { return !v.found }
+
+func selectHasSubquery(s *ast.SelectStmt) bool {
+	v := &subqueryFinder{}
 	ast.Walk(s, v)
 	return v.found
 }

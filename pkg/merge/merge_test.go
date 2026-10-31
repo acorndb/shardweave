@@ -5,7 +5,9 @@ import (
 	"io"
 	"testing"
 
+	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/merge"
+	"github.com/acorndb/shardweave/pkg/plan"
 	"github.com/acorndb/shardweave/pkg/result"
 	"github.com/stretchr/testify/require"
 )
@@ -136,4 +138,58 @@ func TestLimit_FieldsAndClose(t *testing.T) {
 	require.Equal(t, []result.Field{{Name: "id"}}, s.Fields())
 	require.NoError(t, s.Close())
 	require.Equal(t, 1, up.closes)
+}
+
+func TestMerge_Factory(t *testing.T) {
+	fields := []result.Field{{Name: "id", OrgName: "id", Type: 0x03}}
+	mk := func() []result.Stream {
+		return []result.Stream{
+			&scriptStream{fields: fields, rows: rows("2")},
+			&scriptStream{fields: fields, rows: rows("1")},
+		}
+	}
+
+	concat, err := merge.Merge(mk(), fields, plan.MergeSpec{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"2", "1"}, collect(t, concat))
+
+	ordered, err := merge.Merge(mk(), fields, plan.MergeSpec{
+		OrderBy: []plan.OrderKey{{Column: 0}},
+		Limit:   &plan.Limit{Count: 1},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"1"}, collect(t, ordered))
+
+	cases := []plan.MergeSpec{
+		{GroupBy: []int{0}},
+		{Distinct: true},
+		{Output: []int{0}},
+		{
+			Aggregates: []plan.AggregateSpec{{Func: plan.AggCount, Column: 0, Output: 0}},
+			OrderBy:    []plan.OrderKey{{Column: 0}},
+		},
+	}
+	for _, spec := range cases {
+		_, err := merge.Merge(mk(), fields, spec)
+		var me *errs.MySQL
+		require.ErrorAs(t, err, &me)
+		require.Equal(t, uint16(1235), me.Number)
+	}
+}
+
+func TestValidate(t *testing.T) {
+	require.NoError(t, merge.Validate(plan.MergeSpec{
+		OrderBy: []plan.OrderKey{{Column: 0}},
+		Limit:   &plan.Limit{Count: 1},
+	}))
+	for _, spec := range []plan.MergeSpec{
+		{GroupBy: []int{0}},
+		{Distinct: true},
+		{Output: []int{0}},
+		{Aggregates: []plan.AggregateSpec{{Func: plan.AggCount}}, OrderBy: []plan.OrderKey{{Column: 0}}},
+	} {
+		var me *errs.MySQL
+		require.ErrorAs(t, merge.Validate(spec), &me)
+		require.Equal(t, uint16(1235), me.Number)
+	}
 }

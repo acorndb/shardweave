@@ -31,11 +31,11 @@ func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statemen
 	if stmt.Cmd != mysql.ComQuery {
 		return false, rejectMulti("multi-shard command %d is not supported", stmt.Cmd)
 	}
-	if !supportedMerge(pl.Merge) {
-		return false, rejectMulti("multi-shard merge is not implemented")
-	}
 	if len(pl.Targets) == 0 {
 		return false, fmt.Errorf("execute: multi-shard plan has no targets")
+	}
+	if err := merge.Validate(pl.Merge); err != nil {
+		return false, err
 	}
 	if rt.Front == nil {
 		return false, fmt.Errorf("execute: multi-shard plan requires a frontend")
@@ -91,24 +91,20 @@ func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statemen
 	for _, o := range opened {
 		streams = append(streams, o.stream)
 	}
-	var merged result.Stream
-	if len(pl.Merge.OrderBy) > 0 {
-		ordered, mErr := merge.Ordered(streams, fields, pl.Merge.OrderBy)
-		if mErr != nil {
-			cleanup(true)
-			return false, mErr
-		}
-		merged = ordered
-	} else {
-		merged = merge.Concat(streams)
+	merged, mErr := merge.Merge(streams, fields, pl.Merge)
+	if mErr != nil {
+		cleanup(true)
+		return false, mErr
 	}
-	if pl.Merge.Limit != nil {
-		merged = merge.Limit(merged, pl.Merge.Limit.Offset, pl.Merge.Limit.Count)
+	outFields := merged.Fields()
+	if len(outFields) == 0 {
+		cleanup(true)
+		return false, fmt.Errorf("execute: merge returned no output columns")
 	}
 
-	// All headers and ORDER BY comparators are valid, so a partial result set
-	// is no longer possible.
-	if err := writeResultHeader(rt.Front, fields); err != nil {
+	// All headers, ORDER BY comparators and aggregate functions are valid, so
+	// a partial result set is no longer possible.
+	if err := writeResultHeader(rt.Front, outFields); err != nil {
 		cleanup(true)
 		return false, err
 	}
@@ -121,7 +117,7 @@ func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statemen
 			cleanup(true)
 			return false, fmt.Errorf("execute: merge: %w", err)
 		}
-		cells, err := encodeCells(row, len(fields))
+		cells, err := encodeCells(row, len(outFields))
 		if err != nil {
 			cleanup(true)
 			return false, err
@@ -206,12 +202,6 @@ func sameFields(a, b []result.Field) bool {
 		}
 	}
 	return true
-}
-
-// supportedMerge reports merge features execute can honor today. ORDER BY and
-// LIMIT are implemented; aggregate/group/distinct need more operators.
-func supportedMerge(m plan.MergeSpec) bool {
-	return len(m.Aggregates) == 0 && len(m.GroupBy) == 0 && !m.Distinct && len(m.Output) == 0
 }
 
 func encodeCells(row result.Row, n int) ([][]byte, error) {

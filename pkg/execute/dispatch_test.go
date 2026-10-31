@@ -205,7 +205,7 @@ func TestDispatch_Rejects(t *testing.T) {
 		_, err := p.executePlan(ctx, newRuntime(), query("SELECT * FROM orders"), &plan.Plan{
 			Kind:    plan.MultiShard,
 			Targets: multiTargets(),
-			Merge:   plan.MergeSpec{Aggregates: []plan.AggregateSpec{{Func: plan.AggCount, Column: 0, Output: 0}}},
+			Merge:   plan.MergeSpec{GroupBy: []int{0}},
 		})
 		var rej *errs.MySQL
 		require.ErrorAs(t, err, &rej)
@@ -321,6 +321,74 @@ func TestDispatch_OrderedRejectsUnsupportedTypeBeforeHeader(t *testing.T) {
 	require.ErrorAs(t, err, &rej)
 	require.Equal(t, uint16(1235), rej.Number)
 	require.Empty(t, collect(), "ORDER BY validation happens before any result packet")
+	require.True(t, tr0.last(t).closed)
+	require.True(t, tr1.last(t).closed)
+	require.Empty(t, rt.leases)
+}
+
+func TestDispatch_Aggregate(t *testing.T) {
+	tr0, tr1 := &tracker{}, &tracker{}
+	fields := []result.Field{
+		{Name: "COUNT(*)", OrgName: "COUNT(*)", Type: 0x08, Charset: 63},
+		{Name: "SUM(amount)", OrgName: "SUM(amount)", Type: 0xf6, Charset: 63, Decimals: 0},
+	}
+	p := newMultiPipeline(t, tr0, tr1,
+		func(c *fakeConn) {
+			c.fields = fields
+			c.rows = []result.Row{{[]byte("2"), []byte("50")}}
+		},
+		func(c *fakeConn) {
+			c.fields = fields
+			c.rows = []result.Row{{[]byte("3"), []byte("200")}}
+		})
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	_, err := p.executePlan(context.Background(), rt, query("SELECT COUNT(*), SUM(amount) FROM orders"),
+		&plan.Plan{
+			Kind:    plan.MultiShard,
+			Targets: multiTargets(),
+			Merge: plan.MergeSpec{Aggregates: []plan.AggregateSpec{
+				{Func: plan.AggCount, Column: 0, Output: 0},
+				{Func: plan.AggSum, Column: 1, Output: 1},
+			}},
+		})
+	require.NoError(t, err)
+
+	pkts := collect()
+	require.Len(t, pkts, 1+2+1+1, "column count + 2 columns + 1 aggregate row + terminator")
+	cells, err := mysql.DecodeTextRow(pkts[3], 2)
+	require.NoError(t, err)
+	require.Equal(t, "5", string(cells[0]))
+	require.Equal(t, "250", string(cells[1]))
+	require.Empty(t, rt.leases)
+	require.Equal(t, 1, tr0.last(t).resets, "aggregate consumes every shard row")
+	require.Equal(t, 1, tr1.last(t).resets)
+}
+
+func TestDispatch_AggregateLimitZero(t *testing.T) {
+	tr0, tr1 := &tracker{}, &tracker{}
+	fields := []result.Field{{Name: "COUNT(*)", OrgName: "COUNT(*)", Type: 0x08, Charset: 63}}
+	p := newMultiPipeline(t, tr0, tr1,
+		func(c *fakeConn) { c.fields = fields; c.rows = []result.Row{{[]byte("2")}} },
+		func(c *fakeConn) { c.fields = fields; c.rows = []result.Row{{[]byte("3")}} })
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	_, err := p.executePlan(context.Background(), rt, query("SELECT COUNT(*) FROM orders LIMIT 0"),
+		&plan.Plan{
+			Kind:    plan.MultiShard,
+			Targets: multiTargets(),
+			Merge: plan.MergeSpec{
+				Aggregates: []plan.AggregateSpec{{Func: plan.AggCount, Column: 0, Output: 0}},
+				Limit:      &plan.Limit{Count: 0},
+			},
+		})
+	require.NoError(t, err)
+	pkts := collect()
+	require.Len(t, pkts, 1+1+1, "header + terminator only")
 	require.True(t, tr0.last(t).closed)
 	require.True(t, tr1.last(t).closed)
 	require.Empty(t, rt.leases)

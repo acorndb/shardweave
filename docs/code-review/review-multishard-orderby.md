@@ -62,11 +62,12 @@ MySQL 规定 NULL 在 ASC 时最前、DESC 时最后。比较器先按 ASC 语�
 隐藏列注入属于 D5.1 的 rewrite 工作（同时可减少对 `SELECT *` 的字段推断）。
 
 ### LIMIT OFFSET 仍需 per-shard 改写
-- status: wontfix
+- status: fixed
 - file: pkg/plan/plan.go
 
-`LIMIT m, n` 需要每片改写成 `LIMIT m+n` 再全局跳过 m 行；当前显式 1235，
-避免少读行。改写落地后 `merge.Limit` 已支持 offset，无需改算子。
+`LIMIT m, n` 需要每片改写成 `LIMIT m+n` 再全局跳过 m 行。D5.1b 已实现：
+plan 用 AST restore 生成 per-target SQL，`merge.Limit` 负责全局跳过；单测与
+e2e 覆盖。
 
 ### 表达式排序（`ORDER BY amount+1`）
 - status: wontfix

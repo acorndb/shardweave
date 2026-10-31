@@ -146,7 +146,7 @@ func TestSingleShardRouting(t *testing.T) {
 	requireRowCount(t, ctx, conn, "SELECT user_id, amount FROM orders WHERE user_id IN (1, 2) LIMIT 1", 1)
 	requireRowCount(t, ctx, conn, "SELECT user_id, amount FROM orders LIMIT 100", 2)
 	require.Equal(t, 1, connScalar(t, ctx, conn, "SELECT 1"), "limit must not break the session")
-	assertReject(t, ctx, conn, "SELECT user_id, amount FROM orders LIMIT 1 OFFSET 1")
+	requireRowCount(t, ctx, conn, "SELECT user_id FROM orders LIMIT 5 OFFSET 10", 0)
 
 	// ORDER BY is executed per shard and merged with a k-way heap.
 	requireOrderedColumn(t, ctx, conn, "SELECT user_id FROM orders ORDER BY user_id",
@@ -157,11 +157,31 @@ func TestSingleShardRouting(t *testing.T) {
 		[]string{"2", "1"})
 	requireOrderedColumn(t, ctx, conn, "SELECT user_id FROM orders ORDER BY user_id LIMIT 1",
 		[]string{"1"})
+	requireOrderedColumn(t, ctx, conn, "SELECT user_id FROM orders ORDER BY user_id LIMIT 1 OFFSET 1",
+		[]string{"2"})
 	assertReject(t, ctx, conn, "SELECT amount FROM orders ORDER BY user_id")
 	assertReject(t, ctx, conn, "SELECT user_id FROM orders ORDER BY user_id + 1")
 	// String ORDER BY needs collation-aware comparison; reject instead of
 	// returning a byte-order result that may differ from MySQL.
 	assertReject(t, ctx, conn, "SELECT name FROM profiles ORDER BY name")
+
+	// Aggregates without GROUP BY: each shard returns one partial row and the
+	// merge combines COUNT/SUM/MIN/MAX.
+	var count, sum, min, max int
+	require.NoError(t, conn.QueryRowContext(ctx,
+		"SELECT COUNT(*), SUM(amount), MIN(amount), MAX(amount) FROM orders").
+		Scan(&count, &sum, &min, &max))
+	require.Equal(t, []int{2, 250, 50, 200}, []int{count, sum, min, max})
+	require.Equal(t, 2, connScalar(t, ctx, conn, "SELECT COUNT(*) FROM orders WHERE user_id IN (1, 2)"))
+	requireRowCount(t, ctx, conn, "SELECT COUNT(*) FROM orders LIMIT 1", 1)
+	requireRowCount(t, ctx, conn, "SELECT COUNT(*) FROM orders LIMIT 0", 0)
+	require.Equal(t, 1, connScalar(t, ctx, conn, "SELECT 1"), "aggregate must not break the session")
+
+	assertReject(t, ctx, conn, "SELECT COUNT(DISTINCT user_id) FROM orders")
+	assertReject(t, ctx, conn, "SELECT AVG(amount) FROM orders")
+	assertReject(t, ctx, conn, "SELECT COUNT(*), amount FROM orders")
+	assertReject(t, ctx, conn, "SELECT COUNT(*) FROM orders ORDER BY 1")
+	assertReject(t, ctx, conn, "SELECT * FROM orders WHERE user_id IN (SELECT user_id FROM orders)")
 
 	// hash_mod accepts quoted numeric literals as the same integer key.
 	var quotedAmount int
@@ -180,6 +200,7 @@ func TestSingleShardRouting(t *testing.T) {
 	require.Equal(t, 1, connScalar(t, ctx, conn, "SELECT score FROM profiles WHERE name = 'alice'"))
 	requireProfiles(t, ctx, conn, "SELECT name, score FROM profiles",
 		map[string]int{"alice": 1, "bob": 2})
+	require.Equal(t, 2, connScalar(t, ctx, conn, "SELECT COUNT(*) AS c FROM profiles"))
 	assertRoute(t, ctx, conn, "EXPLAIN ROUTE SELECT score FROM profiles WHERE name = 'alice'",
 		"SingleShard", "s1", "slave", "")
 	requireRouteSlices(t, ctx, conn, "EXPLAIN ROUTE SELECT name, score FROM profiles",
@@ -199,8 +220,7 @@ func TestSingleShardRouting(t *testing.T) {
 	requireShardRows(t, ctx, conn, "SELECT user_id, amount FROM orders",
 		map[int]int{1: 50, 2: 200})
 
-	// Aggregates/DISTINCT still need more merge operators (D5.2).
-	assertReject(t, ctx, conn, "SELECT COUNT(*) FROM orders")
+	// DISTINCT still needs the dedup operator (D5.2).
 	assertReject(t, ctx, conn, "SELECT DISTINCT user_id FROM orders")
 
 	// Unsupported shapes are explicit 1235, not silent wrong results.

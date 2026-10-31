@@ -35,8 +35,9 @@ concat 后由 `Limit` 截断到最终 n 行。验证边界：变更包聚焦单�
 - file: pkg/plan/plan.go, pkg/route/shard/router.go
 
 `LIMIT m, n` 在每个分片先丢掉各自的前 m 行；concat 后再全局跳过 m 行会少读，
-结果行数不足。正确做法是每片改写成 `LIMIT m+n` 再全局跳过 m 行（需要 rewrite）。
-当前显式 1235，避免静默错误；单测覆盖 plan 拒绝，e2e 覆盖会话继续可用。
+结果行数不足。修复（D5.1b）：plan 把每个 target 的 SQL 改写为 `LIMIT m+n`
+（AST restore，不保留原 OFFSET），归并后 `merge.Limit` 全局跳过 m 行；单测
+解析改写后的 SQL，e2e 覆盖 `LIMIT 1 OFFSET 1` 与“offset 超出总行数”。
 
 ### concat 逻辑内联在 execute，无法复用
 - status: fixed

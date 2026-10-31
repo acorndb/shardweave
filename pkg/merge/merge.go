@@ -7,8 +7,51 @@ import (
 	"errors"
 	"io"
 
+	"github.com/acorndb/shardweave/pkg/errs"
+	"github.com/acorndb/shardweave/pkg/plan"
 	"github.com/acorndb/shardweave/pkg/result"
 )
+
+// Validate checks merge features independently of streams/fields, so execute
+// can reject unsupported plans before acquiring backends.
+func Validate(spec plan.MergeSpec) error {
+	if len(spec.GroupBy) > 0 || spec.Distinct || len(spec.Output) > 0 {
+		return errs.Unsupported("multi-shard merge shape is not supported")
+	}
+	if len(spec.Aggregates) > 0 && len(spec.OrderBy) > 0 {
+		return errs.Unsupported("multi-shard aggregate with ORDER BY is not supported")
+	}
+	return nil
+}
+
+// Merge builds the operator tree for a MultiShard plan. Execute only supplies
+// streams/fields/spec; operator selection stays in this package.
+func Merge(streams []result.Stream, fields []result.Field, spec plan.MergeSpec) (result.Stream, error) {
+	if err := Validate(spec); err != nil {
+		return nil, err
+	}
+	var out result.Stream
+	switch {
+	case len(spec.Aggregates) > 0:
+		agg, err := Aggregate(streams, fields, spec.Aggregates)
+		if err != nil {
+			return nil, err
+		}
+		out = agg
+	case len(spec.OrderBy) > 0:
+		ordered, err := Ordered(streams, fields, spec.OrderBy)
+		if err != nil {
+			return nil, err
+		}
+		out = ordered
+	default:
+		out = Concat(streams)
+	}
+	if spec.Limit != nil {
+		out = Limit(out, spec.Limit.Offset, spec.Limit.Count)
+	}
+	return out, nil
+}
 
 // Concat streams the shard results in order, skipping nil streams.
 // It is the identity merge for multi-shard queries without ORDER BY.
