@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/acorndb/prism/pkg/backend_server"
-	"github.com/acorndb/prism/pkg/config"
+	"github.com/acorndb/prism/pkg/constant"
 	"github.com/acorndb/prism/pkg/mysql"
 	"github.com/acorndb/prism/pkg/router"
 	"github.com/acorndb/prism/pkg/session"
@@ -46,24 +46,24 @@ func newTaggedPool(t *testing.T, tag string, opens *int) *backend_server.Pool {
 
 func TestNew_Modes(t *testing.T) {
 	g := &router.Group{Master: newTaggedPool(t, "m", nil)}
-	e, err := New(config.ModeSingle, g)
+	e, err := New(constant.ModeSingle, g)
 	require.NoError(t, err)
-	require.Equal(t, config.ModeSingle, e.Mode())
+	require.Equal(t, constant.ModeSingle, e.Mode())
 
-	e, err = New(config.ModeRWSplit, g)
+	e, err = New(constant.ModeRWSplit, g)
 	require.NoError(t, err)
-	require.Equal(t, config.ModeRWSplit, e.Mode())
+	require.Equal(t, constant.ModeRWSplit, e.Mode())
 
-	e, err = New(config.ModeSharding, g)
+	e, err = New(constant.ModeSharding, g)
 	require.NoError(t, err)
-	require.Equal(t, config.ModeSharding, e.Mode())
+	require.Equal(t, constant.ModeSharding, e.Mode())
 
 	_, err = New("nope", g)
 	require.Error(t, err)
 }
 
 func TestSharding_HandleUnimplemented(t *testing.T) {
-	e, err := New(config.ModeSharding, &router.Group{})
+	e, err := New(constant.ModeSharding, &router.Group{})
 	require.NoError(t, err)
 	err = e.Handle(context.Background(), &Conn{State: session.NewState()}, Request{Cmd: mysql.ComQuery, SQL: "SELECT 1"})
 	require.Error(t, err)
@@ -76,7 +76,7 @@ func TestSingle_SelectUsesMasterOnly(t *testing.T) {
 		Master: newTaggedPool(t, "master", &masterOpens),
 		Slaves: []*backend_server.Pool{newTaggedPool(t, "slave", &slaveOpens)},
 	}
-	e, err := New(config.ModeSingle, g)
+	e, err := New(constant.ModeSingle, g)
 	require.NoError(t, err)
 	pt := e.(*passthrough)
 
@@ -98,7 +98,7 @@ func TestRWSplit_SelectUsesSlave(t *testing.T) {
 		Master: newTaggedPool(t, "master", &masterOpens),
 		Slaves: []*backend_server.Pool{newTaggedPool(t, "slave", &slaveOpens)},
 	}
-	e, err := New(config.ModeRWSplit, g)
+	e, err := New(constant.ModeRWSplit, g)
 	require.NoError(t, err)
 	pt := e.(*passthrough)
 
@@ -139,7 +139,7 @@ func TestRWSplit_RouteSmoke(t *testing.T) {
 				Master: newTaggedPool(t, "master", &masterOpens),
 				Slaves: []*backend_server.Pool{newTaggedPool(t, "slave", &slaveOpens)},
 			}
-			e, err := New(config.ModeRWSplit, g)
+			e, err := New(constant.ModeRWSplit, g)
 			require.NoError(t, err)
 			pt := e.(*passthrough)
 			c := &Conn{State: session.NewState()}
@@ -173,7 +173,7 @@ func TestRWSplit_TxSelectStaysSticky(t *testing.T) {
 		Master: newTaggedPool(t, "master", &masterOpens),
 		Slaves: []*backend_server.Pool{newTaggedPool(t, "slave", &slaveOpens)},
 	}
-	e, err := New(config.ModeRWSplit, g)
+	e, err := New(constant.ModeRWSplit, g)
 	require.NoError(t, err)
 	pt := e.(*passthrough)
 	c := &Conn{State: session.NewState()}
@@ -202,7 +202,7 @@ func TestReleaseSticky(t *testing.T) {
 			return nil, nil
 		})
 	t.Cleanup(func() { _ = p.Close() })
-	e, err := New(config.ModeSingle, &router.Group{Master: p})
+	e, err := New(constant.ModeSingle, &router.Group{Master: p})
 	require.NoError(t, err)
 
 	c := &Conn{State: session.NewState(), Sticky: fb, StickyPool: p}

@@ -7,7 +7,7 @@ import (
 	"fmt"
 
 	"github.com/acorndb/prism/pkg/backend_server"
-	"github.com/acorndb/prism/pkg/config"
+	"github.com/acorndb/prism/pkg/constant"
 	"github.com/acorndb/prism/pkg/mysql"
 	"github.com/acorndb/prism/pkg/mysql/packet"
 	"github.com/acorndb/prism/pkg/router"
@@ -43,30 +43,30 @@ type Executor interface {
 // New builds an Executor for backend_server.mode.
 func New(mode string, g *router.Group) (Executor, error) {
 	if mode == "" {
-		mode = config.ModeSingle
+		mode = constant.ModeSingle
 	}
 	switch mode {
-	case config.ModeSingle:
+	case constant.ModeSingle:
 		if g == nil || g.Master == nil {
 			return nil, fmt.Errorf("executor: single requires master pool")
 		}
 		return &passthrough{
-			mode:  config.ModeSingle,
+			mode:  constant.ModeSingle,
 			group: g,
 			pick: func(*session.State, byte, string) router.TargetRole {
 				return router.RoleMaster
 			},
 		}, nil
-	case config.ModeRWSplit:
+	case constant.ModeRWSplit:
 		if g == nil || g.Master == nil {
 			return nil, fmt.Errorf("executor: rwsplit requires master pool")
 		}
 		return &passthrough{
-			mode:  config.ModeRWSplit,
+			mode:  constant.ModeRWSplit,
 			group: g,
 			pick:  router.Pick,
 		}, nil
-	case config.ModeSharding:
+	case constant.ModeSharding:
 		return &shardingExecutor{}, nil
 	default:
 		return nil, fmt.Errorf("executor: unknown mode %q", mode)
@@ -164,7 +164,7 @@ func (p *passthrough) withBackend(
 
 type shardingExecutor struct{}
 
-func (s *shardingExecutor) Mode() string { return config.ModeSharding }
+func (s *shardingExecutor) Mode() string { return constant.ModeSharding }
 
 func (s *shardingExecutor) Handle(context.Context, *Conn, Request) error {
 	return ErrShardingNotImplemented

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/acorndb/prism/pkg/backend_server"
+	"github.com/acorndb/prism/pkg/constant"
 	"github.com/acorndb/prism/pkg/router"
 	"github.com/stretchr/testify/require"
 )
@@ -45,7 +46,7 @@ func TestGroup_AcquireSlaveRoundRobin(t *testing.T) {
 	g := &router.Group{
 		Master:      newPool(t, 100, false),
 		Slaves:      []*backend_server.Pool{s0, s1},
-		LoadBalance: router.LBRoundRobin,
+		LoadBalance: constant.LoadBalanceRoundRobin,
 	}
 	c1, p1, err := g.Acquire(context.Background(), router.RoleSlave)
 	require.NoError(t, err)

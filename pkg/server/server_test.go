@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/acorndb/prism/pkg/config"
+	"github.com/acorndb/prism/pkg/constant"
 	"github.com/stretchr/testify/require"
 )
 
@@ -72,7 +73,7 @@ func minimalConfig(listen string) *config.Config {
 		Listen: listen,
 		Users:  []config.User{{Name: "app", Password: "p1"}},
 		BackendServer: config.BackendServer{
-			Mode:     config.ModeSingle,
+			Mode:     constant.ModeSingle,
 			Address:  "127.0.0.1:3306",
 			User:     "app",
 			Password: "p1",

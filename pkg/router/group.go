@@ -6,12 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/acorndb/prism/pkg/backend_server"
-)
-
-// Load-balance names (backend_server.load_balance).
-const (
-	LBRoundRobin = "round_robin"
-	LBRandom     = "random"
+	"github.com/acorndb/prism/pkg/constant"
 )
 
 // Group is one logical topology: master pool + optional slave pools (design §5.5).
@@ -60,7 +55,7 @@ func (g *Group) slaveOrder() []*backend_server.Pool {
 	if n == 0 {
 		return nil
 	}
-	if g.LoadBalance == LBRandom {
+	if g.LoadBalance == constant.LoadBalanceRandom {
 		start := int(g.rr.Add(1) % uint64(n))
 		out := make([]*backend_server.Pool, 0, n)
 		for i := 0; i < n; i++ {

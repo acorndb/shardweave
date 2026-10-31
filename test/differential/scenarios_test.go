@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/acorndb/prism/pkg/backend_server"
-	"github.com/acorndb/prism/pkg/config"
+	"github.com/acorndb/prism/pkg/constant"
 	"github.com/acorndb/prism/pkg/executor"
 	"github.com/acorndb/prism/pkg/proxy"
 	"github.com/acorndb/prism/pkg/router"
@@ -57,7 +57,7 @@ func TestPassthroughQueryScenarios(t *testing.T) {
 		func(ctx context.Context) (backend_server.Backend, error) {
 			return backend_server.DialMySQL(ctx, mysqlAddr, calibUser, calibPass, dbProxied)
 		})
-	exec, err := executor.New(config.ModeSingle, &router.Group{Master: p})
+	exec, err := executor.New(constant.ModeSingle, &router.Group{Master: p})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = exec.Close() })
 

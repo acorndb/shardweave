@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/acorndb/prism/pkg/constant"
 )
 
 var (
@@ -19,11 +21,11 @@ var (
 // ParseLevel maps config strings to slog levels; unknown values become Info.
 func ParseLevel(s string) slog.Level {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "debug":
+	case constant.LogLevelDebug:
 		return slog.LevelDebug
-	case "warn", "warning":
+	case constant.LogLevelWarn, constant.LogLevelWarning:
 		return slog.LevelWarn
-	case "error":
+	case constant.LogLevelError:
 		return slog.LevelError
 	default:
 		return slog.LevelInfo

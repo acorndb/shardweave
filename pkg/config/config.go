@@ -7,14 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/acorndb/prism/pkg/constant"
 	"go.yaml.in/yaml/v3"
-)
-
-// Topology modes (backend_server.mode).
-const (
-	ModeSingle   = "single"
-	ModeRWSplit  = "rwsplit"
-	ModeSharding = "sharding"
 )
 
 // Config is the process configuration snapshot.
@@ -113,11 +107,11 @@ func Validate(cfg *Config) error {
 func validateBackendServer(bs *BackendServer) error {
 	mode := strings.TrimSpace(bs.Mode)
 	if mode == "" {
-		mode = ModeSingle
-		bs.Mode = ModeSingle
+		mode = constant.ModeSingle
+		bs.Mode = constant.ModeSingle
 	}
 	switch mode {
-	case ModeSingle:
+	case constant.ModeSingle:
 		if bs.Master != nil || len(bs.Slaves) > 0 {
 			return fmt.Errorf("config: backend_server.mode=single must not set master/slaves")
 		}
@@ -128,7 +122,7 @@ func validateBackendServer(bs *BackendServer) error {
 			return fmt.Errorf("config: backend_server.user is required")
 		}
 		return nil
-	case ModeRWSplit:
+	case constant.ModeRWSplit:
 		if bs.Address != "" || bs.User != "" || bs.Password != "" || bs.Database != "" {
 			return fmt.Errorf("config: backend_server.mode=rwsplit must use master/slaves, not top-level address")
 		}
@@ -144,12 +138,12 @@ func validateBackendServer(bs *BackendServer) error {
 			}
 		}
 		switch bs.LoadBalance {
-		case "", "round_robin", "random":
+		case "", constant.LoadBalanceRoundRobin, constant.LoadBalanceRandom:
 		default:
 			return fmt.Errorf("config: backend_server.load_balance %q unsupported", bs.LoadBalance)
 		}
 		return nil
-	case ModeSharding:
+	case constant.ModeSharding:
 		return fmt.Errorf("config: backend_server.mode=sharding is not implemented")
 	default:
 		return fmt.Errorf("config: backend_server.mode %q unsupported (want single|rwsplit|sharding)", mode)
@@ -170,17 +164,17 @@ func validateEndpoint(prefix string, ep *BackendEndpoint) error {
 func (bs BackendServer) Primary() (BackendEndpoint, error) {
 	mode := bs.Mode
 	if mode == "" {
-		mode = ModeSingle
+		mode = constant.ModeSingle
 	}
 	switch mode {
-	case ModeSingle:
+	case constant.ModeSingle:
 		return BackendEndpoint{
 			Address:  bs.Address,
 			User:     bs.User,
 			Password: bs.Password,
 			Database: bs.Database,
 		}, nil
-	case ModeRWSplit:
+	case constant.ModeRWSplit:
 		if bs.Master == nil {
 			return BackendEndpoint{}, fmt.Errorf("config: rwsplit master missing")
 		}
@@ -193,10 +187,10 @@ func (bs BackendServer) Primary() (BackendEndpoint, error) {
 // SameIdentity reports whether topology endpoints/credentials are unchanged (reload gate).
 func (bs BackendServer) SameIdentity(other BackendServer) bool {
 	if strings.TrimSpace(bs.Mode) == "" {
-		bs.Mode = ModeSingle
+		bs.Mode = constant.ModeSingle
 	}
 	if strings.TrimSpace(other.Mode) == "" {
-		other.Mode = ModeSingle
+		other.Mode = constant.ModeSingle
 	}
 	if bs.Mode != other.Mode || bs.LoadBalance != other.LoadBalance {
 		return false

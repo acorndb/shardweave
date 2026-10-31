@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acorndb/prism/pkg/constant"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,7 +34,7 @@ termination_drain: 2s
 	require.NoError(t, err)
 	require.Equal(t, "127.0.0.1:3307", cfg.Listen)
 	require.Len(t, cfg.Users, 1)
-	require.Equal(t, ModeSingle, cfg.BackendServer.Mode)
+	require.Equal(t, constant.ModeSingle, cfg.BackendServer.Mode)
 	ep, err := cfg.BackendServer.Primary()
 	require.NoError(t, err)
 	require.Equal(t, "127.0.0.1:3306", ep.Address)
@@ -59,7 +60,7 @@ backend_server:
 `)
 	cfg, err := LoadFile(path)
 	require.NoError(t, err)
-	require.Equal(t, ModeSingle, cfg.BackendServer.Mode)
+	require.Equal(t, constant.ModeSingle, cfg.BackendServer.Mode)
 }
 
 func TestLoadFile_OK_RWSplit(t *testing.T) {
@@ -82,10 +83,10 @@ backend_server:
 `)
 	cfg, err := LoadFile(path)
 	require.NoError(t, err)
-	require.Equal(t, ModeRWSplit, cfg.BackendServer.Mode)
+	require.Equal(t, constant.ModeRWSplit, cfg.BackendServer.Mode)
 	require.Equal(t, "127.0.0.1:3306", cfg.BackendServer.Master.Address)
 	require.Len(t, cfg.BackendServer.Slaves, 1)
-	require.Equal(t, "round_robin", cfg.BackendServer.LoadBalance)
+	require.Equal(t, constant.LoadBalanceRoundRobin, cfg.BackendServer.LoadBalance)
 }
 
 func TestLoadFile_RejectOldBackendKey(t *testing.T) {
@@ -124,7 +125,7 @@ not_a_real_field: true
 
 func TestValidate_RejectShardingAndUnknownMode(t *testing.T) {
 	base := validSingle()
-	base.BackendServer.Mode = ModeSharding
+	base.BackendServer.Mode = constant.ModeSharding
 	require.Error(t, Validate(base))
 
 	base = validSingle()
@@ -134,7 +135,7 @@ func TestValidate_RejectShardingAndUnknownMode(t *testing.T) {
 
 func TestValidate_RWSplitRequiresMaster(t *testing.T) {
 	cfg := validSingle()
-	cfg.BackendServer = BackendServer{Mode: ModeRWSplit}
+	cfg.BackendServer = BackendServer{Mode: constant.ModeRWSplit}
 	require.Error(t, Validate(cfg))
 
 	cfg.BackendServer.Master = &BackendEndpoint{Address: "127.0.0.1:3306", User: "a", Password: "b"}
@@ -244,7 +245,7 @@ func validSingle() *Config {
 		Listen: "127.0.0.1:3307",
 		Users:  []User{{Name: "app", Password: "secret"}},
 		BackendServer: BackendServer{
-			Mode:     ModeSingle,
+			Mode:     constant.ModeSingle,
 			Address:  "127.0.0.1:3306",
 			User:     "app",
 			Password: "secret",

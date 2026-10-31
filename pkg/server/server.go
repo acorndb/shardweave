@@ -14,6 +14,7 @@ import (
 
 	"github.com/acorndb/prism/pkg/backend_server"
 	"github.com/acorndb/prism/pkg/config"
+	"github.com/acorndb/prism/pkg/constant"
 	"github.com/acorndb/prism/pkg/executor"
 	"github.com/acorndb/prism/pkg/proxy"
 	"github.com/acorndb/prism/pkg/router"
@@ -73,7 +74,7 @@ func newExecutor(rt *config.Runtime, cfg *config.Config) (executor.Executor, err
 	bs := cfg.BackendServer
 	mode := bs.Mode
 	if mode == "" {
-		mode = config.ModeSingle
+		mode = constant.ModeSingle
 	}
 
 	open := func(ep config.BackendEndpoint) backend_server.OpenFunc {
@@ -84,13 +85,13 @@ func newExecutor(rt *config.Runtime, cfg *config.Config) (executor.Executor, err
 
 	var g *router.Group
 	switch mode {
-	case config.ModeSingle:
+	case constant.ModeSingle:
 		ep, err := bs.Primary()
 		if err != nil {
 			return nil, err
 		}
 		g = &router.Group{Master: backend_server.New(pcfg, open(ep))}
-	case config.ModeRWSplit:
+	case constant.ModeRWSplit:
 		if bs.Master == nil {
 			return nil, fmt.Errorf("server: rwsplit master required")
 		}
@@ -99,7 +100,7 @@ func newExecutor(rt *config.Runtime, cfg *config.Config) (executor.Executor, err
 			LoadBalance: bs.LoadBalance,
 		}
 		if g.LoadBalance == "" {
-			g.LoadBalance = router.LBRoundRobin
+			g.LoadBalance = constant.LoadBalanceRoundRobin
 		}
 		for i := range bs.Slaves {
 			ep := bs.Slaves[i]
