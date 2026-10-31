@@ -250,7 +250,8 @@ P3 的路由只接受能证明单分片的谓词（分片键等值、同片 `IN`
 
 在线扩缩容（做手动迁移 + 校验工具替代）、SQL 防火墙、数据加解密、影子库、
 自研 parser、gnet/evio 事件循环（goroutine-per-connection 足够）、
-跨分片 2PC（P0–P3 明确拒绝跨片写）、多租户 namespace。
+跨分片 2PC 与多分片写（写必须单分片；跨片事务短期不规划，见
+`design/sharding-p0-design.md` §6.3）、多租户 namespace。
 
 ## 10. 里程碑
 

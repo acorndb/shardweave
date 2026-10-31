@@ -186,7 +186,9 @@ aggregate: 逐行更新累加器；EOF 时产出一行
 - `SUM`：按类型累加；
 - `MIN/MAX`：比较替换；
 - `AVG`：必须改写为 `SUM + COUNT`，归并后相除；直接平均各分片 AVG 是错的；
-- `COUNT(DISTINCT)`：不能把各片 distinct count 相加；P1 Reject，或改写为 group-by-distinct 再统计；
+- `COUNT/SUM/AVG(DISTINCT expr)`：不能把各片局部结果相加；已落地为 per-shard
+  按 DISTINCT 参数 GROUP BY 并带回原始值，归并层按规范化 key 去重后再算；
+  字符串/二进制参数、多参数 `COUNT(DISTINCT a, b)` 仍 Reject；
 - 空输入：`COUNT` 返回 0，`SUM/MIN/MAX/AVG` 返回 NULL（按 MySQL 语义）。
 
 ### 4.4 GROUP BY
@@ -318,6 +320,7 @@ execute.dispatch(targets) → []result.Stream
 | P0.9 DISTINCT | `Distinct` | 已落地数值/日期行去重；规范化行 key，首次出现顺序输出；字符串/collation 仍 Reject |
 | P0.10 分组后排序 | `Sort` | 已落地：GROUP BY/DISTINCT 后在归并层缓冲排序，再应用全局 LIMIT/OFFSET；per-shard LIMIT 移除；字符串排序列仍 Reject |
 | P0.11 HAVING | `Filter` | 已落地 AND 数值比较（分组列/聚合别名/匹配聚合表达式）；per-shard HAVING 移除；OR/字符串/未选聚合 Reject |
+| P0.12 聚合 DISTINCT | `Aggregate`/`Group` + 去重集合 | 已落地 `COUNT/SUM/AVG(DISTINCT expr)`：per-shard 投影原始参数并加入 GROUP BY，归并层去重后计算；可与普通聚合混用；字符串/多参数仍 Reject |
 | P1 多分片只读 v1 | concat、ordered、limit、COUNT/SUM/MIN/MAX/AVG | ORDER BY 仅数值/时间/二进制字符串 |
 | P1.5 | GROUP BY、DISTINCT、UNION 去重 | 加内存上限 |
 | P2 | 字符串 collation、bufferSort、spill、GROUP_CONCAT、窗口/跨片 JOIN | 单独设计 |

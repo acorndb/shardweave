@@ -197,8 +197,11 @@ func TestSingleShardRouting(t *testing.T) {
 	requireRowCount(t, ctx, conn, "SELECT COUNT(*) FROM orders LIMIT 0", 0)
 	require.Equal(t, 1, connScalar(t, ctx, conn, "SELECT 1"), "aggregate must not break the session")
 
-	assertReject(t, ctx, conn, "SELECT COUNT(DISTINCT user_id) FROM orders")
-	assertReject(t, ctx, conn, "SELECT AVG(DISTINCT amount) FROM orders")
+	requireRowValues(t, ctx, conn,
+		"SELECT COUNT(DISTINCT user_id) FROM orders", [][]string{{"2"}})
+	requireRowValues(t, ctx, conn,
+		"SELECT AVG(DISTINCT amount) FROM orders", [][]string{{"125.0000"}})
+	assertReject(t, ctx, conn, "SELECT COUNT(DISTINCT name) FROM profiles")
 	assertReject(t, ctx, conn, "SELECT COUNT(*), amount FROM orders")
 	assertReject(t, ctx, conn, "SELECT COUNT(*) FROM orders ORDER BY 1")
 	assertReject(t, ctx, conn, "SELECT * FROM orders WHERE user_id IN (SELECT user_id FROM orders)")
@@ -283,6 +286,18 @@ func TestSingleShardRouting(t *testing.T) {
 		[][]string{{"2", "250"}})
 	requireRowValues(t, ctx, conn,
 		"SELECT user_id, COUNT(*) FROM orders GROUP BY user_id HAVING COUNT(*) > 1 AND user_id > 1 ORDER BY user_id",
+		[][]string{{"2", "2"}})
+	requireRowValues(t, ctx, conn,
+		"SELECT COUNT(*), COUNT(DISTINCT amount), SUM(DISTINCT amount), AVG(DISTINCT amount) FROM orders",
+		[][]string{{"3", "2", "250", "125.0000"}})
+	requireGroupRows(t, ctx, conn,
+		"SELECT user_id, COUNT(DISTINCT amount) FROM orders GROUP BY user_id",
+		map[string][]string{"1": {"1"}, "2": {"2"}})
+	requireRowValues(t, ctx, conn,
+		"SELECT user_id, COUNT(DISTINCT amount) AS c FROM orders GROUP BY user_id HAVING c > 1",
+		[][]string{{"2", "2"}})
+	requireRowValues(t, ctx, conn,
+		"SELECT user_id, COUNT(DISTINCT amount) AS c FROM orders GROUP BY user_id ORDER BY c DESC LIMIT 1",
 		[][]string{{"2", "2"}})
 	assertReject(t, ctx, conn, "SELECT COUNT(*) FROM orders GROUP BY user_id")
 	assertReject(t, ctx, conn, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id ORDER BY COUNT(*)")

@@ -123,12 +123,22 @@ const (
 
 // AggregateSpec describes one aggregate output column.
 type AggregateSpec struct {
-	Func     AggregateFunc
-	Column   int
-	Output   int
+	Func   AggregateFunc
+	Column int
+	Output int
+	// Distinct means Column points at a hidden raw argument column; the merge
+	// layer deduplicates values across shards before applying Func.
 	Distinct bool
 	// CountColumn is the hidden COUNT column for AVG; zero for other funcs.
 	CountColumn int
+}
+
+// distinctArg is one DISTINCT aggregate argument projected as a hidden raw
+// column and appended to the per-shard GROUP BY.
+type distinctArg struct {
+	specIndex int
+	arg       ast.ExprNode
+	alias     string
 }
 
 // MergeSpec is the pure merge description for MultiShard plans. Column indexes
@@ -218,6 +228,9 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 	if !ok {
 		return MergeSpec{}, nil
 	}
+	if sel.GroupBy != nil && sel.GroupBy.Rollup {
+		return MergeSpec{}, errs.Unsupported("multi-shard GROUP BY WITH ROLLUP is not supported")
+	}
 	if sel.Having != nil && sel.GroupBy == nil {
 		return MergeSpec{}, errs.Unsupported("HAVING requires GROUP BY in sharding mode")
 	}
@@ -244,10 +257,10 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 			spec.Limit = &Limit{Offset: offset, Count: count}
 			removeLimit = true
 		}
-		return applyRewrite(sel, targets, spec, nil, nil, removeLimit, false)
+		return applyRewrite(sel, targets, spec, nil, nil, nil, removeLimit, false)
 	}
 	if sel.GroupBy != nil {
-		spec, extras, rej := groupSpecs(sel)
+		spec, extras, extraFields, groupByAliases, rej := groupSpecs(sel)
 		if rej != nil {
 			return MergeSpec{}, rej
 		}
@@ -270,9 +283,9 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 			spec.Limit = &Limit{Offset: offset, Count: count}
 			removeLimit = true
 		}
-		return applyRewrite(sel, targets, spec, extras, nil, removeLimit, len(having) > 0)
+		return applyRewrite(sel, targets, spec, extras, extraFields, groupByAliases, removeLimit, len(having) > 0)
 	}
-	aggs, extras, rej := aggregateSpecs(sel)
+	aggs, extras, extraFields, groupByAliases, rej := aggregateSpecs(sel)
 	if rej != nil {
 		return MergeSpec{}, rej
 	}
@@ -282,7 +295,15 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 			return MergeSpec{}, errs.Unsupported("multi-shard aggregate with ORDER BY is not supported")
 		}
 		spec.Aggregates = aggs
-		return applyRewrite(sel, targets, spec, extras, nil, false, false)
+		removeLimit := len(groupByAliases) > 0
+		if removeLimit && sel.Limit != nil {
+			offset, count, ok := sql.ParseLimit(sel.Limit)
+			if !ok {
+				return MergeSpec{}, errs.Unsupported("multi-shard LIMIT must be literal integers")
+			}
+			spec.Limit = &Limit{Offset: offset, Count: count}
+		}
+		return applyRewrite(sel, targets, spec, extras, extraFields, groupByAliases, removeLimit, false)
 	}
 	keys, orderFields, output, rej := orderSpec(sel)
 	if rej != nil {
@@ -290,7 +311,7 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 	}
 	spec.OrderBy = keys
 	spec.Output = output
-	return applyRewrite(sel, targets, spec, nil, orderFields, false, false)
+	return applyRewrite(sel, targets, spec, nil, orderFields, nil, false, false)
 }
 
 // applyRewrite parses LIMIT and rewrites per-shard SQL when OFFSET or hidden
@@ -301,6 +322,7 @@ func applyRewrite(
 	spec MergeSpec,
 	extras []rewrite.ExtraAggregate,
 	orderFields []rewrite.ExtraField,
+	groupByAliases []string,
 	removeLimit bool,
 	removeHaving bool,
 ) (MergeSpec, *errs.MySQL) {
@@ -319,7 +341,7 @@ func applyRewrite(
 		}
 		spec.Limit = &Limit{Offset: offset, Count: count}
 	}
-	if perShard == nil && len(extras) == 0 && len(orderFields) == 0 && !removeLimit && !removeHaving {
+	if perShard == nil && len(extras) == 0 && len(orderFields) == 0 && len(groupByAliases) == 0 && !removeLimit && !removeHaving {
 		return spec, nil
 	}
 	sqlText, err := rewrite.Select(sel, rewrite.Spec{
@@ -328,6 +350,7 @@ func applyRewrite(
 		ExtraFields:     orderFields,
 		RemoveLimit:     removeLimit,
 		RemoveHaving:    removeHaving,
+		ExtraGroupBy:    groupByAliases,
 	})
 	if err != nil {
 		return MergeSpec{}, errs.Unsupported("multi-shard rewrite failed: %v", err)
@@ -500,7 +523,9 @@ func flipHavingOp(op HavingOp) HavingOp {
 
 // groupSpecs accepts projected group columns plus aggregate-only other fields.
 // Group keys must be in the select list so the merge layer has their values.
-func groupSpecs(sel *ast.SelectStmt) (MergeSpec, []rewrite.ExtraAggregate, *errs.MySQL) {
+// DISTINCT COUNT/SUM/AVG arguments are appended as hidden raw columns and to
+// the per-shard GROUP BY; the merge layer deduplicates them across shards.
+func groupSpecs(sel *ast.SelectStmt) (MergeSpec, []rewrite.ExtraAggregate, []rewrite.ExtraField, []string, *errs.MySQL) {
 	base := len(sel.Fields.Fields)
 	output := make([]int, base)
 	for i := range output {
@@ -519,22 +544,28 @@ func groupSpecs(sel *ast.SelectStmt) (MergeSpec, []rewrite.ExtraAggregate, *errs
 		case *ast.ColumnNameExpr:
 			idx := selectFieldIndex(sel, e.Name.Name.L)
 			if idx < 0 {
-				return MergeSpec{}, nil, errs.Unsupported("GROUP BY column %q must be selected", e.Name.Name.O)
+				return MergeSpec{}, nil, nil, nil, errs.Unsupported("GROUP BY column %q must be selected", e.Name.Name.O)
 			}
 			addGroup(idx)
 		case *ast.PositionExpr:
 			if e.N < 1 || e.N > base {
-				return MergeSpec{}, nil, errs.Unsupported("GROUP BY position %d is out of range", e.N)
+				return MergeSpec{}, nil, nil, nil, errs.Unsupported("GROUP BY position %d is out of range", e.N)
 			}
 			addGroup(e.N - 1)
 		default:
-			return MergeSpec{}, nil, errs.Unsupported("multi-shard GROUP BY supports columns or positions only")
+			return MergeSpec{}, nil, nil, nil, errs.Unsupported("multi-shard GROUP BY supports columns or positions only")
 		}
 	}
 	if len(groupBy) == 0 {
-		return MergeSpec{}, nil, errs.Unsupported("GROUP BY requires at least one column")
+		return MergeSpec{}, nil, nil, nil, errs.Unsupported("GROUP BY requires at least one column")
+	}
+	for _, idx := range groupBy {
+		if hasAggregate(sel.Fields.Fields[idx].Expr) {
+			return MergeSpec{}, nil, nil, nil, errs.Unsupported("GROUP BY cannot reference an aggregate field")
+		}
 	}
 
+	var distinctArgs []distinctArg
 	avgIdx := 0
 	specs := make([]AggregateSpec, 0, base-len(groupBy))
 	var extras []rewrite.ExtraAggregate
@@ -545,14 +576,28 @@ func groupSpecs(sel *ast.SelectStmt) (MergeSpec, []rewrite.ExtraAggregate, *errs
 		agg, ok := field.Expr.(*ast.AggregateFuncExpr)
 		if !ok {
 			if hasAggregate(field.Expr) {
-				return MergeSpec{}, nil, errs.Unsupported("multi-shard aggregate must be a top-level aggregate field")
+				return MergeSpec{}, nil, nil, nil, errs.Unsupported("multi-shard aggregate must be a top-level aggregate field")
 			}
-			return MergeSpec{}, nil, errs.Unsupported("multi-shard GROUP BY fields must be group columns or aggregate functions")
+			return MergeSpec{}, nil, nil, nil, errs.Unsupported("multi-shard GROUP BY fields must be group columns or aggregate functions")
 		}
+		fn := strings.ToLower(agg.F)
 		if agg.Distinct {
-			return MergeSpec{}, nil, errs.Unsupported("multi-shard aggregate DISTINCT is not supported")
+			switch fn {
+			case "min", "max":
+				// DISTINCT does not change MIN/MAX; merge partial aggregates as usual.
+			case "count", "sum", "avg":
+				if len(agg.Args) != 1 {
+					return MergeSpec{}, nil, nil, nil, errs.Unsupported("multi-shard aggregate DISTINCT requires exactly one argument")
+				}
+				alias := fmt.Sprintf("__sw_distinct_%d", len(distinctArgs))
+				distinctArgs = append(distinctArgs, distinctArg{specIndex: len(specs), arg: agg.Args[0], alias: alias})
+				specs = append(specs, AggregateSpec{Func: aggregateFunc(fn), Output: i, Distinct: true})
+				continue
+			default:
+				return MergeSpec{}, nil, nil, nil, errs.Unsupported("multi-shard aggregate %s is not supported", agg.F)
+			}
 		}
-		switch strings.ToLower(agg.F) {
+		switch fn {
 		case "count":
 			specs = append(specs, AggregateSpec{Func: AggCount, Column: i, Output: i})
 		case "sum":
@@ -563,7 +608,7 @@ func groupSpecs(sel *ast.SelectStmt) (MergeSpec, []rewrite.ExtraAggregate, *errs
 			specs = append(specs, AggregateSpec{Func: AggMax, Column: i, Output: i})
 		case "avg":
 			if len(agg.Args) != 1 {
-				return MergeSpec{}, nil, errs.Unsupported("multi-shard AVG requires exactly one argument")
+				return MergeSpec{}, nil, nil, nil, errs.Unsupported("multi-shard AVG requires exactly one argument")
 			}
 			sumIdx := base + 2*avgIdx
 			extras = append(extras,
@@ -573,49 +618,98 @@ func groupSpecs(sel *ast.SelectStmt) (MergeSpec, []rewrite.ExtraAggregate, *errs
 			avgIdx++
 			specs = append(specs, AggregateSpec{Func: AggAvg, Column: sumIdx, CountColumn: sumIdx + 1, Output: i})
 		default:
-			return MergeSpec{}, nil, errs.Unsupported("multi-shard aggregate %s is not supported", agg.F)
+			return MergeSpec{}, nil, nil, nil, errs.Unsupported("multi-shard aggregate %s is not supported", agg.F)
 		}
 	}
-	return MergeSpec{GroupBy: groupBy, Aggregates: specs, Output: output}, extras, nil
+	extraFields, groupByAliases := distinctExtras(&specs, distinctArgs, base+len(extras))
+	return MergeSpec{GroupBy: groupBy, Aggregates: specs, Output: output}, extras, extraFields, groupByAliases, nil
+}
+
+// distinctExtras assigns hidden raw-value columns to DISTINCT aggregates.
+// Hidden aggregates (AVG SUM/COUNT) come first, then one ExtraField per
+// DISTINCT argument; per-shard GROUP BY references those field aliases.
+func distinctExtras(specs *[]AggregateSpec, args []distinctArg, hiddenBase int) ([]rewrite.ExtraField, []string) {
+	fields := make([]rewrite.ExtraField, 0, len(args))
+	aliases := make([]string, 0, len(args))
+	for j, d := range args {
+		(*specs)[d.specIndex].Column = hiddenBase + j
+		fields = append(fields, rewrite.ExtraField{Expr: d.arg, Alias: d.alias})
+		aliases = append(aliases, d.alias)
+	}
+	return fields, aliases
+}
+
+// aggregateFunc maps a validated aggregate name to its merge function. Callers
+// reject unknown names before calling it.
+func aggregateFunc(name string) AggregateFunc {
+	switch name {
+	case "count":
+		return AggCount
+	case "sum":
+		return AggSum
+	case "min":
+		return AggMin
+	case "max":
+		return AggMax
+	case "avg":
+		return AggAvg
+	default:
+		return AggCount
+	}
 }
 
 // aggregateSpecs accepts aggregate-only projections without GROUP BY.
-// AVG is rewritten to hidden SUM/COUNT columns and merged from those.
-func aggregateSpecs(sel *ast.SelectStmt) ([]AggregateSpec, []rewrite.ExtraAggregate, *errs.MySQL) {
+// AVG is rewritten to hidden SUM/COUNT columns and merged from those; DISTINCT
+// COUNT/SUM/AVG arguments become hidden raw columns plus a per-shard GROUP BY.
+func aggregateSpecs(sel *ast.SelectStmt) ([]AggregateSpec, []rewrite.ExtraAggregate, []rewrite.ExtraField, []string, *errs.MySQL) {
 	if sel.Fields == nil || len(sel.Fields.Fields) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	base := len(sel.Fields.Fields)
 	avgIdx := 0
 	specs := make([]AggregateSpec, 0, base)
 	var extras []rewrite.ExtraAggregate
+	var distinctArgs []distinctArg
 	for i, field := range sel.Fields.Fields {
 		agg, ok := field.Expr.(*ast.AggregateFuncExpr)
 		if !ok {
 			if hasAggregate(field.Expr) {
-				return nil, nil, errs.Unsupported("multi-shard aggregate must be a top-level aggregate field")
+				return nil, nil, nil, nil, errs.Unsupported("multi-shard aggregate must be a top-level aggregate field")
 			}
 			if len(specs) > 0 {
-				return nil, nil, errs.Unsupported("multi-shard aggregate query must project only aggregate functions")
+				return nil, nil, nil, nil, errs.Unsupported("multi-shard aggregate query must project only aggregate functions")
 			}
 			continue
 		}
+		fn := strings.ToLower(agg.F)
 		if agg.Distinct {
-			return nil, nil, errs.Unsupported("multi-shard aggregate DISTINCT is not supported")
+			switch fn {
+			case "min", "max":
+				// DISTINCT does not change MIN/MAX; merge partial aggregates as usual.
+			case "count", "sum", "avg":
+				if len(agg.Args) != 1 {
+					return nil, nil, nil, nil, errs.Unsupported("multi-shard aggregate DISTINCT requires exactly one argument")
+				}
+				alias := fmt.Sprintf("__sw_distinct_%d", len(distinctArgs))
+				distinctArgs = append(distinctArgs, distinctArg{specIndex: len(specs), arg: agg.Args[0], alias: alias})
+				specs = append(specs, AggregateSpec{Func: aggregateFunc(fn), Output: i, Distinct: true})
+				continue
+			default:
+				return nil, nil, nil, nil, errs.Unsupported("multi-shard aggregate %s is not supported", agg.F)
+			}
 		}
-		fn := AggregateFunc(0)
-		switch strings.ToLower(agg.F) {
+		switch fn {
 		case "count":
-			fn = AggCount
+			specs = append(specs, AggregateSpec{Func: AggCount, Column: i, Output: i})
 		case "sum":
-			fn = AggSum
+			specs = append(specs, AggregateSpec{Func: AggSum, Column: i, Output: i})
 		case "min":
-			fn = AggMin
+			specs = append(specs, AggregateSpec{Func: AggMin, Column: i, Output: i})
 		case "max":
-			fn = AggMax
+			specs = append(specs, AggregateSpec{Func: AggMax, Column: i, Output: i})
 		case "avg":
 			if len(agg.Args) != 1 {
-				return nil, nil, errs.Unsupported("multi-shard AVG requires exactly one argument")
+				return nil, nil, nil, nil, errs.Unsupported("multi-shard AVG requires exactly one argument")
 			}
 			sumIdx := base + 2*avgIdx
 			extras = append(extras,
@@ -636,14 +730,14 @@ func aggregateSpecs(sel *ast.SelectStmt) ([]AggregateSpec, []rewrite.ExtraAggreg
 			})
 			continue
 		default:
-			return nil, nil, errs.Unsupported("multi-shard aggregate %s is not supported", agg.F)
+			return nil, nil, nil, nil, errs.Unsupported("multi-shard aggregate %s is not supported", agg.F)
 		}
-		specs = append(specs, AggregateSpec{Func: fn, Column: i, Output: i})
 	}
 	if len(specs) > 0 && len(specs) != len(sel.Fields.Fields) {
-		return nil, nil, errs.Unsupported("multi-shard aggregate query must project only aggregate functions")
+		return nil, nil, nil, nil, errs.Unsupported("multi-shard aggregate query must project only aggregate functions")
 	}
-	return specs, extras, nil
+	extraFields, groupByAliases := distinctExtras(&specs, distinctArgs, base+len(extras))
+	return specs, extras, extraFields, groupByAliases, nil
 }
 
 // postOrderKeys resolves ORDER BY against output columns after GROUP BY or

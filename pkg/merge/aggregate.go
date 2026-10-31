@@ -13,8 +13,9 @@ import (
 )
 
 // Aggregate merges one aggregate row per shard into the final row.
-// It supports COUNT/SUM/MIN/MAX without GROUP BY; AVG needs a SUM/COUNT
-// rewrite plus hidden columns and is rejected for now.
+// It supports COUNT/SUM/MIN/MAX/AVG without GROUP BY. DISTINCT COUNT/SUM/AVG
+// read raw argument columns and deduplicate them across shards; AVG without
+// DISTINCT needs a SUM/COUNT rewrite plus hidden columns.
 func Aggregate(streams []result.Stream, fields []result.Field, specs []plan.AggregateSpec) (result.Stream, error) {
 	if len(specs) == 0 {
 		return nil, errs.Unsupported("multi-shard aggregate requires at least one aggregate")
@@ -23,15 +24,21 @@ func Aggregate(streams []result.Stream, fields []result.Field, specs []plan.Aggr
 		return nil, errs.Unsupported("multi-shard aggregate result has %d columns, want %d", len(fields), len(specs))
 	}
 	kinds := make([]valueKind, len(specs))
+	distincts := make([]*distinctAccumulator, len(specs))
 	for i, spec := range specs {
-		if spec.Distinct {
-			return nil, errs.Unsupported("multi-shard aggregate DISTINCT is not supported")
-		}
 		if spec.Output < 0 || spec.Output >= len(specs) {
 			return nil, errs.Unsupported("multi-shard aggregate output %d is out of range", spec.Output)
 		}
 		if spec.Column < 0 || spec.Column >= len(fields) {
 			return nil, errs.Unsupported("multi-shard aggregate column %d is out of range", spec.Column)
+		}
+		if spec.Distinct {
+			d, err := newDistinctAccumulator(spec, fields[spec.Column])
+			if err != nil {
+				return nil, err
+			}
+			distincts[i] = d
+			continue
 		}
 		switch spec.Func {
 		case plan.AggCount:
@@ -70,10 +77,11 @@ func Aggregate(streams []result.Stream, fields []result.Field, specs []plan.Aggr
 		}
 	}
 	return &aggregate{
-		streams: kept,
-		fields:  fields[:len(specs)],
-		specs:   specs,
-		kinds:   kinds,
+		streams:   kept,
+		fields:    fields[:len(specs)],
+		specs:     specs,
+		kinds:     kinds,
+		distincts: distincts,
 	}, nil
 }
 
@@ -89,10 +97,11 @@ func sumKind(f result.Field) (valueKind, bool) {
 }
 
 type aggregate struct {
-	streams []result.Stream
-	fields  []result.Field
-	specs   []plan.AggregateSpec
-	kinds   []valueKind
+	streams   []result.Stream
+	fields    []result.Field
+	specs     []plan.AggregateSpec
+	kinds     []valueKind
+	distincts []*distinctAccumulator
 
 	row    result.Row
 	done   bool
@@ -139,6 +148,12 @@ func (a *aggregate) fold() (result.Row, error) {
 					return nil, fmt.Errorf("merge: aggregate column %d out of row width %d", spec.Column, len(row))
 				}
 				v := row[spec.Column]
+				if spec.Distinct {
+					if err := a.distincts[i].add(v); err != nil {
+						return nil, err
+					}
+					continue
+				}
 				switch spec.Func {
 				case plan.AggCount:
 					if v == nil {
@@ -213,6 +228,14 @@ func (a *aggregate) fold() (result.Row, error) {
 
 	out := make(result.Row, len(a.specs))
 	for i, spec := range a.specs {
+		if spec.Distinct {
+			v, err := a.distincts[i].value(a.fields[spec.Output])
+			if err != nil {
+				return nil, err
+			}
+			out[spec.Output] = v
+			continue
+		}
 		switch spec.Func {
 		case plan.AggCount:
 			out[spec.Output] = []byte(strconv.FormatUint(counts[i], 10))
@@ -222,7 +245,7 @@ func (a *aggregate) fold() (result.Row, error) {
 					out[spec.Output] = []byte(strconv.FormatFloat(floats[i].sum, 'g', -1, 64))
 				}
 			} else if decs[i] != nil {
-				out[spec.Output] = []byte(decs[i].rat.FloatString(int(a.fields[spec.Column].Decimals)))
+				out[spec.Output] = []byte(decs[i].rat.FloatString(int(a.fields[spec.Output].Decimals)))
 			}
 		case plan.AggMin, plan.AggMax:
 			if bests[i] != nil {

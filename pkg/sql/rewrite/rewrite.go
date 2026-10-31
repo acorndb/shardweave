@@ -41,6 +41,10 @@ type Spec struct {
 	// RemoveHaving drops HAVING from the per-shard SQL. HAVING on aggregate
 	// outputs must be evaluated after cross-shard groups are merged.
 	RemoveHaving bool
+	// ExtraGroupBy appends GROUP BY references to select aliases. DISTINCT
+	// aggregates append their raw argument as an ExtraField and group by that
+	// alias, so each distinct value is returned once per shard/group.
+	ExtraGroupBy []string
 }
 
 // Select restores sel with spec applied. The caller's AST is restored before
@@ -49,9 +53,15 @@ func Select(sel *ast.SelectStmt, spec Spec) (string, error) {
 	if sel == nil {
 		return "", fmt.Errorf("rewrite: nil SELECT")
 	}
+	for _, alias := range spec.ExtraGroupBy {
+		if alias == "" {
+			return "", fmt.Errorf("rewrite: empty GROUP BY alias")
+		}
+	}
 	oldLimit := sel.Limit
 	oldHaving := sel.Having
 	oldFields := sel.Fields
+	oldGroupBy := sel.GroupBy
 	switch {
 	case spec.RemoveLimit:
 		sel.Limit = nil
@@ -87,10 +97,23 @@ func Select(sel *ast.SelectStmt, spec Spec) (string, error) {
 		}
 		sel.Fields = &ast.FieldList{Fields: fields}
 	}
+	if len(spec.ExtraGroupBy) > 0 {
+		items := make([]*ast.ByItem, 0, len(spec.ExtraGroupBy)+1)
+		if oldGroupBy != nil {
+			items = append(items, oldGroupBy.Items...)
+		}
+		for _, alias := range spec.ExtraGroupBy {
+			items = append(items, &ast.ByItem{
+				Expr: &ast.ColumnNameExpr{Name: &ast.ColumnName{Name: ast.NewCIStr(alias)}},
+			})
+		}
+		sel.GroupBy = &ast.GroupByClause{Items: items}
+	}
 	defer func() {
 		sel.Limit = oldLimit
 		sel.Having = oldHaving
 		sel.Fields = oldFields
+		sel.GroupBy = oldGroupBy
 	}()
 
 	var sb strings.Builder

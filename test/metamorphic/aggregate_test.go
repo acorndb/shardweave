@@ -130,6 +130,17 @@ func TestShardedAggregateOracle(t *testing.T) {
 		{query: "SELECT SUM(amount) FROM orders"},
 		{query: "SELECT MIN(amount), MAX(amount) FROM orders"},
 		{query: "SELECT COUNT(*), COUNT(amount), SUM(amount), MIN(amount), MAX(amount) FROM orders"},
+		{query: "SELECT COUNT(DISTINCT amount) FROM orders"},
+		{query: "SELECT COUNT(*), COUNT(DISTINCT amount), SUM(DISTINCT amount), AVG(DISTINCT amount) FROM orders"},
+		{query: "SELECT COUNT(DISTINCT price), SUM(DISTINCT price), AVG(DISTINCT price) FROM orders"},
+		{query: "SELECT COUNT(DISTINCT qty), AVG(DISTINCT qty) FROM orders"},
+		{query: "SELECT SUM(DISTINCT qty), AVG(DISTINCT qty) FROM orders"},
+		{query: "SELECT COUNT(DISTINCT score), SUM(DISTINCT score) FROM orders"},
+		{query: "SELECT COUNT(*), COUNT(DISTINCT amount) FROM orders WHERE user_id IN (1, 2, 3, 4)"},
+		{query: "SELECT COUNT(DISTINCT amount) FROM orders WHERE id < 0"},
+		{query: "SELECT COUNT(DISTINCT amount), SUM(DISTINCT amount), AVG(DISTINCT amount) FROM orders WHERE id < 0"},
+		{query: "SELECT COUNT(DISTINCT amount) FROM orders WHERE amount IS NULL"},
+		{query: "SELECT COUNT(DISTINCT amount), SUM(DISTINCT amount), AVG(DISTINCT amount) FROM orders WHERE amount IS NULL"},
 		{query: "SELECT COUNT(*), SUM(amount) FROM orders WHERE user_id IN (1, 2, 3, 4)"},
 		{query: "SELECT COUNT(*), SUM(amount) FROM orders WHERE amount > 0"},
 		{query: "SELECT COUNT(*), SUM(amount) FROM orders WHERE user_id > 5"},
@@ -142,6 +153,10 @@ func TestShardedAggregateOracle(t *testing.T) {
 		{query: "SELECT amount FROM orders ORDER BY user_id * 2 + id"},
 		{query: "SELECT amount FROM orders ORDER BY amount % 7, id"},
 		{query: "SELECT user_id, COUNT(*), SUM(amount), MIN(amount), MAX(amount), AVG(amount) FROM orders GROUP BY user_id", unordered: true},
+		{query: "SELECT user_id, COUNT(DISTINCT amount), SUM(DISTINCT price), AVG(DISTINCT price) FROM orders GROUP BY user_id ORDER BY user_id"},
+		{query: "SELECT amount, COUNT(*), COUNT(DISTINCT user_id) FROM orders GROUP BY amount ORDER BY amount"},
+		{query: "SELECT user_id, COUNT(DISTINCT amount) AS c FROM orders GROUP BY user_id HAVING c > 1 ORDER BY user_id"},
+		{query: "SELECT user_id, COUNT(DISTINCT amount) FROM orders GROUP BY user_id ORDER BY user_id DESC LIMIT 3"},
 		{query: "SELECT amount, COUNT(*), SUM(user_id) FROM orders GROUP BY amount", unordered: true},
 		{query: "SELECT user_id, COUNT(*) FROM orders WHERE amount > 0 GROUP BY user_id", unordered: true},
 		{query: "SELECT user_id FROM orders GROUP BY user_id", unordered: true},
@@ -218,7 +233,7 @@ func requireSameRows(
 
 func randomShardQuery(r *rand.Rand) string {
 	where := randomWhere(r)
-	switch r.Intn(6) {
+	switch r.Intn(7) {
 	case 0:
 		return fmt.Sprintf("SELECT id, user_id, amount, price, qty, score FROM orders %s ORDER BY id LIMIT %d OFFSET %d",
 			where, r.Intn(11), r.Intn(6))
@@ -233,9 +248,11 @@ func randomShardQuery(r *rand.Rand) string {
 	case 4:
 		return fmt.Sprintf("SELECT DISTINCT user_id, amount FROM orders %s ORDER BY user_id, amount LIMIT %d OFFSET %d",
 			where, 1+r.Intn(8), r.Intn(4))
+	case 5:
+		return fmt.Sprintf("SELECT COUNT(DISTINCT amount), SUM(DISTINCT price), AVG(DISTINCT score) FROM orders %s", where)
 	default:
-		return fmt.Sprintf("SELECT DISTINCT price FROM orders %s ORDER BY price DESC LIMIT %d",
-			where, 1+r.Intn(8))
+		return fmt.Sprintf("SELECT user_id, COUNT(*), COUNT(DISTINCT amount) FROM orders %s GROUP BY user_id ORDER BY user_id LIMIT %d OFFSET %d",
+			where, 1+r.Intn(8), r.Intn(4))
 	}
 }
 

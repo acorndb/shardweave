@@ -145,6 +145,71 @@ func TestGroup_FloatAndNulls(t *testing.T) {
 	require.Equal(t, [][]string{{"1", "1.5", "1.5"}, {"2", "2.5", "2.5"}}, collectValues(t, s))
 }
 
+func TestGroup_Distinct(t *testing.T) {
+	fields := []result.Field{
+		{Name: "user_id", OrgName: "user_id", Type: result.TypeLong},
+		{Name: "COUNT(*)", OrgName: "COUNT(*)", Type: result.TypeLongLong},
+		{Name: "COUNT(DISTINCT amount)", OrgName: "COUNT(DISTINCT amount)", Type: result.TypeLongLong},
+		{Name: "SUM(DISTINCT amount)", OrgName: "SUM(DISTINCT amount)", Type: result.TypeNewDecimal},
+		{Name: "__sw_distinct_0", OrgName: "amount", Type: result.TypeLong},
+		{Name: "__sw_distinct_1", OrgName: "amount", Type: result.TypeLong},
+	}
+	specs := []plan.AggregateSpec{
+		{Func: plan.AggCount, Column: 1, Output: 1},
+		{Func: plan.AggCount, Column: 4, Output: 2, Distinct: true},
+		{Func: plan.AggSum, Column: 5, Output: 3, Distinct: true},
+	}
+	streams := []result.Stream{
+		&scriptStream{fields: fields, rows: []result.Row{
+			{[]byte("1"), []byte("2"), []byte("1"), []byte("10"), []byte("10"), []byte("10")},
+			{[]byte("1"), []byte("1"), []byte("1"), []byte("20"), []byte("20"), []byte("20")},
+			{[]byte("2"), []byte("1"), []byte("1"), []byte("20"), []byte("20"), []byte("20")},
+		}},
+		&scriptStream{fields: fields, rows: []result.Row{
+			{[]byte("1"), []byte("3"), []byte("1"), []byte("20"), []byte("20"), []byte("20")},
+			{[]byte("2"), []byte("2"), []byte("1"), []byte("30"), []byte("30"), []byte("30")},
+			{[]byte("2"), []byte("1"), []byte("1"), nil, nil, nil},
+		}},
+	}
+	s, err := merge.Group(streams, fields, []int{0}, specs, []int{0, 1, 2, 3})
+	require.NoError(t, err)
+	require.Equal(t, fields[:4], s.Fields())
+	require.Equal(t, [][]string{
+		{"1", "6", "2", "30"},
+		{"2", "4", "2", "50"},
+	}, collectValues(t, s))
+}
+
+func TestGroup_DistinctHaving(t *testing.T) {
+	fields := []result.Field{
+		{Name: "user_id", OrgName: "user_id", Type: result.TypeLong},
+		{Name: "COUNT(DISTINCT amount)", OrgName: "COUNT(DISTINCT amount)", Type: result.TypeLongLong},
+		{Name: "__sw_distinct_0", OrgName: "amount", Type: result.TypeLong},
+	}
+	specs := []plan.AggregateSpec{
+		{Func: plan.AggCount, Column: 2, Output: 1, Distinct: true},
+	}
+	streams := []result.Stream{
+		&scriptStream{fields: fields, rows: []result.Row{
+			{[]byte("1"), []byte("1"), []byte("10")},
+			{[]byte("1"), []byte("1"), []byte("20")},
+			{[]byte("2"), []byte("1"), []byte("10")},
+		}},
+		&scriptStream{fields: fields, rows: []result.Row{
+			{[]byte("1"), []byte("1"), []byte("20")},
+			{[]byte("2"), []byte("1"), []byte("10")},
+		}},
+	}
+	s, err := merge.Merge(streams, fields, plan.MergeSpec{
+		GroupBy:    []int{0},
+		Aggregates: specs,
+		Output:     []int{0, 1},
+		Having:     []plan.HavingPredicate{{Column: 1, Op: plan.HavingGT, Value: "1"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"1", "2"}}, collectValues(t, s))
+}
+
 func TestGroup_ValidationErrors(t *testing.T) {
 	fields := groupFields()
 	var me *errs.MySQL
@@ -158,7 +223,7 @@ func TestGroup_ValidationErrors(t *testing.T) {
 		{[]int{9}, nil, []int{0}},
 		{[]int{0}, nil, []int{0, 9}},
 		{[]int{0}, []plan.AggregateSpec{{Func: plan.AggCount, Column: 0, Output: 9}}, []int{0}},
-		{[]int{0}, []plan.AggregateSpec{{Func: plan.AggCount, Column: 0, Output: 0, Distinct: true}}, []int{0}},
+		{[]int{0}, []plan.AggregateSpec{{Func: plan.AggMin, Column: 0, Output: 0, Distinct: true}}, []int{0}},
 		{[]int{0}, []plan.AggregateSpec{{Func: plan.AggregateFunc(99), Column: 0, Output: 0}}, []int{0}},
 		{[]int{0}, []plan.AggregateSpec{{Func: plan.AggAvg, Column: 1, CountColumn: 9, Output: 0}}, []int{0}},
 	}

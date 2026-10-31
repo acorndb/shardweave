@@ -59,14 +59,18 @@ func Group(
 	}
 
 	for _, spec := range specs {
-		if spec.Distinct {
-			return nil, errs.Unsupported("multi-shard aggregate DISTINCT is not supported")
-		}
 		if spec.Output < 0 || spec.Output >= len(output) {
 			return nil, errs.Unsupported("multi-shard aggregate output %d is out of range", spec.Output)
 		}
 		if spec.Column < 0 || spec.Column >= len(fields) {
 			return nil, errs.Unsupported("multi-shard aggregate column %d is out of range", spec.Column)
+		}
+		if spec.Distinct {
+			if _, err := newDistinctAccumulator(spec, fields[spec.Column]); err != nil {
+				return nil, err
+			}
+			covered[spec.Output] = true
+			continue
 		}
 		switch spec.Func {
 		case plan.AggCount:
@@ -222,28 +226,9 @@ func encodeRowKey(row result.Row, cols []int, kinds []valueKind) (string, error)
 		if col >= len(row) {
 			return "", fmt.Errorf("merge: key column %d out of row width %d", col, len(row))
 		}
-		v, err := parseOrderValue(row[col], kinds[i])
+		part, err := encodeValueKey(row[col], kinds[i])
 		if err != nil {
 			return "", fmt.Errorf("merge: key column %d: %w", col, err)
-		}
-		var part string
-		switch {
-		case v.null:
-			part = "n"
-		case kinds[i] == kindInt:
-			part = "i:" + strconv.FormatInt(v.i, 10)
-		case kinds[i] == kindUint:
-			part = "u:" + strconv.FormatUint(v.u, 10)
-		case kinds[i] == kindFloat:
-			f := v.f
-			if f == 0 {
-				f = 0 // normalize -0
-			}
-			part = "f:" + strconv.FormatUint(math.Float64bits(f), 16)
-		case kinds[i] == kindDecimal:
-			part = "d:" + v.r.RatString()
-		default:
-			part = "t:" + string(v.b)
 		}
 		b.WriteString(strconv.Itoa(len(part)))
 		b.WriteByte(':')
@@ -251,6 +236,33 @@ func encodeRowKey(row result.Row, cols []int, kinds []valueKind) (string, error)
 		b.WriteByte('|')
 	}
 	return b.String(), nil
+}
+
+// encodeValueKey builds the canonical key for one numeric/date value. String
+// collations are rejected before this function is reached.
+func encodeValueKey(value result.Value, kind valueKind) (string, error) {
+	v, err := parseOrderValue(value, kind)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case v.null:
+		return "n", nil
+	case kind == kindInt:
+		return "i:" + strconv.FormatInt(v.i, 10), nil
+	case kind == kindUint:
+		return "u:" + strconv.FormatUint(v.u, 10), nil
+	case kind == kindFloat:
+		f := v.f
+		if f == 0 {
+			f = 0 // normalize -0
+		}
+		return "f:" + strconv.FormatUint(math.Float64bits(f), 16), nil
+	case kind == kindDecimal:
+		return "d:" + v.r.RatString(), nil
+	default:
+		return "t:" + string(v.b), nil
+	}
 }
 
 func (g *groupStream) Close() error {
@@ -275,6 +287,7 @@ type groupState struct {
 	floats    []*floatSum
 	bests     []*bestValue
 	kinds     []valueKind
+	distincts []*distinctAccumulator
 }
 
 func newGroupState(outputLen, specLen int) *groupState {
@@ -286,6 +299,7 @@ func newGroupState(outputLen, specLen int) *groupState {
 		floats:    make([]*floatSum, specLen),
 		bests:     make([]*bestValue, specLen),
 		kinds:     make([]valueKind, specLen),
+		distincts: make([]*distinctAccumulator, specLen),
 	}
 }
 
@@ -295,6 +309,19 @@ func (s *groupState) add(row result.Row, specs []plan.AggregateSpec, fields []re
 			return fmt.Errorf("merge: aggregate column %d out of row width %d", spec.Column, len(row))
 		}
 		v := row[spec.Column]
+		if spec.Distinct {
+			if s.distincts[i] == nil {
+				d, err := newDistinctAccumulator(spec, fields[spec.Column])
+				if err != nil {
+					return err
+				}
+				s.distincts[i] = d
+			}
+			if err := s.distincts[i].add(v); err != nil {
+				return err
+			}
+			continue
+		}
 		switch spec.Func {
 		case plan.AggCount:
 			if v == nil {
@@ -382,6 +409,9 @@ func (s *groupState) add(row result.Row, specs []plan.AggregateSpec, fields []re
 }
 
 func (s *groupState) value(i int, spec plan.AggregateSpec, outField result.Field) (result.Value, error) {
+	if spec.Distinct {
+		return s.distincts[i].value(outField)
+	}
 	switch spec.Func {
 	case plan.AggCount:
 		return []byte(strconv.FormatUint(s.counts[i], 10)), nil

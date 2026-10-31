@@ -123,3 +123,52 @@ func TestSelect_RemoveHavingKeepsLabels(t *testing.T) {
 	got := res.Stmts[0].(*ast.SelectStmt)
 	require.Equal(t, "COUNT(*)", got.Fields.Fields[0].AsName.O)
 }
+
+func TestSelect_ExtraGroupBy(t *testing.T) {
+	sel := parseSelect(t, "SELECT COUNT(DISTINCT amount) FROM orders")
+	arg := sel.Fields.Fields[0].Expr.(*ast.AggregateFuncExpr).Args[0]
+	out, err := rewrite.Select(sel, rewrite.Spec{
+		ExtraFields:  []rewrite.ExtraField{{Expr: arg, Alias: "__sw_distinct_0"}},
+		ExtraGroupBy: []string{"__sw_distinct_0"},
+	})
+	require.NoError(t, err)
+	res, err := sqlparser.Parse(out)
+	require.NoError(t, err)
+	got := res.Stmts[0].(*ast.SelectStmt)
+	require.Len(t, got.Fields.Fields, 2)
+	require.NotNil(t, got.GroupBy)
+	require.Len(t, got.GroupBy.Items, 1)
+	groupCol, ok := got.GroupBy.Items[0].Expr.(*ast.ColumnNameExpr)
+	require.True(t, ok)
+	require.Equal(t, "__sw_distinct_0", groupCol.Name.Name.L)
+	require.Nil(t, sel.GroupBy, "caller AST must be restored")
+}
+
+func TestSelect_ExtraGroupByEmptyAlias(t *testing.T) {
+	sel := parseSelect(t, "SELECT COUNT(*) FROM orders")
+	_, err := rewrite.Select(sel, rewrite.Spec{ExtraGroupBy: []string{""}})
+	require.Error(t, err)
+	require.Len(t, sel.Fields.Fields, 1, "caller AST must be restored on error")
+	require.Nil(t, sel.GroupBy, "caller AST must be restored on error")
+}
+
+func TestSelect_ExtraGroupByKeepsExistingItems(t *testing.T) {
+	sel := parseSelect(t, "SELECT user_id, COUNT(DISTINCT amount) FROM orders GROUP BY user_id")
+	arg := sel.Fields.Fields[1].Expr.(*ast.AggregateFuncExpr).Args[0]
+	out, err := rewrite.Select(sel, rewrite.Spec{
+		ExtraFields:  []rewrite.ExtraField{{Expr: arg, Alias: "__sw_distinct_0"}},
+		ExtraGroupBy: []string{"__sw_distinct_0"},
+	})
+	require.NoError(t, err)
+	res, err := sqlparser.Parse(out)
+	require.NoError(t, err)
+	got := res.Stmts[0].(*ast.SelectStmt)
+	require.Len(t, got.GroupBy.Items, 2)
+	first, ok := got.GroupBy.Items[0].Expr.(*ast.ColumnNameExpr)
+	require.True(t, ok)
+	require.Equal(t, "user_id", first.Name.Name.L)
+	second, ok := got.GroupBy.Items[1].Expr.(*ast.ColumnNameExpr)
+	require.True(t, ok)
+	require.Equal(t, "__sw_distinct_0", second.Name.Name.L)
+	require.Len(t, sel.GroupBy.Items, 1, "caller AST must be restored")
+}

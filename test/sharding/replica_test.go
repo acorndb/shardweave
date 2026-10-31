@@ -116,9 +116,10 @@ func TestShardedReplicas(t *testing.T) {
 	require.NoError(t, conn.QueryRowContext(ctx, "SELECT AVG(amount) FROM orders").Scan(&avg))
 	require.Equal(t, 125.0, avg)
 
-	// Unsupported shapes stay explicit errors on a real topology.
-	assertReject(t, ctx, conn, "SELECT AVG(DISTINCT amount) FROM orders")
-	assertReject(t, ctx, conn, "SELECT COUNT(DISTINCT user_id) FROM orders")
+	// DISTINCT aggregates deduplicate values across replica reads.
+	requireRowValues(t, ctx, conn,
+		"SELECT COUNT(DISTINCT user_id), AVG(DISTINCT amount) FROM orders",
+		[][]string{{"2", "125.0000"}})
 	requireGroupRows(t, ctx, conn,
 		"SELECT user_id, COUNT(*) FROM orders GROUP BY user_id",
 		map[string][]string{"1": {"1"}, "2": {"1"}})

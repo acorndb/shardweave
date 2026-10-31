@@ -81,7 +81,9 @@ type fakeRouter struct {
 }
 
 func (f fakeRouter) Route(context.Context, *session.State, *sql.Statement) ([]route.Target, error) {
-	return f.targets, f.err
+	// Plan mutates Target.SQL during rewriting; return a copy so subtests do
+	// not observe rewritten SQL from earlier builds.
+	return append([]route.Target(nil), f.targets...), f.err
 }
 
 func TestBuilder_UnsupportedRejected(t *testing.T) {
@@ -330,9 +332,158 @@ func TestBuilder_MultiShard(t *testing.T) {
 		require.Equal(t, plan.AggMax, p.Merge.Aggregates[3].Func)
 	})
 
-	t.Run("aggregate_distinct_rejected", func(t *testing.T) {
+	t.Run("aggregate_count_distinct", func(t *testing.T) {
+		st := selectStmt(t, "SELECT COUNT(DISTINCT amount) FROM orders")
+		p, err := b.Build(context.Background(), session.NewState(), st)
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.AggregateSpec{
+			{Func: plan.AggCount, Column: 1, Output: 0, Distinct: true},
+		}, p.Merge.Aggregates)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			sel := res.Stmts[0].(*ast.SelectStmt)
+			require.Len(t, sel.Fields.Fields, 2, "DISTINCT argument is appended as a hidden column")
+			require.Equal(t, "__sw_distinct_0", sel.Fields.Fields[1].AsName.L)
+			require.NotNil(t, sel.GroupBy)
+			require.Len(t, sel.GroupBy.Items, 1)
+			groupCol, ok := sel.GroupBy.Items[0].Expr.(*ast.ColumnNameExpr)
+			require.True(t, ok)
+			require.Equal(t, "__sw_distinct_0", groupCol.Name.Name.L)
+		}
+		orig := st.AST.(*ast.SelectStmt)
+		require.Len(t, orig.Fields.Fields, 1, "caller AST must be restored")
+		require.Nil(t, orig.GroupBy, "caller AST must be restored")
+	})
+
+	t.Run("aggregate_distinct_mixed", func(t *testing.T) {
 		p, err := b.Build(context.Background(), session.NewState(),
-			selectStmt(t, "SELECT COUNT(DISTINCT user_id) FROM orders"))
+			selectStmt(t, "SELECT COUNT(*), COUNT(DISTINCT amount), SUM(DISTINCT price), AVG(DISTINCT amount) FROM orders"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.AggregateSpec{
+			{Func: plan.AggCount, Column: 0, Output: 0},
+			{Func: plan.AggCount, Column: 4, Output: 1, Distinct: true},
+			{Func: plan.AggSum, Column: 5, Output: 2, Distinct: true},
+			{Func: plan.AggAvg, Column: 6, Output: 3, Distinct: true},
+		}, p.Merge.Aggregates)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			sel := res.Stmts[0].(*ast.SelectStmt)
+			require.Len(t, sel.Fields.Fields, 7)
+			require.Len(t, sel.GroupBy.Items, 3)
+		}
+	})
+
+	t.Run("group_by_rollup_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id WITH ROLLUP"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Equal(t, uint16(1235), p.Reject.Number)
+		require.Contains(t, p.Reject.Message, "ROLLUP")
+	})
+
+	t.Run("group_by_aggregate_alias_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT COUNT(*) AS c FROM orders GROUP BY c"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Equal(t, uint16(1235), p.Reject.Number)
+		require.Contains(t, p.Reject.Message, "GROUP BY")
+	})
+
+	t.Run("aggregate_avg_and_distinct_positions", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT AVG(amount), COUNT(DISTINCT price) FROM orders"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.AggregateSpec{
+			{Func: plan.AggAvg, Column: 2, CountColumn: 3, Output: 0},
+			{Func: plan.AggCount, Column: 4, Output: 1, Distinct: true},
+		}, p.Merge.Aggregates)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			sel := res.Stmts[0].(*ast.SelectStmt)
+			require.Len(t, sel.Fields.Fields, 5, "AVG hidden columns precede the DISTINCT argument")
+			require.Len(t, sel.GroupBy.Items, 1)
+		}
+	})
+
+	t.Run("aggregate_min_distinct_is_plain_min", func(t *testing.T) {
+		st := selectStmt(t, "SELECT MIN(DISTINCT amount) FROM orders")
+		p, err := b.Build(context.Background(), session.NewState(), st)
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.AggregateSpec{
+			{Func: plan.AggMin, Column: 0, Output: 0},
+		}, p.Merge.Aggregates)
+		for _, target := range p.Targets {
+			require.Empty(t, target.SQL, "MIN(DISTINCT) needs no rewrite")
+		}
+	})
+
+	t.Run("group_by_distinct", func(t *testing.T) {
+		st := selectStmt(t, "SELECT user_id, COUNT(DISTINCT amount), SUM(DISTINCT price) FROM orders GROUP BY user_id")
+		p, err := b.Build(context.Background(), session.NewState(), st)
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []int{0}, p.Merge.GroupBy)
+		require.Equal(t, []int{0, 1, 2}, p.Merge.Output)
+		require.Equal(t, []plan.AggregateSpec{
+			{Func: plan.AggCount, Column: 3, Output: 1, Distinct: true},
+			{Func: plan.AggSum, Column: 4, Output: 2, Distinct: true},
+		}, p.Merge.Aggregates)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			sel := res.Stmts[0].(*ast.SelectStmt)
+			require.Len(t, sel.Fields.Fields, 5)
+			require.Len(t, sel.GroupBy.Items, 3, "group columns plus DISTINCT arguments")
+			require.Equal(t, "__sw_distinct_0", sel.Fields.Fields[3].AsName.L)
+			require.Equal(t, "__sw_distinct_1", sel.Fields.Fields[4].AsName.L)
+		}
+	})
+
+	t.Run("group_by_distinct_having_order_limit", func(t *testing.T) {
+		st := selectStmt(t, "SELECT user_id, COUNT(DISTINCT amount) AS c FROM orders GROUP BY user_id HAVING c > 1 ORDER BY c DESC LIMIT 2")
+		p, err := b.Build(context.Background(), session.NewState(), st)
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.HavingPredicate{{Column: 1, Op: plan.HavingGT, Value: "1"}}, p.Merge.Having)
+		require.Equal(t, []plan.OrderKey{{Kind: plan.OrderByPosition, Column: 1, Desc: true}}, p.Merge.OrderBy)
+		require.NotNil(t, p.Merge.Limit)
+		require.Equal(t, int64(2), p.Merge.Limit.Count)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			sel := res.Stmts[0].(*ast.SelectStmt)
+			require.Nil(t, sel.Having, "HAVING is applied after the global merge")
+			require.Nil(t, sel.Limit, "LIMIT is applied after the global merge")
+			require.Len(t, sel.GroupBy.Items, 2)
+		}
+	})
+
+	t.Run("aggregate_distinct_limit", func(t *testing.T) {
+		st := selectStmt(t, "SELECT COUNT(DISTINCT amount) FROM orders LIMIT 1")
+		p, err := b.Build(context.Background(), session.NewState(), st)
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.NotNil(t, p.Merge.Limit)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			require.Nil(t, res.Stmts[0].(*ast.SelectStmt).Limit,
+				"per-shard LIMIT would truncate distinct values")
+		}
+	})
+
+	t.Run("aggregate_distinct_multi_arg_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT COUNT(DISTINCT amount, price) FROM orders"))
 		require.NoError(t, err)
 		require.Equal(t, plan.Reject, p.Kind)
 		require.Equal(t, uint16(1235), p.Reject.Number)
@@ -538,13 +689,22 @@ func TestBuilder_MultiShard(t *testing.T) {
 		require.Contains(t, p.Reject.Message, "ORDER BY")
 	})
 
-	t.Run("aggregate_avg_distinct_rejected", func(t *testing.T) {
+	t.Run("aggregate_avg_distinct", func(t *testing.T) {
 		p, err := b.Build(context.Background(), session.NewState(),
 			selectStmt(t, "SELECT AVG(DISTINCT amount) FROM orders"))
 		require.NoError(t, err)
-		require.Equal(t, plan.Reject, p.Kind)
-		require.Equal(t, uint16(1235), p.Reject.Number)
-		require.Contains(t, p.Reject.Message, "DISTINCT")
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.AggregateSpec{
+			{Func: plan.AggAvg, Column: 1, Output: 0, Distinct: true},
+		}, p.Merge.Aggregates)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			sel := res.Stmts[0].(*ast.SelectStmt)
+			require.Len(t, sel.Fields.Fields, 2, "DISTINCT AVG needs only the raw argument")
+			require.Equal(t, "__sw_distinct_0", sel.Fields.Fields[1].AsName.L)
+			require.Len(t, sel.GroupBy.Items, 1)
+		}
 	})
 
 	t.Run("aggregate_mixed_rejected", func(t *testing.T) {

@@ -122,14 +122,14 @@
 | 能力 | P0 | 说明 |
 |---|---|---|
 | 单分片事务（`BEGIN..COMMIT`） | 是 | 事务内所有语句必须同片；否则 Reject |
-| 跨片事务 | 是（Reject） | P0 不做 2PC/Saga |
+| 跨片事务 | 是（Reject） | 属于分布式事务，短期不规划（§6.3） |
 | `SAVEPOINT` | 是 | 单分片内透传 |
 | 会话变量/临时表/锁 | 是（单分片 pin） | 与 rwsplit 的 reserved 逻辑一致 |
 | prepared 单分片 | 是 | 需要 `StmtTable`；prepare 发到目标片 |
 | prepared 多分片 | 是（Reject） | P1 再评估广播 prepare |
 | `LAST_INSERT_ID` 单分片 | 是 | 沿用现有 OK 元数据 |
-| `LAST_INSERT_ID` 多分片写 | 是（Reject） | 需要全局序列，P2 |
-| `ROW_COUNT` 多分片写 | 是（Reject） | 多片写 P0 直接拒绝；P1 汇总 affected |
+| `LAST_INSERT_ID` 多分片写 | 是（Reject） | 不做多片写；需要全局序列，短期不规划 |
+| `ROW_COUNT` 多分片写 | 是（Reject） | 不做多片写；不汇总 affected |
 | `FOUND_ROWS` | 是（Reject） | 与单机决策一致 |
 
 ### 2.6 全局 ID / DDL / 运维
@@ -137,7 +137,7 @@
 | 能力 | P0 | 说明 |
 |---|---|---|
 | 本地 auto_increment | 是 | 单分片 INSERT 可用；跨片不保证全局唯一 |
-| 全局序列 / Snowflake | 否 | P2；多分片 INSERT 前必须解决 |
+| 全局序列 / Snowflake | 否 | 只服务多分片写，短期不规划 |
 | DDL 广播 | 否 | 代理不广播；DDL 由外部迁移工具按片执行，proxy 显式 Reject |
 | `SHOW TABLES`/`SHOW CREATE` 合并 | 否 | P1；P0 可拒绝或只查一片 |
 | 在线扩缩容 | 否 | 非目标 |
@@ -365,11 +365,13 @@ route → []Target
 - 支持 `ORDER BY` 列名/位置/表达式（多列、ASC/DESC），由 k 路堆归并；
   未投影的列/表达式通过隐藏列下推，`Output` 投影去掉隐藏列；字符串/二进制/
   JSON 类型 1235；`SELECT *` 搭配表达式排序 1235；
-- 支持 `COUNT/SUM/MIN/MAX/AVG`（无 GROUP BY）、数值/日期列 GROUP BY、
+- 支持 `COUNT/SUM/MIN/MAX/AVG`（无 GROUP BY）、跨片聚合 DISTINCT
+  （`COUNT/SUM/AVG(DISTINCT expr)`，单参数）、数值/日期列 GROUP BY、
   数值/日期列 DISTINCT，以及其按已选列的 ORDER BY/LIMIT；
 - 支持 GROUP BY 的 AND 数值 HAVING（分组列/聚合别名/匹配聚合表达式）；
-- 不支持窗口函数、聚合 DISTINCT、HAVING OR/字符串、聚合表达式排序、
-  INTO、锁定读、SQL_CALC_FOUND_ROWS；字符串列分组/去重/排序仍 1235；
+- 不支持窗口函数、HAVING OR/字符串、聚合表达式排序、INTO、锁定读、
+  SQL_CALC_FOUND_ROWS；字符串列分组/去重/排序/聚合 DISTINCT、
+  `COUNT(DISTINCT a, b)` 多参数仍 1235；
 - `LIMIT n` / `LIMIT n OFFSET m`：OFFSET>0 时 per-shard 改写成 `LIMIT m+n`，
   归并后由 `Limit` 截断/跳过；
 - lease 顺序 acquire（session map 不并发写），随后各 target 的
@@ -382,12 +384,20 @@ route → []Target
   （与后端断连一致），后续 merge/error 设计再细化；
 - 结果行顺序为 target 顺序，不保证与单库 `ORDER BY` 或无排序时一致。
 
-### 6.3 多分片写（P1/P2）
+### 6.3 多分片写与跨片事务（不做）
 
-- P0：多分片 `INSERT/UPDATE/DELETE` 一律 Reject；
-- P1：仅在显式允许且无事务时，逐片执行并汇总 affected rows；
-  部分失败必须报错，不能返回 OK；
-- P2：跨片事务（2PC/Saga）另立设计。
+**2026-10-31 决策：多分片写/事务属于分布式事务，短期不规划、不排期、不实现。**
+这不是"暂未实现"，而是明确的能力边界：不做 2PC/Saga/TCC/outbox，也不在配置/
+接口中预留"写了但不生效"的开关。
+
+- 写语句（`INSERT/UPDATE/DELETE`）必须由完整分片键路由到**单个** Slice；
+  跨片（含跨片 `IN` 展开后多于 1 片）一律 1235，绝不逐片执行后拼 OK；
+- 事务 / `autocommit=0` / reserved / prepared pin 会话中的多分片语句一律 1235；
+  单分片事务保持现有透传语义；
+- 多分片写不汇总 affected rows，不维护 `LAST_INSERT_ID`/`ROW_COUNT`；
+- DDL 不通过代理广播，由外部变更工具按片执行（§6.4）；
+- 若未来业务确实需要跨片写，必须单独立项，先确定全局 ID、失败/补偿语义、
+  幂等、可观测性与运维回滚方案，再谈 2PC/Saga；当前路线图不包含这些工作。
 
 ### 6.4 DDL 策略（2026-10-31 修订）
 
@@ -409,7 +419,10 @@ route → []Target
 | **S0 执行/结果骨架** | `execute` 支持 `[]Target`；`LeaseSet`；`result.Decoder/Writer`；`StmtTable` 骨架；AST 上数据面；N=1 行为不变 | 无变化 | 现有单测/差分全绿；N=2 fake target 用例 |
 | **S1 P0 单分片** | `route/shard`（hash_mod + 等值/IN）；`SingleShard/Reject`；`EXPLAIN ROUTE`；单分片 DQL prepared；DDL 外部迁移（proxy 拒绝）；配置打开 `mode=sharding` | 单分片 SQL 可用；跨片/无键明确 Reject | 路由表驱动单测；多 Slice e2e；无静默错结果 |
 | **S2 多分片只读** | `MultiShard` dispatch；identity/aggregate/order/limit merge；结果编解码；`LIMIT` 下推 | 跨片 SELECT 可用 | 分片 vs 单库 metamorphic 全绿；内存上限 |
-| **S3 高级** | GROUP BY/HAVING/DISTINCT/UNION；全局表；全局序列；多分片 prepared；跨片 JOIN；2PC/Saga；在线 DDL | 逐步开放 | 每项单独设计+测试，不一次性开 |
+| **S3 高级** | GROUP BY/HAVING/DISTINCT/UNION；全局表；多分片 prepared；跨片 JOIN；只读性能/内存预算 | 逐步开放 | 每项单独设计+测试，不一次性开 |
+
+> 多分片写、跨片事务、2PC/Saga 不在 S3 及后续路线图中（§6.3）；全局序列仅服务
+> 多分片写，同样不排期。
 
 映射到现有文档：S1 ≈ `module-map` 的 P3，S2/S3 ≈ P4 的拆分。
 
@@ -428,7 +441,7 @@ route → []Target
 | **A6 测试拓扑** | `test/harness` 多 Slice + 单库 oracle | 无 | 能启动 N Slice + oracle；`-short` Skip |
 | **B1 单分片 sharding** | `route/shard`（等值/同片 IN）；`SingleShard/Reject`；`EXPLAIN ROUTE`；单分片 DQL prepared；打开 `mode=sharding`；DDL 外部迁移 | 新功能 | 单分片 e2e；无键/跨片 Reject |
 | **B2 多分片只读** | rewrite 下推、merge operator、并发 dispatch、结果编码 | 新功能 | 分片 vs 单库 metamorphic；内存上限 |
-| **B3 高级** | GROUP BY/DISTINCT/UNION、全局表/序列、多分片 prepared、跨片 JOIN、2PC | 逐步 | 每项单独设计 |
+| **B3 高级** | GROUP BY/DISTINCT/UNION、全局表、多分片 prepared、跨片 JOIN、只读性能 | 逐步 | 每项单独设计 |
 
 为什么配置/池先做：
 
@@ -530,8 +543,8 @@ route → []Target
   NULL（COUNT 为 0）；
 - 新增 `pkg/sql/rewrite` 承接 per-shard SQL 改写（LIMIT OFFSET 已迁入）；
   `pkg/merge.Merge` 统一装配 Concat/Ordered/Aggregate/Group/Limit，execute 不再选算子；
-- 仍 1235：`COUNT(DISTINCT ...)`、聚合与其他投影混合、聚合 + ORDER BY、
-  HAVING/DISTINCT。
+- 仍 1235：聚合与其他投影混合、聚合 + ORDER BY、HAVING/DISTINCT；
+  聚合 DISTINCT 由 B1.11 补齐。
 
 已落地（B1.7，GROUP BY，2026-10-31）：
 
@@ -547,7 +560,7 @@ route → []Target
 - `SELECT DISTINCT 列/表达式` 跨片去重；各片先 DISTINCT，归并层按规范化行 key
   去重，输出首次出现顺序；
 - 数值/日期键可用；字符串/二进制列 1235（collation 权重表未引入）；
-- `DISTINCT + ORDER BY/LIMIT` 已支持；聚合 DISTINCT 仍 1235；
+- `DISTINCT + ORDER BY/LIMIT` 已支持；聚合 DISTINCT 当时仍 1235（B1.11 补齐）；
 - oracle 覆盖单列/多列 DISTINCT 与单库一致。
 
 已落地（B1.9，GROUP BY/DISTINCT 排序与 LIMIT，2026-10-31）：
@@ -567,6 +580,20 @@ route → []Target
   分组后执行；
 - OR、字符串字面量、未选聚合、无 GROUP BY 的 HAVING 仍 1235；
 - oracle/e2e 覆盖别名、聚合表达式、AND、跨片 group 过滤。
+
+已落地（B1.11，聚合 DISTINCT，2026-10-31）：
+
+- `COUNT/SUM/AVG(DISTINCT expr)` 支持无 GROUP BY 与 GROUP BY 两种形态；
+  每片把 DISTINCT 参数投影为隐藏列并加入 per-shard GROUP BY，归并层按
+  规范化 key 去重后计算 COUNT/SUM/AVG；
+- 与普通聚合混用（如 `COUNT(*), COUNT(DISTINCT amount)`）正确：per-shard
+  普通聚合按 DISTINCT 参数组合分组，归并时求和/取极值；
+- per-shard LIMIT/HAVING 在聚合 DISTINCT 场景移除，全局归并后再应用；
+- `MIN/MAX(DISTINCT x)` 语义等价于 `MIN/MAX(x)`，按普通聚合归并；
+- 字符串/二进制 DISTINCT 参数、`COUNT(DISTINCT a, b)` 多参数、聚合 + ORDER BY
+  仍 1235；DISTINCT 集合内存暂无上限（与 GROUP BY/DISTINCT 一致）；
+- 4 Slice + single-DB oracle 与分片 e2e/复制拓扑覆盖跨片重复值、NULL、
+  DECIMAL/UNSIGNED/DOUBLE、GROUP BY/HAVING/ORDER BY/LIMIT 组合。
 
 未落地（B1.2）：
 
@@ -594,7 +621,8 @@ DML/DDL 后置：
 | **D7** | execute 并发 dispatch + 结果写回；已落地：lease 顺序 acquire + align/exec/header 并发 | N 片 e2e；失败清理 |
 | **D8** | DQL corpus/randgen/metamorphic | CI/nightly |
 
-DML 事务、prepared 写、全局序列、跨片 JOIN 后置；DDL 不进代理。
+prepared 写、跨片 JOIN 后置；多分片写/跨片事务/全局序列不做（§6.3）；
+DDL 不进代理。
 
 ## 8. P0 明确范围
 
@@ -644,7 +672,7 @@ B1.6（已落地，无 GROUP BY 聚合）：
 
 - `COUNT/SUM/MIN/MAX/AVG` 多分片归并；`pkg/merge.Aggregate`；
 - AVG 注入隐藏 SUM/COUNT 列，保留原输出列名/scale；
-- 聚合 DISTINCT、混合投影、聚合 + ORDER BY 仍 1235。
+- 聚合 DISTINCT、混合投影、聚合 + ORDER BY 当时仍 1235（聚合 DISTINCT 见 B1.11）。
 
 B1.7（已落地，GROUP BY）：
 
@@ -655,7 +683,7 @@ B1.7（已落地，GROUP BY）：
 B1.8（已落地，DISTINCT）：
 
 - 数值/日期列的跨片 DISTINCT；`pkg/merge.Distinct` 规范化行 key 去重；
-- 字符串/二进制列、聚合 DISTINCT 仍 1235。
+- 字符串/二进制列仍 1235；聚合 DISTINCT 当时仍 1235（B1.11 补齐）。
 
 B1.9（已落地，GROUP BY/DISTINCT 排序与 LIMIT）：
 
@@ -673,12 +701,15 @@ DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代�
 
 ### 8.2 Reject（当前）
 
-- 多分片写（INSERT/UPDATE/DELETE）；跨片 `IN` 的写语句；
+- 多分片写（INSERT/UPDATE/DELETE）；跨片 `IN` 的写语句；写语句无完整分片键；
+  多分片写/事务属于分布式事务，短期不提供支持（§6.3）；
 - 分片键字面量类型与算法值域不匹配（如 `hash_mod` 下的 `'abc'`、
   `hash_mod_str` 下的 `1`）；
 - 分片表上需要归并的 SELECT（HAVING/窗口/INTO/锁定读/SQL_CALC_FOUND_ROWS）；
-  子查询；聚合 DISTINCT、聚合与非聚合投影混合、聚合 + ORDER BY、聚合表达式
-  排序、HAVING OR/字符串/未选聚合；字符串/二进制 GROUP BY/DISTINCT/排序 1235；
+  子查询；聚合与非聚合投影混合、聚合 + ORDER BY、聚合表达式排序、
+  HAVING OR/字符串/未选聚合；字符串/二进制 GROUP BY/DISTINCT/聚合 DISTINCT/
+  排序、`COUNT(DISTINCT a, b)` 多参数、GROUP BY WITH ROLLUP、GROUP BY 引用
+  聚合输出列均 1235；
 - 事务 / `autocommit=0` / reserved / prepared pin 会话中的多分片语句；
 - 跨片/多表 JOIN、schema 限定表；
 - prepared 参数化分片键、prepared DML、prepared 多分片；
@@ -691,6 +722,8 @@ DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代�
 
 ### 8.3 非目标（整个 P0/P1）
 
+- 多分片写与跨片事务（含 2PC/Saga/TCC/outbox）；写必须单分片执行；
+- 全局序列/全局 ID（仅服务多分片写）；
 - 在线扩缩容、数据迁移、双写；
 - 跨片 JOIN 优化器；
 - 全局一致性读；
