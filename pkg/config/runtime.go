@@ -44,6 +44,12 @@ func (rt *Runtime) Apply(next *Config) error {
 	if !next.Backend.SameTopology(cur.Backend) {
 		return fmt.Errorf("config: backend change requires restart")
 	}
+	if next.Server != cur.Server {
+		return fmt.Errorf("config: server settings change requires restart")
+	}
+	if next.Pool != cur.Pool {
+		return fmt.Errorf("config: pool settings change requires restart")
+	}
 	rt.cur.Store(next.Clone())
 	return nil
 }

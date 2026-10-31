@@ -16,7 +16,7 @@
 
 | 模块 | 成熟度判断 |
 |---|---|
-| 协议帧 / packet | 可用（缺上限/超时/压缩） |
+| 协议帧 / packet | 可用；`max_allowed_packet` / read-write timeout 已补（本轮）；缺压缩 |
 | 认证 / TLS | **原型**（仅 native；无 TLS） |
 | 会话状态 | **原型**（字段很少；变量未跟踪） |
 | 后端连接池 | 可用透传 + 健康检查 / idle / lifetime / 预热（本轮）；缺查询失败重试/换库/指标 |
@@ -81,21 +81,23 @@
 | `COM_FIELD_LIST` / `SEND_LONG_DATA` 路由分支不可达 | `pkg/route/source/pick.go:16-20` vs `proxy` 默认 ERR | 代码与行为不一致；驱动兼容性差 |
 | 连接 ID 固定 1、server status 固定 0x0002 | `server/conn.go:54,63` | 客户端诊断/事务状态不可信 |
 | PING 返回固定 autocommit status | `pkg/proxy/session.go:78-80` | 事务中 PING 状态错误 |
-| 包大小无上限 | `pkg/mysql/packet/packet.go:40-73` | 单连接可发超大/连续包造成内存压力 |
+| 包大小无上限 | 已补 `max_allowed_packet`（逻辑包上限，默认 64 MiB） | 前端超限回 1153；后端响应超限断开 |
 | 无 LOCAL INFILE 处理 | `pkg/mysql/forward.go` 返回错误 | 客户端 LOAD DATA LOCAL 场景断连 |
 
 ### 3.3 超时、连接上限与生命周期
 
+> 2026-10-31 `feat/pool-hardening` 已补：前端/后端 read/write timeout、
+> 后端 dial timeout、`max_allowed_packet`。仍缺：查询总超时、最大连接数/限流、
+> 优雅 drain（`termination_drain` 仍未接线）。
+
 | 缺口 | 证据 | 影响 |
 |---|---|---|
-| 前端读无 deadline，ctx 只在循环顶检查 | `pkg/proxy/session.go:42-52` | 空闲/半开连接永久占 goroutine；查询中无法取消 |
-| 后端读无 deadline，`Align/Exec/Reset` 忽略 ctx | `pkg/backend/conn.go` | 后端 hang 会永久阻塞客户端 |
-| 无查询超时 / `MAX_EXECUTION_TIME` | `pkg/execute/pipeline.go:155-172` | 慢查询不可控 |
+| 查询总超时 / `MAX_EXECUTION_TIME` | `pkg/execute/pipeline.go:155-172` | 慢查询仍不可控（read timeout 只是单次 I/O） |
 | 无最大连接数 / 每用户/IP 限制 | `pkg/server/server.go:143-157` | 连接洪泛 DoS |
 | 无优雅退出/drain | `pkg/server/server.go:181-195` | `Close` 取消 ctx 但阻塞中的 session 不会退出；`termination_drain` 未使用 |
 | 无 accept 退避 | `server.go:145-153` | accept 错误时忙循环 |
-| `termination_drain` 配置未生效 | `pkg/config/config.go:22` 仅解析 | 假配置项 |
-| `pool.capacity` / `pool.idle_timeout` | 已在 `feat/pool-hardening` 实现预热与 idle reaper | 仍需池指标与失败日志 |
+| `termination_drain` 配置未生效 | `pkg/config/config.go` 仅解析 | 假配置项 |
+| `pool.capacity` / `pool.idle_timeout` | 已实现预热与 idle reaper | 仍需池指标与失败日志 |
 
 ### 3.4 连接池健康与故障处理
 
@@ -244,8 +246,8 @@
 1. MySQL 8 默认 `caching_sha2_password` 客户端无法登录。
 2. 无前端/后端 TLS。
 3. 客户端未协商 `CLIENT_DEPRECATE_EOF` 时结果集可能错帧。
-4. 前端/后端都没有读超时，慢/死连接会永久占资源。
-5. 无最大连接数/包大小/查询大小限制，存在 DoS 风险。
+4. 查询/后端仍无总超时；read/write timeout 只是单次 I/O，慢查询/半开连接仍可能长期占用。
+5. 已有 `max_allowed_packet` 逻辑包上限，但仍无最大连接数/查询大小/每用户限流。
 6. 池已补健康检查/idle/lifetime/预热，但查询失败不重试、不换库，池也还没有指标。
 7. 优雅退出/drain 未实现，`termination_drain` 未生效。
 8. `COM_STMT_SEND_LONG_DATA`、`COM_CHANGE_USER` 等常用命令不支持。

@@ -8,6 +8,11 @@ users:
   - name: root
     password: "root"
 
+server:
+  read_timeout: 30s
+  write_timeout: 30s
+  max_allowed_packet: 67108864  # 64 MiB
+
 backend:
   mode: single
   slices:
@@ -39,6 +44,9 @@ pool:
   max_lifetime: 1h
   health_check_interval: 30s
   get_timeout: 2s
+  dial_timeout: 5s
+  read_timeout: 30s
+  write_timeout: 30s
 
 log:
   level: info

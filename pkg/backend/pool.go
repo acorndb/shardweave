@@ -20,6 +20,10 @@ type PoolConfig struct {
 	MaxLifetime         time.Duration // close connections older than this (0 = unlimited)
 	HealthCheckInterval time.Duration // ping idle conns older than this (0 = default 30s; <0 disables)
 	GetTimeout          time.Duration // acquire / ping / reset timeout
+	DialTimeout         time.Duration // backend TCP + handshake timeout
+	ReadTimeout         time.Duration // backend per-read I/O timeout
+	WriteTimeout        time.Duration // backend per-write I/O timeout
+	MaxAllowedPacket    int           // backend logical packet limit (0 = default 64 MiB)
 }
 
 type idleConn struct {

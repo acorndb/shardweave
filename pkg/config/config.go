@@ -16,10 +16,18 @@ import (
 type Config struct {
 	Listen           string        `yaml:"listen"`
 	Users            []User        `yaml:"users"`
+	Server           Server        `yaml:"server"`
 	Backend          BackendConfig `yaml:"backend"`
 	Pool             Pool          `yaml:"pool"`
 	Log              Log           `yaml:"log"`
 	TerminationDrain time.Duration `yaml:"termination_drain"`
+}
+
+// Server holds frontend I/O limits and instance-wide packet limit.
+type Server struct {
+	ReadTimeout      time.Duration `yaml:"read_timeout"`
+	WriteTimeout     time.Duration `yaml:"write_timeout"`
+	MaxAllowedPacket int           `yaml:"max_allowed_packet"` // bytes; 0 = 64 MiB
 }
 
 // User is a proxy frontend credential.
@@ -73,6 +81,9 @@ type Pool struct {
 	MaxLifetime         time.Duration `yaml:"max_lifetime"`
 	HealthCheckInterval time.Duration `yaml:"health_check_interval"`
 	GetTimeout          time.Duration `yaml:"get_timeout"`
+	DialTimeout         time.Duration `yaml:"dial_timeout"`
+	ReadTimeout         time.Duration `yaml:"read_timeout"`
+	WriteTimeout        time.Duration `yaml:"write_timeout"`
 }
 
 // Log holds process logging settings.
@@ -111,6 +122,9 @@ func Validate(cfg *Config) error {
 	}
 	if len(cfg.Users) == 0 {
 		return fmt.Errorf("config: users is required")
+	}
+	if cfg.Server.MaxAllowedPacket < 0 {
+		return fmt.Errorf("config: server.max_allowed_packet must be >= 0")
 	}
 	for i, u := range cfg.Users {
 		if u.Name == "" {

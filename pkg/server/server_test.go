@@ -95,6 +95,9 @@ func TestToPoolConfig(t *testing.T) {
 		MaxLifetime:         time.Hour,
 		HealthCheckInterval: 30 * time.Second,
 		GetTimeout:          2 * time.Second,
+		DialTimeout:         5 * time.Second,
+		ReadTimeout:         15 * time.Second,
+		WriteTimeout:        16 * time.Second,
 	})
 	require.Equal(t, backend.PoolConfig{
 		Capacity:            1,
@@ -104,6 +107,9 @@ func TestToPoolConfig(t *testing.T) {
 		MaxLifetime:         time.Hour,
 		HealthCheckInterval: 30 * time.Second,
 		GetTimeout:          2 * time.Second,
+		DialTimeout:         5 * time.Second,
+		ReadTimeout:         15 * time.Second,
+		WriteTimeout:        16 * time.Second,
 	}, got)
 }
 

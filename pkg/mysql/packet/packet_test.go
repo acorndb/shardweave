@@ -4,6 +4,7 @@ import (
 	"io"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/acorndb/prism/pkg/mysql/packet"
 	"github.com/stretchr/testify/require"
@@ -95,4 +96,82 @@ func TestConn_WritePacketTooShort(t *testing.T) {
 	t.Cleanup(func() { _ = c1.Close(); _ = c2.Close() })
 	w := packet.NewConn(c1)
 	require.Error(t, w.WritePacket([]byte{1, 2, 3}))
+}
+
+func TestConn_MaxAllowedPacketWrite(t *testing.T) {
+	c1, c2 := net.Pipe()
+	t.Cleanup(func() { _ = c1.Close(); _ = c2.Close() })
+	w := packet.NewConn(c1)
+	w.SetMaxAllowedPacket(4)
+
+	buf := make([]byte, 4+5)
+	copy(buf[4:], []byte("12345"))
+	err := w.WritePacket(buf)
+	require.ErrorIs(t, err, packet.ErrPacketTooLarge)
+}
+
+func TestConn_MaxAllowedPacketRead(t *testing.T) {
+	c1, c2 := net.Pipe()
+	t.Cleanup(func() { _ = c1.Close(); _ = c2.Close() })
+	w := packet.NewConn(c1)
+	r := packet.NewConn(c2)
+	r.SetMaxAllowedPacket(4)
+
+	errCh := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 4+5)
+		copy(buf[4:], []byte("12345"))
+		errCh <- w.WritePacket(buf)
+	}()
+	_, err := r.ReadPacket()
+	require.ErrorIs(t, err, packet.ErrPacketTooLarge)
+}
+
+func TestConn_MaxAllowedPacketBoundary(t *testing.T) {
+	c1, c2 := net.Pipe()
+	t.Cleanup(func() { _ = c1.Close(); _ = c2.Close() })
+	w := packet.NewConn(c1)
+	r := packet.NewConn(c2)
+	w.SetMaxAllowedPacket(5)
+	r.SetMaxAllowedPacket(5)
+
+	payload := []byte("12345")
+	buf := make([]byte, 4+len(payload))
+	copy(buf[4:], payload)
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.WritePacket(buf) }()
+
+	got, err := r.ReadPacket()
+	require.NoError(t, err)
+	require.Equal(t, payload, got)
+	require.NoError(t, <-errCh)
+}
+
+func TestConn_DefaultMaxAllowedPacket(t *testing.T) {
+	c1, c2 := net.Pipe()
+	t.Cleanup(func() { _ = c1.Close(); _ = c2.Close() })
+	c := packet.NewConn(c1)
+	require.Equal(t, packet.DefaultMaxAllowedPacket, c.MaxAllowedPacket())
+	c.SetMaxAllowedPacket(0)
+	require.Equal(t, packet.DefaultMaxAllowedPacket, c.MaxAllowedPacket())
+}
+
+func TestConn_ReadTimeout(t *testing.T) {
+	c1, c2 := net.Pipe()
+	t.Cleanup(func() { _ = c1.Close(); _ = c2.Close() })
+	r := packet.NewConn(c1)
+	r.SetReadTimeout(10 * time.Millisecond)
+
+	_, err := r.ReadPacket()
+	require.Error(t, err)
+}
+
+func TestConn_WriteTimeout(t *testing.T) {
+	c1, c2 := net.Pipe()
+	t.Cleanup(func() { _ = c1.Close(); _ = c2.Close() })
+	w := packet.NewConn(c1)
+	w.SetWriteTimeout(10 * time.Millisecond)
+
+	buf := make([]byte, 4+8)
+	require.Error(t, w.WritePacket(buf))
 }

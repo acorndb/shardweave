@@ -43,19 +43,44 @@ type MySQLConn struct {
 
 var _ Conn = (*MySQLConn)(nil)
 
+// DialOptions controls backend connection timeouts and packet limits.
+type DialOptions struct {
+	DialTimeout      time.Duration
+	ReadTimeout      time.Duration
+	WriteTimeout     time.Duration
+	MaxAllowedPacket int
+}
+
 // DialMySQL dials addr and completes a native-password handshake.
 func DialMySQL(ctx context.Context, addr, user, password, database string) (*MySQLConn, error) {
-	d := net.Dialer{Timeout: 5 * time.Second}
+	return DialMySQLWithOptions(ctx, addr, user, password, database, DialOptions{})
+}
+
+// DialMySQLWithOptions is DialMySQL with explicit timeouts and packet limit.
+func DialMySQLWithOptions(
+	ctx context.Context, addr, user, password, database string, opts DialOptions,
+) (*MySQLConn, error) {
+	dialTimeout := 5 * time.Second
+	if opts.DialTimeout > 0 {
+		dialTimeout = opts.DialTimeout
+	}
+	d := net.Dialer{Timeout: dialTimeout}
 	raw, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
+	_ = raw.SetDeadline(time.Now().Add(dialTimeout))
 	c, err := client.Dial(raw, user, password, database)
 	if err != nil {
 		_ = raw.Close()
 		return nil, err
 	}
-	return &MySQLConn{pc: c.PacketConn(), database: database}, nil
+	_ = raw.SetDeadline(time.Time{})
+	pc := c.PacketConn()
+	pc.SetReadTimeout(opts.ReadTimeout)
+	pc.SetWriteTimeout(opts.WriteTimeout)
+	pc.SetMaxAllowedPacket(opts.MaxAllowedPacket)
+	return &MySQLConn{pc: pc, database: database}, nil
 }
 
 // Packet returns the framed packet connection.

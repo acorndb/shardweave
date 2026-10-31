@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/acorndb/prism/pkg/mysql"
 	"github.com/acorndb/prism/pkg/mysql/auth"
@@ -14,6 +15,13 @@ import (
 // UserProvider looks up plaintext passwords for handshake (M1 local user table).
 type UserProvider interface {
 	Password(user string) (password string, ok bool)
+}
+
+// Options controls frontend I/O deadlines and the logical packet limit.
+type Options struct {
+	ReadTimeout      time.Duration
+	WriteTimeout     time.Duration
+	MaxAllowedPacket int
 }
 
 // Conn is a server-side MySQL connection after a successful handshake.
@@ -35,7 +43,15 @@ func (c *Conn) Database() string { return c.database }
 
 // NewConn performs the server-side native-password handshake on raw.
 func NewConn(raw net.Conn, users UserProvider) (*Conn, error) {
+	return NewConnWithOptions(raw, users, Options{})
+}
+
+// NewConnWithOptions is NewConn with frontend I/O deadlines and packet limit.
+func NewConnWithOptions(raw net.Conn, users UserProvider, opts Options) (*Conn, error) {
 	pc := packet.NewConn(raw)
+	pc.SetReadTimeout(opts.ReadTimeout)
+	pc.SetWriteTimeout(opts.WriteTimeout)
+	pc.SetMaxAllowedPacket(opts.MaxAllowedPacket)
 	scramble := make([]byte, 20)
 	if _, err := rand.Read(scramble); err != nil {
 		_ = pc.Close()

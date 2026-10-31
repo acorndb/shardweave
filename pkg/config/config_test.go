@@ -24,6 +24,10 @@ backend:
         user: app
         password: secret
         database: appdb
+server:
+  read_timeout: 20s
+  write_timeout: 21s
+  max_allowed_packet: 8388608
 pool:
   capacity: 2
   max_capacity: 8
@@ -32,6 +36,9 @@ pool:
   max_lifetime: 1h
   health_check_interval: 30s
   get_timeout: 3s
+  dial_timeout: 4s
+  read_timeout: 15s
+  write_timeout: 16s
 log:
   level: info
 termination_drain: 2s
@@ -55,6 +62,12 @@ func TestLoadFile_OK_Single(t *testing.T) {
 	require.Equal(t, time.Hour, cfg.Pool.MaxLifetime)
 	require.Equal(t, 30*time.Second, cfg.Pool.HealthCheckInterval)
 	require.Equal(t, 3*time.Second, cfg.Pool.GetTimeout)
+	require.Equal(t, 4*time.Second, cfg.Pool.DialTimeout)
+	require.Equal(t, 15*time.Second, cfg.Pool.ReadTimeout)
+	require.Equal(t, 16*time.Second, cfg.Pool.WriteTimeout)
+	require.Equal(t, 20*time.Second, cfg.Server.ReadTimeout)
+	require.Equal(t, 21*time.Second, cfg.Server.WriteTimeout)
+	require.Equal(t, 8388608, cfg.Server.MaxAllowedPacket)
 	require.Equal(t, "info", cfg.Log.Level)
 	require.Equal(t, 2*time.Second, cfg.TerminationDrain)
 }
@@ -148,6 +161,10 @@ func TestValidate_RejectShardingAndUnknownMode(t *testing.T) {
 	cfg = validSingle()
 	cfg.Backend.Mode = "weird"
 	require.ErrorContains(t, Validate(cfg), "unsupported")
+
+	cfg = validSingle()
+	cfg.Server.MaxAllowedPacket = -1
+	require.ErrorContains(t, Validate(cfg), "max_allowed_packet")
 }
 
 func TestValidate_SingleConstraints(t *testing.T) {
@@ -310,6 +327,19 @@ func TestRuntime_RejectBackendChange(t *testing.T) {
 	require.Equal(t, "127.0.0.1:3306", rt.Load().Backend.Slices[0].Master.Address)
 }
 
+func TestRuntime_RejectPoolAndServerChange(t *testing.T) {
+	base := validSingle()
+	rt := NewRuntime(base)
+
+	next := base.Clone()
+	next.Pool.ReadTimeout = time.Second
+	require.ErrorContains(t, rt.Apply(next), "pool")
+
+	next = base.Clone()
+	next.Server.MaxAllowedPacket = 1024
+	require.ErrorContains(t, rt.Apply(next), "server")
+}
+
 func TestRuntime_ReloadFile(t *testing.T) {
 	path := writeYAML(t, singleYAML)
 	cfg, err := LoadFile(path)
@@ -321,6 +351,21 @@ listen: "127.0.0.1:3307"
 users:
   - name: app
     password: p2
+server:
+  read_timeout: 20s
+  write_timeout: 21s
+  max_allowed_packet: 8388608
+pool:
+  capacity: 2
+  max_capacity: 8
+  max_idle: 6
+  idle_timeout: 5m
+  max_lifetime: 1h
+  health_check_interval: 30s
+  get_timeout: 3s
+  dial_timeout: 4s
+  read_timeout: 15s
+  write_timeout: 16s
 backend:
   mode: single
   slices:

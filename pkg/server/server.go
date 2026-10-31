@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/acorndb/prism/pkg/backend"
 	"github.com/acorndb/prism/pkg/config"
@@ -26,6 +27,10 @@ type Server struct {
 	path string
 	rt   *config.Runtime
 	exec execute.Executor
+
+	readTimeout      time.Duration
+	writeTimeout     time.Duration
+	maxAllowedPacket int
 
 	listener net.Listener
 	running  atomic.Bool
@@ -59,12 +64,15 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
-		path:     configPath,
-		rt:       rt,
-		exec:     exec,
-		listener: ln,
-		ctx:      ctx,
-		cancel:   cancel,
+		path:             configPath,
+		rt:               rt,
+		exec:             exec,
+		readTimeout:      cfg.Server.ReadTimeout,
+		writeTimeout:     cfg.Server.WriteTimeout,
+		maxAllowedPacket: cfg.Server.MaxAllowedPacket,
+		listener:         ln,
+		ctx:              ctx,
+		cancel:           cancel,
 	}
 	s.running.Store(true)
 	return s, nil
@@ -72,6 +80,7 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 
 func newExecutor(rt *config.Runtime, cfg *config.Config) (execute.Executor, error) {
 	pcfg := toPoolConfig(cfg.Pool)
+	pcfg.MaxAllowedPacket = cfg.Server.MaxAllowedPacket
 	bs := cfg.Backend
 	mode := bs.Mode
 	if mode == "" {
@@ -80,7 +89,13 @@ func newExecutor(rt *config.Runtime, cfg *config.Config) (execute.Executor, erro
 
 	open := func(ep config.BackendEndpoint) backend.OpenFunc {
 		return func(ctx context.Context) (backend.Conn, error) {
-			return backend.DialMySQL(ctx, ep.Address, ep.User, ep.Password, ep.Database)
+			return backend.DialMySQLWithOptions(ctx, ep.Address, ep.User, ep.Password, ep.Database,
+				backend.DialOptions{
+					DialTimeout:      pcfg.DialTimeout,
+					ReadTimeout:      pcfg.ReadTimeout,
+					WriteTimeout:     pcfg.WriteTimeout,
+					MaxAllowedPacket: pcfg.MaxAllowedPacket,
+				})
 		}
 	}
 
@@ -167,8 +182,11 @@ func (s *Server) onConn(c net.Conn) {
 	}()
 
 	_ = proxy.Serve(s.ctx, c, proxy.SessionConfig{
-		Users: s.rt.UserProvider(),
-		Exec:  s.exec,
+		Users:            s.rt.UserProvider(),
+		Exec:             s.exec,
+		ReadTimeout:      s.readTimeout,
+		WriteTimeout:     s.writeTimeout,
+		MaxAllowedPacket: s.maxAllowedPacket,
 	})
 }
 
@@ -203,5 +221,8 @@ func toPoolConfig(c config.Pool) backend.PoolConfig {
 		MaxLifetime:         c.MaxLifetime,
 		HealthCheckInterval: c.HealthCheckInterval,
 		GetTimeout:          c.GetTimeout,
+		DialTimeout:         c.DialTimeout,
+		ReadTimeout:         c.ReadTimeout,
+		WriteTimeout:        c.WriteTimeout,
 	}
 }
