@@ -267,8 +267,8 @@ func checkScatterSelect(s *ast.SelectStmt) error {
 	switch {
 	case s.Distinct:
 		return reject("multi-shard SELECT with DISTINCT is not supported")
-	case s.GroupBy != nil || s.Having != nil:
-		return reject("multi-shard SELECT with GROUP BY/HAVING is not supported")
+	case s.Having != nil:
+		return reject("multi-shard SELECT with HAVING is not supported")
 	case len(s.WindowSpecs) > 0:
 		return reject("multi-shard SELECT with window functions is not supported")
 	case s.SelectIntoOpt != nil:

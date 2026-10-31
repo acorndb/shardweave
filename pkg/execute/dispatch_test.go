@@ -205,11 +205,11 @@ func TestDispatch_Rejects(t *testing.T) {
 		_, err := p.executePlan(ctx, newRuntime(), query("SELECT * FROM orders"), &plan.Plan{
 			Kind:    plan.MultiShard,
 			Targets: multiTargets(),
-			Merge:   plan.MergeSpec{GroupBy: []int{0}},
+			Merge:   plan.MergeSpec{Distinct: true},
 		})
 		var rej *errs.MySQL
 		require.ErrorAs(t, err, &rej)
-		require.Contains(t, rej.Message, "merge")
+		require.Contains(t, rej.Message, "DISTINCT")
 	})
 
 	t.Run("no_targets", func(t *testing.T) {
@@ -445,6 +445,57 @@ func TestDispatch_Avg(t *testing.T) {
 	cells, err := mysql.DecodeTextRow(pkts[2], 1)
 	require.NoError(t, err)
 	require.Equal(t, "3.2500", string(cells[0]))
+	require.Empty(t, rt.leases)
+	require.Equal(t, 1, tr0.last(t).resets)
+	require.Equal(t, 1, tr1.last(t).resets)
+}
+
+func TestDispatch_Group(t *testing.T) {
+	tr0, tr1 := &tracker{}, &tracker{}
+	fields := []result.Field{
+		{Name: "user_id", OrgName: "user_id", Type: result.TypeLong, Charset: 63},
+		{Name: "COUNT(*)", OrgName: "COUNT(*)", Type: result.TypeLongLong, Charset: 63},
+		{Name: "SUM(amount)", OrgName: "SUM(amount)", Type: result.TypeNewDecimal, Charset: 63},
+	}
+	p := newMultiPipeline(t, tr0, tr1,
+		func(c *fakeConn) {
+			c.fields = fields
+			c.rows = []result.Row{
+				{[]byte("1"), []byte("2"), []byte("30")},
+				{[]byte("2"), []byte("1"), []byte("100")},
+			}
+		},
+		func(c *fakeConn) {
+			c.fields = fields
+			c.rows = []result.Row{{[]byte("1"), []byte("1"), []byte("5")}}
+		})
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	_, err := p.executePlan(context.Background(), rt, query("SELECT user_id, COUNT(*), SUM(amount) FROM orders GROUP BY user_id"),
+		&plan.Plan{
+			Kind:    plan.MultiShard,
+			Targets: multiTargets(),
+			Merge: plan.MergeSpec{
+				GroupBy: []int{0},
+				Aggregates: []plan.AggregateSpec{
+					{Func: plan.AggCount, Column: 1, Output: 1},
+					{Func: plan.AggSum, Column: 2, Output: 2},
+				},
+				Output: []int{0, 1, 2},
+			},
+		})
+	require.NoError(t, err)
+
+	pkts := collect()
+	require.Len(t, pkts, 1+3+2+1, "header + 3 columns + 2 groups + terminator")
+	first, err := mysql.DecodeTextRow(pkts[4], 3)
+	require.NoError(t, err)
+	second, err := mysql.DecodeTextRow(pkts[5], 3)
+	require.NoError(t, err)
+	require.Equal(t, []string{"1", "3", "35"}, []string{string(first[0]), string(first[1]), string(first[2])})
+	require.Equal(t, []string{"2", "1", "100"}, []string{string(second[0]), string(second[1]), string(second[2])})
 	require.Empty(t, rt.leases)
 	require.Equal(t, 1, tr0.last(t).resets)
 	require.Equal(t, 1, tr1.last(t).resets)

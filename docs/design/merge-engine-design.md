@@ -314,6 +314,7 @@ execute.dispatch(targets) → []result.Stream
 | P0.5 多分片 concat + limit | `Concat` + `Limit` | 已落地于 `pkg/merge`：逐片拼接后按最终 LIMIT 截断；OFFSET>0 时 plan 把 per-shard SQL 改写成 `LIMIT m+n`。聚合/去重仍 Reject。并发 dispatch 列入 D7 |
 | P0.6 多分片 ordered | `Ordered`（k 路堆） | 已落地：每片执行同一 ORDER BY，堆内每片一行；整数/浮点/DECIMAL/日期文本比较，NULL 按 MySQL 语义；未投影列/表达式由 plan 追加隐藏列、`Output` 投影去掉；字符串 collation Reject。LIMIT/OFFSET 已由 plan 改写 |
 | P0.7 无 GROUP BY 聚合 | `Aggregate` | 已落地 COUNT/SUM/MIN/MAX/AVG：每片一行折叠；AVG 由 plan 注入隐藏 SUM/COUNT 列，按原 AVG 列 scale 输出；SUM 用 big.Rat/float，MIN/MAX 复用排序比较 |
+| P0.8 GROUP BY | `Group` | 已落地数值/日期分组列 + 聚合；map 按 group key 累积，插入顺序输出；字符串分组/collation 未引入，仍 Reject；GROUP BY + ORDER/LIMIT 后置 |
 | P1 多分片只读 v1 | concat、ordered、limit、COUNT/SUM/MIN/MAX/AVG | ORDER BY 仅数值/时间/二进制字符串 |
 | P1.5 | GROUP BY、DISTINCT、UNION 去重 | 加内存上限 |
 | P2 | 字符串 collation、bufferSort、spill、GROUP_CONCAT、窗口/跨片 JOIN | 单独设计 |

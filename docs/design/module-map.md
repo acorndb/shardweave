@@ -92,7 +92,7 @@
 | `pkg/plan` | N=1 `Passthrough` Plan 骨架（R2） | `EXPLAIN ROUTE` + `SingleShard`/`Reject`（P3） |
 | `pkg/result` | raw `Stream`（R3）；逻辑 Stream 接口已定 | decoded/merge 在 P4 |
 | `pkg/execute` | 单 Pipeline + `Runtime`/按 Slice 的 lease map（R6） | P4 多分片 dispatch/merge |
-| `pkg/merge` | `Concat`/`Limit`/`Ordered`/`Aggregate`（含 AVG）已落地 | group/distinct |
+| `pkg/merge` | `Concat`/`Limit`/`Ordered`/`Aggregate`/`Group` 已落地 | distinct/collation |
 | `pkg/proxy` | COM 循环 + USE/SET/autocommit 字符串解析 | 只做 COM 循环与 `Statement` 构造 |
 | `pkg/config` | `backend` + `slices`（R5）；`sharding` 仍拒绝 | 分片规则接线（P3） |
 | `pkg/server` | 按 mode 手工建 Group + executor | 唯一 mode 分支；装配 Cluster/Router/Builder/Executor |

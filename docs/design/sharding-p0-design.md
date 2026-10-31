@@ -365,9 +365,9 @@ route → []Target
 - 支持 `ORDER BY` 列名/位置/表达式（多列、ASC/DESC），由 k 路堆归并；
   未投影的列/表达式通过隐藏列下推，`Output` 投影去掉隐藏列；字符串/二进制/
   JSON 类型 1235；`SELECT *` 搭配表达式排序 1235；
-- 支持 `COUNT/SUM/MIN/MAX/AVG`（无 GROUP BY）；
-- 不支持 `GROUP BY / HAVING / DISTINCT / 窗口函数 / 聚合 DISTINCT / INTO /
-  锁定读 / SQL_CALC_FOUND_ROWS`；
+- 支持 `COUNT/SUM/MIN/MAX/AVG`（无 GROUP BY）与数值/日期列 GROUP BY；
+- 不支持 `HAVING / DISTINCT / 窗口函数 / 聚合 DISTINCT / GROUP BY ... ORDER BY
+  或 LIMIT / INTO / 锁定读 / SQL_CALC_FOUND_ROWS`；
 - `LIMIT n` / `LIMIT n OFFSET m`：OFFSET>0 时 per-shard 改写成 `LIMIT m+n`，
   归并后由 `Limit` 截断/跳过；
 - 每个 target 顺序执行（D7 再并发）；先解码全部列元数据并校验一致，再写
@@ -527,9 +527,18 @@ route → []Target
   MIN/MAX 用与 ORDER BY 相同的类型比较；全 NULL/空输入按 MySQL 语义返回
   NULL（COUNT 为 0）；
 - 新增 `pkg/sql/rewrite` 承接 per-shard SQL 改写（LIMIT OFFSET 已迁入）；
-  `pkg/merge.Merge` 统一装配 Concat/Ordered/Aggregate/Limit，execute 不再选算子；
+  `pkg/merge.Merge` 统一装配 Concat/Ordered/Aggregate/Group/Limit，execute 不再选算子；
 - 仍 1235：`COUNT(DISTINCT ...)`、聚合与其他投影混合、聚合 + ORDER BY、
-  GROUP BY/HAVING/DISTINCT。
+  HAVING/DISTINCT。
+
+已落地（B1.7，GROUP BY，2026-10-31）：
+
+- 投影分组列 + COUNT/SUM/MIN/MAX/AVG；`pkg/merge.Group` 按 group key 合并
+  各片部分分组，输出为首次出现顺序（MySQL 未保证顺序）；
+- 分组列必须在 select list；分组表达式/未选分组列 1235；
+- 字符串/二进制分组列 1235（collation 权重表未引入）；
+- GROUP BY + ORDER BY/LIMIT、HAVING 仍 1235；
+- single-DB oracle 覆盖用户分组、金额跨片分组、过滤后分组。
 
 未落地（B1.2）：
 
@@ -609,6 +618,12 @@ B1.6（已落地，无 GROUP BY 聚合）：
 - AVG 注入隐藏 SUM/COUNT 列，保留原输出列名/scale；
 - 聚合 DISTINCT、混合投影、聚合 + ORDER BY 仍 1235。
 
+B1.7（已落地，GROUP BY）：
+
+- 投影分组列 + 聚合函数；`pkg/merge.Group` 合并跨片部分分组；
+- 分组列必须被 select；字符串/二进制分组列 1235（collation 未引入）；
+- GROUP BY + ORDER BY/LIMIT、HAVING、分组表达式仍 1235。
+
 DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代理始终显式 Reject。
 
 ### 8.2 Reject（当前）
@@ -616,9 +631,10 @@ DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代�
 - 多分片写（INSERT/UPDATE/DELETE）；跨片 `IN` 的写语句；
 - 分片键字面量类型与算法值域不匹配（如 `hash_mod` 下的 `'abc'`、
   `hash_mod_str` 下的 `1`）；
-- 分片表上需要归并的 SELECT（GROUP BY/HAVING/DISTINCT/窗口/INTO/锁定读/
+- 分片表上需要归并的 SELECT（HAVING/DISTINCT/窗口/INTO/锁定读/
   SQL_CALC_FOUND_ROWS）；子查询；聚合 DISTINCT、聚合与非聚合投影混合、
-  聚合 + ORDER BY；字符串/二进制/JSON 排序 1235；
+  聚合 + ORDER BY、GROUP BY + ORDER BY/LIMIT；字符串/二进制 GROUP BY
+  与排序 1235；
 - 事务 / `autocommit=0` / reserved / prepared pin 会话中的多分片语句；
 - 跨片/多表 JOIN、schema 限定表；
 - prepared 参数化分片键、prepared DML、prepared 多分片；

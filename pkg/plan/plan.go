@@ -194,6 +194,13 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 	if !ok {
 		return MergeSpec{}, nil
 	}
+	if sel.GroupBy != nil {
+		spec, extras, rej := groupSpecs(sel)
+		if rej != nil {
+			return MergeSpec{}, rej
+		}
+		return applyRewrite(sel, targets, spec, extras, nil)
+	}
 	aggs, extras, rej := aggregateSpecs(sel)
 	if rej != nil {
 		return MergeSpec{}, rej
@@ -254,6 +261,93 @@ func applyRewrite(
 		targets[i].SQL = sqlText
 	}
 	return spec, nil
+}
+
+// groupSpecs accepts projected group columns plus aggregate-only other fields.
+// Group keys must be in the select list so the merge layer has their values.
+func groupSpecs(sel *ast.SelectStmt) (MergeSpec, []rewrite.ExtraAggregate, *errs.MySQL) {
+	if sel.OrderBy != nil {
+		return MergeSpec{}, nil, errs.Unsupported("multi-shard GROUP BY with ORDER BY is not supported")
+	}
+	if sel.Limit != nil {
+		return MergeSpec{}, nil, errs.Unsupported("multi-shard GROUP BY with LIMIT is not supported")
+	}
+	base := len(sel.Fields.Fields)
+	output := make([]int, base)
+	for i := range output {
+		output[i] = i
+	}
+	groupSet := make(map[int]bool, len(sel.GroupBy.Items))
+	groupBy := make([]int, 0, len(sel.GroupBy.Items))
+	addGroup := func(idx int) {
+		if !groupSet[idx] {
+			groupSet[idx] = true
+			groupBy = append(groupBy, idx)
+		}
+	}
+	for _, item := range sel.GroupBy.Items {
+		switch e := item.Expr.(type) {
+		case *ast.ColumnNameExpr:
+			idx := selectFieldIndex(sel, e.Name.Name.L)
+			if idx < 0 {
+				return MergeSpec{}, nil, errs.Unsupported("GROUP BY column %q must be selected", e.Name.Name.O)
+			}
+			addGroup(idx)
+		case *ast.PositionExpr:
+			if e.N < 1 || e.N > base {
+				return MergeSpec{}, nil, errs.Unsupported("GROUP BY position %d is out of range", e.N)
+			}
+			addGroup(e.N - 1)
+		default:
+			return MergeSpec{}, nil, errs.Unsupported("multi-shard GROUP BY supports columns or positions only")
+		}
+	}
+	if len(groupBy) == 0 {
+		return MergeSpec{}, nil, errs.Unsupported("GROUP BY requires at least one column")
+	}
+
+	avgIdx := 0
+	specs := make([]AggregateSpec, 0, base-len(groupBy))
+	var extras []rewrite.ExtraAggregate
+	for i, field := range sel.Fields.Fields {
+		if groupSet[i] {
+			continue
+		}
+		agg, ok := field.Expr.(*ast.AggregateFuncExpr)
+		if !ok {
+			if hasAggregate(field.Expr) {
+				return MergeSpec{}, nil, errs.Unsupported("multi-shard aggregate must be a top-level aggregate field")
+			}
+			return MergeSpec{}, nil, errs.Unsupported("multi-shard GROUP BY fields must be group columns or aggregate functions")
+		}
+		if agg.Distinct {
+			return MergeSpec{}, nil, errs.Unsupported("multi-shard aggregate DISTINCT is not supported")
+		}
+		switch strings.ToLower(agg.F) {
+		case "count":
+			specs = append(specs, AggregateSpec{Func: AggCount, Column: i, Output: i})
+		case "sum":
+			specs = append(specs, AggregateSpec{Func: AggSum, Column: i, Output: i})
+		case "min":
+			specs = append(specs, AggregateSpec{Func: AggMin, Column: i, Output: i})
+		case "max":
+			specs = append(specs, AggregateSpec{Func: AggMax, Column: i, Output: i})
+		case "avg":
+			if len(agg.Args) != 1 {
+				return MergeSpec{}, nil, errs.Unsupported("multi-shard AVG requires exactly one argument")
+			}
+			sumIdx := base + 2*avgIdx
+			extras = append(extras,
+				rewrite.ExtraAggregate{Func: "sum", Expr: agg.Args[0], Alias: fmt.Sprintf("__sw_avg_sum_%d", avgIdx)},
+				rewrite.ExtraAggregate{Func: "count", Expr: agg.Args[0], Alias: fmt.Sprintf("__sw_avg_count_%d", avgIdx)},
+			)
+			avgIdx++
+			specs = append(specs, AggregateSpec{Func: AggAvg, Column: sumIdx, CountColumn: sumIdx + 1, Output: i})
+		default:
+			return MergeSpec{}, nil, errs.Unsupported("multi-shard aggregate %s is not supported", agg.F)
+		}
+	}
+	return MergeSpec{GroupBy: groupBy, Aggregates: specs, Output: output}, extras, nil
 }
 
 // aggregateSpecs accepts aggregate-only projections without GROUP BY.

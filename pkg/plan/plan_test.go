@@ -369,6 +369,77 @@ func TestBuilder_MultiShard(t *testing.T) {
 		}, p.Merge.Aggregates)
 	})
 
+	t.Run("group_by", func(t *testing.T) {
+		st := selectStmt(t, "SELECT user_id, COUNT(*), SUM(amount), AVG(amount) FROM orders GROUP BY user_id")
+		p, err := b.Build(context.Background(), session.NewState(), st)
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []int{0}, p.Merge.GroupBy)
+		require.Equal(t, []int{0, 1, 2, 3}, p.Merge.Output)
+		require.Equal(t, []plan.AggregateSpec{
+			{Func: plan.AggCount, Column: 1, Output: 1},
+			{Func: plan.AggSum, Column: 2, Output: 2},
+			{Func: plan.AggAvg, Column: 4, CountColumn: 5, Output: 3},
+		}, p.Merge.Aggregates)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			sel := res.Stmts[0].(*ast.SelectStmt)
+			require.Len(t, sel.Fields.Fields, 6, "AVG hidden SUM/COUNT appended")
+		}
+		require.Len(t, st.AST.(*ast.SelectStmt).Fields.Fields, 4)
+	})
+
+	t.Run("group_by_position_no_aggregate", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT user_id FROM orders GROUP BY 1"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []int{0}, p.Merge.GroupBy)
+		require.Empty(t, p.Merge.Aggregates)
+		require.Equal(t, []int{0}, p.Merge.Output)
+	})
+
+	t.Run("group_by_unselected_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT COUNT(*) FROM orders GROUP BY user_id"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Contains(t, p.Reject.Message, "GROUP BY")
+	})
+
+	t.Run("group_by_expression_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT amount, COUNT(*) FROM orders GROUP BY amount + 1"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Contains(t, p.Reject.Message, "GROUP BY")
+	})
+
+	t.Run("group_by_mixed_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT user_id, amount, COUNT(*) FROM orders GROUP BY user_id"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Contains(t, p.Reject.Message, "aggregate")
+	})
+
+	t.Run("group_by_order_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT amount, COUNT(*) FROM orders GROUP BY amount ORDER BY amount"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Contains(t, p.Reject.Message, "ORDER BY")
+	})
+
+	t.Run("group_by_limit_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT amount, COUNT(*) FROM orders GROUP BY amount LIMIT 1"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Contains(t, p.Reject.Message, "LIMIT")
+	})
+
 	t.Run("aggregate_avg_distinct_rejected", func(t *testing.T) {
 		p, err := b.Build(context.Background(), session.NewState(),
 			selectStmt(t, "SELECT AVG(DISTINCT amount) FROM orders"))

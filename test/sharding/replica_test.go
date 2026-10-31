@@ -119,7 +119,9 @@ func TestShardedReplicas(t *testing.T) {
 	// Unsupported shapes stay explicit errors on a real topology.
 	assertReject(t, ctx, conn, "SELECT AVG(DISTINCT amount) FROM orders")
 	assertReject(t, ctx, conn, "SELECT COUNT(DISTINCT user_id) FROM orders")
-	assertReject(t, ctx, conn, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id")
+	requireGroupRows(t, ctx, conn,
+		"SELECT user_id, COUNT(*) FROM orders GROUP BY user_id",
+		map[string][]string{"1": {"1"}, "2": {"1"}})
 	assertReject(t, ctx, conn, "SELECT * FROM orders WHERE user_id IN (SELECT user_id FROM orders)")
 	requireRowCount(t, ctx, conn, "SELECT * FROM orders LIMIT 1, 1", 1)
 }

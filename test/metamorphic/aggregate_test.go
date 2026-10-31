@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"math/big"
+	"sort"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,29 +93,40 @@ func TestShardedAggregateOracle(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pc.Close() })
 
-	queries := []string{
-		"SELECT COUNT(*) FROM orders",
-		"SELECT COUNT(amount) FROM orders",
-		"SELECT SUM(amount) FROM orders",
-		"SELECT MIN(amount), MAX(amount) FROM orders",
-		"SELECT COUNT(*), COUNT(amount), SUM(amount), MIN(amount), MAX(amount) FROM orders",
-		"SELECT COUNT(*), SUM(amount) FROM orders WHERE user_id IN (1, 2, 3, 4)",
-		"SELECT COUNT(*), SUM(amount) FROM orders WHERE amount > 0",
-		"SELECT COUNT(*), SUM(amount) FROM orders WHERE user_id > 5",
-		"SELECT AVG(amount) FROM orders",
-		"SELECT COUNT(*), AVG(amount) FROM orders",
-		"SELECT COUNT(*), AVG(amount) FROM orders WHERE user_id IN (1, 2, 3, 4)",
-		"SELECT AVG(amount) FROM orders WHERE amount > 0",
-		"SELECT amount FROM orders ORDER BY user_id, id",
-		"SELECT amount FROM orders ORDER BY user_id DESC, id DESC",
-		"SELECT amount FROM orders ORDER BY user_id * 2 + id",
-		"SELECT amount FROM orders ORDER BY amount % 7, id",
+	queries := []struct {
+		query     string
+		unordered bool
+	}{
+		{query: "SELECT COUNT(*) FROM orders"},
+		{query: "SELECT COUNT(amount) FROM orders"},
+		{query: "SELECT SUM(amount) FROM orders"},
+		{query: "SELECT MIN(amount), MAX(amount) FROM orders"},
+		{query: "SELECT COUNT(*), COUNT(amount), SUM(amount), MIN(amount), MAX(amount) FROM orders"},
+		{query: "SELECT COUNT(*), SUM(amount) FROM orders WHERE user_id IN (1, 2, 3, 4)"},
+		{query: "SELECT COUNT(*), SUM(amount) FROM orders WHERE amount > 0"},
+		{query: "SELECT COUNT(*), SUM(amount) FROM orders WHERE user_id > 5"},
+		{query: "SELECT AVG(amount) FROM orders"},
+		{query: "SELECT COUNT(*), AVG(amount) FROM orders"},
+		{query: "SELECT COUNT(*), AVG(amount) FROM orders WHERE user_id IN (1, 2, 3, 4)"},
+		{query: "SELECT AVG(amount) FROM orders WHERE amount > 0"},
+		{query: "SELECT amount FROM orders ORDER BY user_id, id"},
+		{query: "SELECT amount FROM orders ORDER BY user_id DESC, id DESC"},
+		{query: "SELECT amount FROM orders ORDER BY user_id * 2 + id"},
+		{query: "SELECT amount FROM orders ORDER BY amount % 7, id"},
+		{query: "SELECT user_id, COUNT(*), SUM(amount), MIN(amount), MAX(amount), AVG(amount) FROM orders GROUP BY user_id", unordered: true},
+		{query: "SELECT amount, COUNT(*), SUM(user_id) FROM orders GROUP BY amount", unordered: true},
+		{query: "SELECT user_id, COUNT(*) FROM orders WHERE amount > 0 GROUP BY user_id", unordered: true},
+		{query: "SELECT user_id FROM orders GROUP BY user_id", unordered: true},
 	}
-	for _, query := range queries {
-		t.Run(query, func(t *testing.T) {
-			proxyCols, proxyRows := queryRows(t, ctx, pc, query)
-			oracleCols, oracleRows := queryRows(t, ctx, oracle.DB, query)
+	for _, tc := range queries {
+		t.Run(tc.query, func(t *testing.T) {
+			proxyCols, proxyRows := queryRows(t, ctx, pc, tc.query)
+			oracleCols, oracleRows := queryRows(t, ctx, oracle.DB, tc.query)
 			require.Equal(t, oracleCols, proxyCols)
+			if tc.unordered {
+				sortRows(proxyRows)
+				sortRows(oracleRows)
+			}
 			require.Len(t, proxyRows, len(oracleRows))
 			for i := range oracleRows {
 				require.Len(t, proxyRows[i], len(oracleRows[i]))
@@ -123,6 +137,27 @@ func TestShardedAggregateOracle(t *testing.T) {
 			}
 		})
 	}
+}
+
+func sortRows(rows [][]sql.NullString) {
+	sort.Slice(rows, func(i, j int) bool {
+		return rowKey(rows[i]) < rowKey(rows[j])
+	})
+}
+
+func rowKey(row []sql.NullString) string {
+	var b strings.Builder
+	for _, c := range row {
+		if !c.Valid {
+			b.WriteString("N|")
+			continue
+		}
+		b.WriteString(strconv.Itoa(len(c.String)))
+		b.WriteByte(':')
+		b.WriteString(c.String)
+		b.WriteByte('|')
+	}
+	return b.String()
 }
 
 type querier interface {

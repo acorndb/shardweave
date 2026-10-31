@@ -15,8 +15,17 @@ import (
 // Validate checks merge features independently of streams/fields, so execute
 // can reject unsupported plans before acquiring backends.
 func Validate(spec plan.MergeSpec) error {
-	if len(spec.GroupBy) > 0 || spec.Distinct {
-		return errs.Unsupported("multi-shard merge shape is not supported")
+	if spec.Distinct {
+		return errs.Unsupported("multi-shard DISTINCT is not supported")
+	}
+	if len(spec.GroupBy) > 0 {
+		if len(spec.OrderBy) > 0 {
+			return errs.Unsupported("multi-shard GROUP BY with ORDER BY is not supported")
+		}
+		if spec.Limit != nil {
+			return errs.Unsupported("multi-shard GROUP BY with LIMIT is not supported")
+		}
+		return nil
 	}
 	if len(spec.Aggregates) > 0 && len(spec.OrderBy) > 0 {
 		return errs.Unsupported("multi-shard aggregate with ORDER BY is not supported")
@@ -29,6 +38,9 @@ func Validate(spec plan.MergeSpec) error {
 func Merge(streams []result.Stream, fields []result.Field, spec plan.MergeSpec) (result.Stream, error) {
 	if err := Validate(spec); err != nil {
 		return nil, err
+	}
+	if len(spec.GroupBy) > 0 {
+		return Group(streams, fields, spec.GroupBy, spec.Aggregates, spec.Output)
 	}
 	var out result.Stream
 	switch {

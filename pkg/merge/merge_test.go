@@ -161,7 +161,8 @@ func TestMerge_Factory(t *testing.T) {
 	require.Equal(t, []string{"1"}, collect(t, ordered))
 
 	cases := []plan.MergeSpec{
-		{GroupBy: []int{0}},
+		{GroupBy: []int{0}, OrderBy: []plan.OrderKey{{Column: 0}}},
+		{GroupBy: []int{0}, Limit: &plan.Limit{Count: 1}},
 		{Distinct: true},
 		{
 			Aggregates: []plan.AggregateSpec{{Func: plan.AggCount, Column: 0, Output: 0}},
@@ -182,7 +183,8 @@ func TestValidate(t *testing.T) {
 		Limit:   &plan.Limit{Count: 1},
 	}))
 	for _, spec := range []plan.MergeSpec{
-		{GroupBy: []int{0}},
+		{GroupBy: []int{0}, OrderBy: []plan.OrderKey{{Column: 0}}},
+		{GroupBy: []int{0}, Limit: &plan.Limit{Count: 1}},
 		{Distinct: true},
 		{Aggregates: []plan.AggregateSpec{{Func: plan.AggCount}}, OrderBy: []plan.OrderKey{{Column: 0}}},
 	} {

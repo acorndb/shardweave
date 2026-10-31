@@ -245,6 +245,26 @@ func TestSingleShardRouting(t *testing.T) {
 	requireShardRows(t, ctx, conn, "SELECT user_id, amount FROM orders",
 		map[int]int{1: 50, 2: 200})
 
+	// GROUP BY merges partial groups from each shard. Add a duplicate amount on
+	// the other slice so group 50 spans both shards.
+	_, err = conn.ExecContext(ctx, "INSERT INTO orders (user_id, amount) VALUES (2, 50)")
+	require.NoError(t, err)
+	requireGroupRows(t, ctx, conn,
+		"SELECT amount, COUNT(*), SUM(user_id) FROM orders GROUP BY amount",
+		map[string][]string{
+			"50":  {"2", "3"},
+			"200": {"1", "2"},
+		})
+	requireGroupRows(t, ctx, conn,
+		"SELECT user_id, COUNT(*), SUM(amount) FROM orders GROUP BY user_id",
+		map[string][]string{
+			"1": {"1", "50"},
+			"2": {"2", "250"},
+		})
+	assertReject(t, ctx, conn, "SELECT COUNT(*) FROM orders GROUP BY user_id")
+	assertReject(t, ctx, conn, "SELECT amount, COUNT(*) FROM orders GROUP BY amount ORDER BY amount")
+	assertReject(t, ctx, conn, "SELECT amount, COUNT(*) FROM orders GROUP BY amount LIMIT 1")
+
 	// DISTINCT still needs the dedup operator (D5.2).
 	assertReject(t, ctx, conn, "SELECT DISTINCT user_id FROM orders")
 
@@ -336,6 +356,35 @@ func connScalarString(t *testing.T, ctx context.Context, conn *sql.Conn, query s
 
 // requireShardRows asserts an order-insensitive (user_id, amount) result set
 // and that no row is duplicated or missing.
+func requireGroupRows(t *testing.T, ctx context.Context, conn *sql.Conn, query string, want map[string][]string) {
+	t.Helper()
+	rows, err := conn.QueryContext(ctx, query)
+	require.NoErrorf(t, err, "查询失败: %s", query)
+	defer rows.Close()
+	cols, err := rows.Columns()
+	require.NoError(t, err)
+	got := make(map[string][]string, len(want))
+	n := 0
+	for rows.Next() {
+		cells := make([]sql.NullString, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range cells {
+			ptrs[i] = &cells[i]
+		}
+		require.NoError(t, rows.Scan(ptrs...))
+		key := cells[0].String
+		vals := make([]string, 0, len(cols)-1)
+		for _, c := range cells[1:] {
+			vals = append(vals, c.String)
+		}
+		got[key] = vals
+		n++
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, len(want), n, "组数不一致: %s", query)
+	require.Equal(t, want, got, query)
+}
+
 func requireShardRows(t *testing.T, ctx context.Context, conn *sql.Conn, query string, want map[int]int) {
 	t.Helper()
 	rows, err := conn.QueryContext(ctx, query)
