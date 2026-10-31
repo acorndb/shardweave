@@ -87,7 +87,7 @@ func forwardOne(dst, src *packet.Conn, deprecateEOF bool) (more bool, status uin
 		return false, 0, fmt.Errorf("mysql: LOCAL INFILE not supported")
 	}
 
-	cols, _, _, err := readLenEncInt(data)
+	cols, _, err := readLenEncInt(data)
 	if err != nil {
 		return false, 0, err
 	}
@@ -153,12 +153,12 @@ func okStatus(data []byte) uint16 {
 		return 0
 	}
 	pos := 1
-	_, _, adv, err := readLenEncInt(data[pos:])
+	_, adv, err := readLenEncInt(data[pos:])
 	if err != nil {
 		return 0
 	}
 	pos += adv
-	_, _, adv, err = readLenEncInt(data[pos:])
+	_, adv, err = readLenEncInt(data[pos:])
 	if err != nil {
 		return 0
 	}
@@ -177,12 +177,12 @@ func eofStatus(data []byte, deprecateEOF bool) uint16 {
 	if deprecateEOF {
 		// OK-replacing-EOF: 0xfe, affected_rows, last_insert_id, status...
 		pos := 1
-		_, _, adv, err := readLenEncInt(data[pos:])
+		_, adv, err := readLenEncInt(data[pos:])
 		if err != nil {
 			return 0
 		}
 		pos += adv
-		_, _, adv, err = readLenEncInt(data[pos:])
+		_, adv, err = readLenEncInt(data[pos:])
 		if err != nil {
 			return 0
 		}
@@ -205,31 +205,31 @@ func writePayload(dst *packet.Conn, payload []byte) error {
 	return dst.WritePacket(buf)
 }
 
-func readLenEncInt(b []byte) (n uint64, isNull bool, adv int, err error) {
+func readLenEncInt(b []byte) (n uint64, adv int, err error) {
 	if len(b) == 0 {
-		return 0, false, 0, fmt.Errorf("mysql: empty length-encoded int")
+		return 0, 0, fmt.Errorf("mysql: empty length-encoded int")
 	}
 	switch b[0] {
 	case 0xfb:
-		return 0, true, 1, nil
+		return 0, 1, nil
 	case 0xfc:
 		if len(b) < 3 {
-			return 0, false, 0, fmt.Errorf("mysql: truncated lenenc")
+			return 0, 0, fmt.Errorf("mysql: truncated lenenc")
 		}
-		return uint64(b[1]) | uint64(b[2])<<8, false, 3, nil
+		return uint64(b[1]) | uint64(b[2])<<8, 3, nil
 	case 0xfd:
 		if len(b) < 4 {
-			return 0, false, 0, fmt.Errorf("mysql: truncated lenenc")
+			return 0, 0, fmt.Errorf("mysql: truncated lenenc")
 		}
-		return uint64(b[1]) | uint64(b[2])<<8 | uint64(b[3])<<16, false, 4, nil
+		return uint64(b[1]) | uint64(b[2])<<8 | uint64(b[3])<<16, 4, nil
 	case 0xfe:
 		if len(b) < 9 {
-			return 0, false, 0, fmt.Errorf("mysql: truncated lenenc")
+			return 0, 0, fmt.Errorf("mysql: truncated lenenc")
 		}
 		n = uint64(b[1]) | uint64(b[2])<<8 | uint64(b[3])<<16 | uint64(b[4])<<24 |
 			uint64(b[5])<<32 | uint64(b[6])<<40 | uint64(b[7])<<48 | uint64(b[8])<<56
-		return n, false, 9, nil
+		return n, 9, nil
 	default:
-		return uint64(b[0]), false, 1, nil
+		return uint64(b[0]), 1, nil
 	}
 }

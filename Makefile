@@ -1,5 +1,6 @@
 GO ?= go
-GOLANGCI ?= $(shell command -v golangci-lint 2>/dev/null || echo "$(HOME)/go/bin/golangci-lint")
+# Keep in sync with .github/workflows/ci.yml golangci-lint-action version.
+GOLANGCI_VERSION ?= v2.15.0
 
 .PHONY: build test test-unit test-integration lint fmt tidy
 
@@ -19,7 +20,13 @@ test-integration:
 
 lint:
 	$(GO) vet ./...
-	$(GOLANGCI) run
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run; \
+	elif [ -x "$(HOME)/go/bin/golangci-lint" ]; then \
+		"$(HOME)/go/bin/golangci-lint" run; \
+	else \
+		$(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION) run; \
+	fi
 
 fmt:
 	go run mvdan.cc/gofumpt@latest -extra -w . 2>/dev/null || gofmt -w .

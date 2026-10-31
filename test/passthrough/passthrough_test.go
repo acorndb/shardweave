@@ -85,7 +85,7 @@ func TestPassthrough_Select1(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 
-	var deadline = time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	var n int
 	for {
 		err = db.QueryRowContext(ctx, "SELECT 1").Scan(&n)

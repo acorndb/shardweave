@@ -21,10 +21,17 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: make lint
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          # Prebuilt binary Go version must be >= go directive in go.mod (not toolchain).
+          version: v2.15.0
+          args: --timeout=5m
+      - name: go vet
+        run: go vet ./...

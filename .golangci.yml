@@ -1,18 +1,24 @@
+version: "2"
+
 run:
   timeout: 5m
 
 linters:
+  default: none
   enable:
-    - gofumpt
     - misspell
     - unconvert
     - unparam
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+      - source: 'defer .+\.Close\(\)'
+        linters:
+          - errcheck
 
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-    - source: 'defer .+\.Close\(\)'
-      linters:
-        - errcheck
+formatters:
+  default: none
+  enable:
+    - gofumpt

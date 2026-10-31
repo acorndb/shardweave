@@ -12,7 +12,7 @@ import (
 
 // Auth plugin names (MySQL / go-mysql).
 const (
-	NativePasswordPlugin    = "mysql_native_password"
+	NativePasswordPlugin      = "mysql_native_password"
 	CachingSHA2PasswordPlugin = "caching_sha2_password"
 )
 
