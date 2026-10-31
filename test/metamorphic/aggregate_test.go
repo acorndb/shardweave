@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"math/big"
+	"math/rand"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,7 +53,8 @@ func TestShardedAggregateOracle(t *testing.T) {
 		user_id INT NOT NULL,
 		amount INT NULL,
 		price DECIMAL(10,2) NULL,
-		qty BIGINT UNSIGNED NULL
+		qty BIGINT UNSIGNED NULL,
+		score DOUBLE NULL
 	)`
 	for _, s := range tp.Slices {
 		_, err := s.DB.ExecContext(ctx, ddl)
@@ -65,9 +68,10 @@ func TestShardedAggregateOracle(t *testing.T) {
 		amount     *int
 		price      any
 		qty        any
+		score      any
 	}
 	var rows []row
-	for i := 1; i <= 24; i++ {
+	for i := 1; i <= 120; i++ {
 		userID := (i*7)%11 + 1
 		var amount *int
 		if i%7 != 0 {
@@ -82,15 +86,19 @@ func TestShardedAggregateOracle(t *testing.T) {
 		if i%4 != 0 {
 			qty = uint64(i) * 1_000_000_007
 		}
-		rows = append(rows, row{id: i, userID: userID, amount: amount, price: price, qty: qty})
+		var score any
+		if i%6 != 0 {
+			score = float64(i%17)/2 - 3
+		}
+		rows = append(rows, row{id: i, userID: userID, amount: amount, price: price, qty: qty, score: score})
 	}
 
 	for _, r := range rows {
-		const insert = "INSERT INTO orders (id, user_id, amount, price, qty) VALUES (?, ?, ?, ?, ?)"
-		_, err := oracle.DB.ExecContext(ctx, insert, r.id, r.userID, r.amount, r.price, r.qty)
+		const insert = "INSERT INTO orders (id, user_id, amount, price, qty, score) VALUES (?, ?, ?, ?, ?, ?)"
+		_, err := oracle.DB.ExecContext(ctx, insert, r.id, r.userID, r.amount, r.price, r.qty, r.score)
 		require.NoError(t, err)
 		slice := r.userID % 4 // hash_mod over [s0, s1, s2, s3]
-		_, err = tp.Slices[slice].DB.ExecContext(ctx, insert, r.id, r.userID, r.amount, r.price, r.qty)
+		_, err = tp.Slices[slice].DB.ExecContext(ctx, insert, r.id, r.userID, r.amount, r.price, r.qty, r.score)
 		require.NoError(t, err)
 	}
 
@@ -153,26 +161,111 @@ func TestShardedAggregateOracle(t *testing.T) {
 		{query: "SELECT COUNT(*), SUM(amount), AVG(amount) FROM orders WHERE user_id IN (99, 100)"},
 		{query: "SELECT COUNT(*), SUM(price) FROM orders WHERE amount > 0"},
 		{query: "SELECT user_id, COUNT(*), SUM(price) FROM orders WHERE amount IS NOT NULL GROUP BY user_id ORDER BY user_id"},
+		{query: "SELECT SUM(score), MIN(score), MAX(score), AVG(score) FROM orders"},
+		{query: "SELECT amount, COUNT(*), SUM(score) FROM orders GROUP BY amount ORDER BY amount"},
+		{query: "SELECT COUNT(*), SUM(amount), AVG(amount) FROM orders WHERE id < 0"},
+		{query: "SELECT user_id, COUNT(*) FROM orders WHERE id < 0 GROUP BY user_id"},
+		{query: "SELECT DISTINCT amount FROM orders WHERE id < 0"},
 	}
 	for _, tc := range queries {
 		t.Run(tc.query, func(t *testing.T) {
 			proxyCols, proxyRows := queryRows(t, ctx, pc, tc.query)
 			oracleCols, oracleRows := queryRows(t, ctx, oracle.DB, tc.query)
-			require.Equal(t, oracleCols, proxyCols)
 			if tc.unordered {
 				sortRows(proxyRows)
 				sortRows(oracleRows)
 			}
-			require.Len(t, proxyRows, len(oracleRows))
-			for i := range oracleRows {
-				require.Len(t, proxyRows[i], len(oracleRows[i]))
-				for j := range oracleRows[i] {
-					require.Truef(t, sameCell(oracleRows[i][j], proxyRows[i][j]),
-						"row %d col %d: oracle=%+v proxy=%+v", i, j, oracleRows[i][j], proxyRows[i][j])
-				}
-			}
+			requireSameRows(t, tc.query, proxyCols, proxyRows, oracleCols, oracleRows)
 		})
 	}
+
+	seed := int64(envInt(t, "SHARDWEAVE_SHARD_RANDOM_SEED", 20261031))
+	iterations := envInt(t, "SHARDWEAVE_SHARD_RANDOM_QUERIES", 100)
+	rng := rand.New(rand.NewSource(seed))
+	t.Logf("random 4-shard differential: seed=%d queries=%d", seed, iterations)
+	for i := 0; i < iterations; i++ {
+		query := randomShardQuery(rng)
+		proxyCols, proxyRows := queryRows(t, ctx, pc, query)
+		oracleCols, oracleRows := queryRows(t, ctx, oracle.DB, query)
+		requireSameRows(t, fmt.Sprintf("seed=%d query=%s", seed, query),
+			proxyCols, proxyRows, oracleCols, oracleRows)
+	}
+}
+
+func requireSameRows(
+	t *testing.T,
+	label string,
+	proxyCols []string,
+	proxyRows [][]sql.NullString,
+	oracleCols []string,
+	oracleRows [][]sql.NullString,
+) {
+	t.Helper()
+	require.Equal(t, oracleCols, proxyCols, label)
+	require.Len(t, proxyRows, len(oracleRows), label)
+	for i := range oracleRows {
+		require.Len(t, proxyRows[i], len(oracleRows[i]), label)
+		for j := range oracleRows[i] {
+			require.Truef(t, sameCell(oracleRows[i][j], proxyRows[i][j]),
+				"%s: row %d col %d oracle=%+v proxy=%+v", label, i, j, oracleRows[i][j], proxyRows[i][j])
+		}
+	}
+}
+
+func randomShardQuery(r *rand.Rand) string {
+	where := randomWhere(r)
+	switch r.Intn(6) {
+	case 0:
+		return fmt.Sprintf("SELECT id, user_id, amount, price, qty, score FROM orders %s ORDER BY id LIMIT %d OFFSET %d",
+			where, r.Intn(11), r.Intn(6))
+	case 1:
+		return fmt.Sprintf("SELECT id, user_id, price, score FROM orders %s ORDER BY price DESC, id ASC LIMIT %d",
+			where, r.Intn(11))
+	case 2:
+		return fmt.Sprintf("SELECT COUNT(*), COUNT(amount), COUNT(score), SUM(amount), SUM(price), SUM(qty), SUM(score), MIN(amount), MAX(price), MIN(score), MAX(score), AVG(amount), AVG(price), AVG(score) FROM orders %s", where)
+	case 3:
+		return fmt.Sprintf("SELECT user_id, COUNT(*), SUM(amount), AVG(score) FROM orders %s GROUP BY user_id ORDER BY user_id LIMIT %d OFFSET %d",
+			where, 1+r.Intn(8), r.Intn(4))
+	case 4:
+		return fmt.Sprintf("SELECT DISTINCT user_id, amount FROM orders %s ORDER BY user_id, amount LIMIT %d OFFSET %d",
+			where, 1+r.Intn(8), r.Intn(4))
+	default:
+		return fmt.Sprintf("SELECT DISTINCT price FROM orders %s ORDER BY price DESC LIMIT %d",
+			where, 1+r.Intn(8))
+	}
+}
+
+func randomWhere(r *rand.Rand) string {
+	switch r.Intn(8) {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf("WHERE user_id = %d", 1+r.Intn(11))
+	case 2:
+		return fmt.Sprintf("WHERE user_id IN (%d, %d, %d, %d)",
+			1+r.Intn(11), 1+r.Intn(11), 1+r.Intn(11), 1+r.Intn(11))
+	case 3:
+		return fmt.Sprintf("WHERE amount > %d", r.Intn(80)-20)
+	case 4:
+		return "WHERE amount IS NULL"
+	case 5:
+		return fmt.Sprintf("WHERE price IS NOT NULL AND score > %g", float64(r.Intn(30))/2-4)
+	case 6:
+		return fmt.Sprintf("WHERE user_id > %d", r.Intn(11))
+	default:
+		return fmt.Sprintf("WHERE id %% 3 = %d", r.Intn(3))
+	}
+}
+
+func envInt(t *testing.T, key string, def int) int {
+	t.Helper()
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	require.NoErrorf(t, err, "%s must be an integer", key)
+	return n
 }
 
 func requireRouteCount(t *testing.T, ctx context.Context, q querier, query string, want int) {
