@@ -10,6 +10,7 @@ import (
 	"github.com/acorndb/shardweave/pkg/mysql"
 	"github.com/acorndb/shardweave/pkg/mysql/packet"
 	"github.com/acorndb/shardweave/pkg/plan"
+	"github.com/acorndb/shardweave/pkg/route"
 	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/acorndb/shardweave/pkg/sql"
 )
@@ -119,11 +120,28 @@ func (p *Pipeline) Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement)
 	if pl.Kind == plan.Reject {
 		return pl.Reject
 	}
-	if len(pl.Targets) != 1 {
-		return fmt.Errorf("execute: expected 1 target, got %d", len(pl.Targets))
-	}
-	target := pl.Targets[0]
+	success, err = p.executePlan(ctx, rt, stmt, pl)
+	return err
+}
 
+// executePlan dispatches one plan. N=1 keeps the raw fast path; N>1 is the
+// sharding seam and currently returns a stable not-implemented error.
+func (p *Pipeline) executePlan(ctx context.Context, rt *Runtime, stmt *sql.Statement, pl *plan.Plan) (bool, error) {
+	switch len(pl.Targets) {
+	case 1:
+		return p.runOne(ctx, rt, stmt, pl.Targets[0])
+	default:
+		return p.dispatch(ctx, rt, stmt, pl)
+	}
+}
+
+func (p *Pipeline) dispatch(context.Context, *Runtime, *sql.Statement, *plan.Plan) (bool, error) {
+	return false, fmt.Errorf("execute: multi-target not implemented")
+}
+
+// runOne executes one target, acquires/reuses its lease and forwards the raw
+// response. It returns whether session state was successfully updated.
+func (p *Pipeline) runOne(ctx context.Context, rt *Runtime, stmt *sql.Statement, target route.Target) (bool, error) {
 	if rt.leases == nil {
 		rt.leases = make(map[string]*lease)
 	}
@@ -132,11 +150,11 @@ func (p *Pipeline) Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement)
 	if l == nil {
 		slice, err := p.cluster.Get(target.Slice)
 		if err != nil {
-			return err
+			return false, err
 		}
 		conn, pool, err := slice.Acquire(ctx, target.Role)
 		if err != nil {
-			return err
+			return false, err
 		}
 		l = &lease{slice: slice, conn: conn, pool: pool}
 		rt.leases[target.Slice] = l
@@ -157,34 +175,49 @@ func (p *Pipeline) Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement)
 		if acquired {
 			_ = p.releaseOne(rt, target.Slice, false)
 		}
-		return err
+		return false, err
 	}
 
 	req := backend.ExecRequest{
-		Payload: stmt.Payload,
+		Payload: payloadFor(stmt, target),
 		Prepare: stmt.Cmd == mysql.ComStmtPrepare,
 		NoReply: stmt.Cmd == mysql.ComStmtClose,
 	}
 	stream, err := l.conn.Exec(ctx, req)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer stream.Close()
 
 	raw, ok := stream.(rawForwarder)
 	if !ok {
-		return fmt.Errorf("execute: stream %T not forwardable", stream)
+		return false, fmt.Errorf("execute: stream %T not forwardable", stream)
 	}
 	info, err := raw.ForwardTo(ctx, rt.Front)
-	if err == nil && !info.ServerErr {
-		if !req.Prepare && !req.NoReply {
-			rt.State.SetInTx(info.Status&mysql.ServerStatusInTrans != 0)
-		}
-		applyEffect(rt.State, stmt.Effect)
-		applyResponseState(rt.State, stmt, info)
-		success = true
+	if err != nil {
+		return false, err
 	}
-	return err
+	if info.ServerErr {
+		return false, nil // ERR already forwarded; rowCount is marked -1
+	}
+	if !req.Prepare && !req.NoReply {
+		rt.State.SetInTx(info.Status&mysql.ServerStatusInTrans != 0)
+	}
+	applyEffect(rt.State, stmt.Effect)
+	applyResponseState(rt.State, stmt, info)
+	return true, nil
+}
+
+// payloadFor uses the per-target rewritten SQL when present. Only COM_QUERY
+// has a text SQL representation; prepared commands keep their original bytes.
+func payloadFor(stmt *sql.Statement, target route.Target) []byte {
+	if stmt.Cmd != mysql.ComQuery || target.SQL == "" {
+		return stmt.Payload
+	}
+	payload := make([]byte, 1+len(target.SQL))
+	payload[0] = mysql.ComQuery
+	copy(payload[1:], target.SQL)
+	return payload
 }
 
 // rewriteSessionFunc answers SELECT LAST_INSERT_ID()/ROW_COUNT() from session

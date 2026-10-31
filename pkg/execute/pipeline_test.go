@@ -606,3 +606,49 @@ func TestPipeline_PreparedExecuteUsesAffectedRows(t *testing.T) {
 	require.NoError(t, p.Handle(context.Background(), rt, stmt))
 	require.Equal(t, int64(2), rt.State.RowCount())
 }
+
+type sqlTargetRouter struct{ sql string }
+
+func (r sqlTargetRouter) Route(context.Context, *session.State, *sql.Statement) ([]route.Target, error) {
+	return []route.Target{{Slice: route.DefaultSlice, Role: constant.RoleMaster, SQL: r.sql}}, nil
+}
+
+func TestPayloadFor(t *testing.T) {
+	original := append([]byte{mysql.ComQuery}, []byte("SELECT 1")...)
+	stmt := &sql.Statement{Cmd: mysql.ComQuery, Payload: original, Raw: "SELECT 1"}
+
+	require.Equal(t, append([]byte{mysql.ComQuery}, []byte("SELECT 2")...),
+		payloadFor(stmt, route.Target{SQL: "SELECT 2"}))
+	require.Equal(t, original, payloadFor(stmt, route.Target{}),
+		"empty target SQL must fall back to the original payload")
+
+	execStmt := &sql.Statement{Cmd: mysql.ComStmtExecute, Payload: []byte{mysql.ComStmtExecute}}
+	require.Equal(t, execStmt.Payload, payloadFor(execStmt, route.Target{SQL: "SELECT 2"}),
+		"non-COM_QUERY commands must never use Target.SQL")
+}
+
+func TestPipeline_UsesTargetSQL(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, nil))),
+		plan.Builder{Router: sqlTargetRouter{sql: "SELECT 2"}})
+	require.NoError(t, err)
+
+	require.NoError(t, p.Handle(context.Background(), newRuntime(), query("SELECT 1")))
+	got := tr.last(t).lastReq.Payload
+	require.Equal(t, append([]byte{mysql.ComQuery}, []byte("SELECT 2")...), got)
+}
+
+func TestPipeline_MultiTargetNotImplemented(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, nil))),
+		plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	_, err = p.executePlan(context.Background(), newRuntime(), query("SELECT 1"), &plan.Plan{
+		Targets: []route.Target{
+			{Slice: "s0", Role: constant.RoleMaster},
+			{Slice: "s1", Role: constant.RoleMaster},
+		},
+	})
+	require.ErrorContains(t, err, "not implemented")
+}
