@@ -1,4 +1,4 @@
-package backend_server
+package backend
 
 import (
 	"context"
@@ -11,15 +11,21 @@ import (
 	"github.com/acorndb/prism/pkg/mysql/packet"
 )
 
-// MySQLBackend is a live backend connection after client handshake.
-type MySQLBackend struct {
+// Conn is a pooled MySQL backend connection.
+type Conn interface {
+	Reset(ctx context.Context) error
+	Close() error
+}
+
+// MySQLConn is a live backend connection after client handshake.
+type MySQLConn struct {
 	pc       *packet.Conn
 	database string
 	charset  string
 }
 
 // DialMySQL dials addr and completes a native-password handshake.
-func DialMySQL(ctx context.Context, addr, user, password, database string) (*MySQLBackend, error) {
+func DialMySQL(ctx context.Context, addr, user, password, database string) (*MySQLConn, error) {
 	d := net.Dialer{Timeout: 5 * time.Second}
 	raw, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -30,21 +36,21 @@ func DialMySQL(ctx context.Context, addr, user, password, database string) (*MyS
 		_ = raw.Close()
 		return nil, err
 	}
-	return &MySQLBackend{pc: c.PacketConn(), database: database}, nil
+	return &MySQLConn{pc: c.PacketConn(), database: database}, nil
 }
 
 // Packet returns the framed packet connection.
-func (b *MySQLBackend) Packet() *packet.Conn { return b.pc }
+func (b *MySQLConn) Packet() *packet.Conn { return b.pc }
 
 // Database returns the last known current schema on this backend.
-func (b *MySQLBackend) Database() string { return b.database }
+func (b *MySQLConn) Database() string { return b.database }
 
 // Charset returns the last known charset (SET NAMES) on this backend.
-func (b *MySQLBackend) Charset() string { return b.charset }
+func (b *MySQLConn) Charset() string { return b.charset }
 
 // Align brings the backend session to want database/charset (Gaea-style).
 // Empty want values are skipped. No-ops when already matched.
-func (b *MySQLBackend) Align(ctx context.Context, database, charset string) error {
+func (b *MySQLConn) Align(ctx context.Context, database, charset string) error {
 	_ = ctx
 	if database != "" && database != b.database {
 		cmd := make([]byte, 1+len(database))
@@ -66,7 +72,7 @@ func (b *MySQLBackend) Align(ctx context.Context, database, charset string) erro
 	return nil
 }
 
-func (b *MySQLBackend) execCommand(cmd []byte) error {
+func (b *MySQLConn) execCommand(cmd []byte) error {
 	pc := b.Packet()
 	pc.ResetSequence()
 	buf := make([]byte, 4+len(cmd))
@@ -85,7 +91,7 @@ func (b *MySQLBackend) execCommand(cmd []byte) error {
 }
 
 // Reset sends COM_RESET_CONNECTION and expects OK (MySQL 5.7+).
-func (b *MySQLBackend) Reset(ctx context.Context) error {
+func (b *MySQLConn) Reset(ctx context.Context) error {
 	_ = ctx
 	pc := b.Packet()
 	pc.ResetSequence()
@@ -106,7 +112,7 @@ func (b *MySQLBackend) Reset(ctx context.Context) error {
 }
 
 // Close closes the underlying connection.
-func (b *MySQLBackend) Close() error {
+func (b *MySQLConn) Close() error {
 	if b.pc == nil {
 		return nil
 	}

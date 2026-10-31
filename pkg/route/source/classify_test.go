@@ -1,11 +1,9 @@
-package router_test
+package source_test
 
 import (
 	"testing"
 
-	"github.com/acorndb/prism/pkg/mysql"
-	"github.com/acorndb/prism/pkg/router"
-	"github.com/acorndb/prism/pkg/session"
+	"github.com/acorndb/prism/pkg/route/source"
 	"github.com/stretchr/testify/require"
 )
 
@@ -42,48 +40,8 @@ func TestClassify_CorpusB(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
-			got := router.ClassifyWantSlave(tc.sql)
+			got := source.ClassifyWantSlave(tc.sql)
 			require.Equal(t, tc.want, got, "%s ref=%s sql=%q", tc.id, tc.ref, tc.sql)
 		})
 	}
-}
-
-func TestPick_CorpusA_Transaction(t *testing.T) {
-	// design §5.11 A* — Layer A
-	t.Run("A1", func(t *testing.T) {
-		st := session.NewState()
-		require.Equal(t, router.RoleSlave, router.Pick(st, mysql.ComQuery, "SELECT 1"))
-	})
-	t.Run("A2", func(t *testing.T) {
-		st := session.NewState()
-		require.Equal(t, router.RoleMaster, router.Pick(st, mysql.ComQuery, "BEGIN"))
-	})
-	t.Run("A3", func(t *testing.T) {
-		st := session.NewState()
-		st.SetInTx(true)
-		require.Equal(t, router.RoleMaster, router.Pick(st, mysql.ComQuery, "SELECT 1"))
-	})
-	t.Run("A5", func(t *testing.T) {
-		// ref: kingshard isInTransaction AC=0
-		st := session.NewState()
-		st.SetAutocommit(false)
-		require.Equal(t, router.RoleMaster, router.Pick(st, mysql.ComQuery, "SELECT 1"))
-	})
-	t.Run("A9", func(t *testing.T) {
-		st := session.NewState()
-		st.MarkReserved()
-		require.Equal(t, router.RoleMaster, router.Pick(st, mysql.ComQuery, "SELECT 1"))
-	})
-	t.Run("A10", func(t *testing.T) {
-		st := session.NewState()
-		require.Equal(t, router.RoleMaster, router.Pick(st, mysql.ComStmtPrepare, "SELECT 1"))
-	})
-}
-
-func TestPick_COM(t *testing.T) {
-	st := session.NewState()
-	require.Equal(t, router.RoleSlave, router.Pick(st, mysql.ComInitDB, "db"))
-	require.Equal(t, router.RoleSlave, router.Pick(st, mysql.ComFieldList, ""))
-	st.SetInTx(true)
-	require.Equal(t, router.RoleMaster, router.Pick(st, mysql.ComInitDB, "db"))
 }

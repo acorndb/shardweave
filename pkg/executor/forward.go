@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/acorndb/prism/pkg/backend_server"
+	"github.com/acorndb/prism/pkg/backend"
 	"github.com/acorndb/prism/pkg/mysql"
 	"github.com/acorndb/prism/pkg/mysql/packet"
 	"github.com/acorndb/prism/pkg/session"
 )
 
-func alignBackend(ctx context.Context, b backend_server.Backend, st *session.State) error {
+func alignBackend(ctx context.Context, b backend.Conn, st *session.State) error {
 	a, ok := b.(interface {
 		Align(context.Context, string, string) error
 	})
@@ -20,8 +20,8 @@ func alignBackend(ctx context.Context, b backend_server.Backend, st *session.Sta
 	return a.Align(ctx, st.Database(), st.Charset())
 }
 
-func writeBackend(b backend_server.Backend, cmd []byte) error {
-	mb, ok := b.(*backend_server.MySQLBackend)
+func writeBackend(b backend.Conn, cmd []byte) error {
+	mb, ok := b.(*backend.MySQLConn)
 	if !ok {
 		return fmt.Errorf("executor: backend type %T not supported", b)
 	}
@@ -32,8 +32,8 @@ func writeBackend(b backend_server.Backend, cmd []byte) error {
 	return back.WritePacket(buf)
 }
 
-func execCommand(front *packet.Conn, b backend_server.Backend, st *session.State, cmd []byte, prepare bool) error {
-	mb, ok := b.(*backend_server.MySQLBackend)
+func execCommand(front *packet.Conn, b backend.Conn, st *session.State, cmd []byte, prepare bool) error {
+	mb, ok := b.(*backend.MySQLConn)
 	if !ok {
 		return fmt.Errorf("executor: backend type %T not supported", b)
 	}

@@ -7,11 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acorndb/prism/pkg/backend_server"
+	"github.com/acorndb/prism/pkg/backend"
 	"github.com/acorndb/prism/pkg/constant"
 	"github.com/acorndb/prism/pkg/executor"
 	"github.com/acorndb/prism/pkg/proxy"
-	"github.com/acorndb/prism/pkg/router"
 	"github.com/stretchr/testify/require"
 	mysqltc "github.com/testcontainers/testcontainers-go/modules/mysql"
 )
@@ -53,11 +52,11 @@ func TestPassthroughQueryScenarios(t *testing.T) {
 	require.NoError(t, err)
 	mysqlAddr := net.JoinHostPort(host, mapped.Port())
 
-	p := backend_server.New(backend_server.Config{Capacity: 4, MaxCapacity: 16, GetTimeout: 5 * time.Second},
-		func(ctx context.Context) (backend_server.Backend, error) {
-			return backend_server.DialMySQL(ctx, mysqlAddr, calibUser, calibPass, dbProxied)
+	p := backend.NewPool(backend.PoolConfig{Capacity: 4, MaxCapacity: 16, GetTimeout: 5 * time.Second},
+		func(ctx context.Context) (backend.Conn, error) {
+			return backend.DialMySQL(ctx, mysqlAddr, calibUser, calibPass, dbProxied)
 		})
-	exec, err := executor.New(constant.ModeSingle, &router.Group{Master: p})
+	exec, err := executor.New(constant.ModeSingle, &backend.Slice{Master: p})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = exec.Close() })
 

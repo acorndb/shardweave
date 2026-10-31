@@ -1,4 +1,4 @@
-package backend_server
+package backend
 
 import (
 	"context"
@@ -8,17 +8,11 @@ import (
 	"time"
 )
 
-// Backend is a pooled MySQL backend connection.
-type Backend interface {
-	Reset(ctx context.Context) error
-	Close() error
-}
-
 // OpenFunc creates a new backend connection.
-type OpenFunc func(ctx context.Context) (Backend, error)
+type OpenFunc func(ctx context.Context) (Conn, error)
 
-// Config controls pool sizing and acquire timeout.
-type Config struct {
+// PoolConfig controls pool sizing and acquire timeout.
+type PoolConfig struct {
 	Capacity    int
 	MaxCapacity int
 	IdleTimeout time.Duration
@@ -27,18 +21,18 @@ type Config struct {
 
 // Pool is a simple bounded pool (gaea/vitess-style semantics, single backend target).
 type Pool struct {
-	cfg  Config
+	cfg  PoolConfig
 	open OpenFunc
 
 	mu     sync.Mutex
-	idle   []Backend
+	idle   []Conn
 	active int
 	closed bool
 }
 
-// New creates a Pool. Capacity is the initial idle target (lazy — no pre-create);
+// NewPool creates a Pool. Capacity is the initial idle target (lazy — no pre-create);
 // MaxCapacity caps total live connections.
-func New(cfg Config, open OpenFunc) *Pool {
+func NewPool(cfg PoolConfig, open OpenFunc) *Pool {
 	if cfg.MaxCapacity <= 0 {
 		cfg.MaxCapacity = 1
 	}
@@ -55,7 +49,7 @@ func New(cfg Config, open OpenFunc) *Pool {
 }
 
 // Acquire returns an idle backend or opens a new one up to MaxCapacity.
-func (p *Pool) Acquire(ctx context.Context) (Backend, error) {
+func (p *Pool) Acquire(ctx context.Context) (Conn, error) {
 	deadline := time.Now().Add(p.cfg.GetTimeout)
 	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
 		deadline = dl
@@ -101,7 +95,7 @@ func (p *Pool) Acquire(ctx context.Context) (Backend, error) {
 }
 
 // Release resets and returns b to the idle list, or closes it on reset failure.
-func (p *Pool) Release(b Backend) error {
+func (p *Pool) Release(b Conn) error {
 	if b == nil {
 		return nil
 	}
@@ -128,7 +122,7 @@ func (p *Pool) Release(b Backend) error {
 
 // Discard closes b and drops it from the in-use count without returning it to the idle list.
 // Used when a sticky/reserved frontend session disconnects (Vitess-style terminate).
-func (p *Pool) Discard(b Backend) error {
+func (p *Pool) Discard(b Conn) error {
 	if b == nil {
 		return nil
 	}

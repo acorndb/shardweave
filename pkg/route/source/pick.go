@@ -1,30 +1,31 @@
-package router
+package source
 
 import (
+	"github.com/acorndb/prism/pkg/constant"
 	"github.com/acorndb/prism/pkg/mysql"
 	"github.com/acorndb/prism/pkg/session"
 )
 
 // Pick chooses master vs slave intent for one command (design §5.10).
 // Session Layer A overrides statement Layer B.
-func Pick(st *session.State, cmd byte, sql string) TargetRole {
+func Pick(st *session.State, cmd byte, sql string) constant.Role {
 	if st != nil && st.NeedsSticky() {
-		return RoleMaster
+		return constant.RoleMaster
 	}
 	switch cmd {
 	case mysql.ComStmtPrepare, mysql.ComStmtExecute, mysql.ComStmtReset,
 		mysql.ComStmtClose, mysql.ComStmtSendLongData:
-		return RoleMaster // B11
+		return constant.RoleMaster // B11
 	case mysql.ComInitDB:
-		return RoleSlave // M5 when not sticky
+		return constant.RoleSlave // M5 when not sticky
 	case mysql.ComFieldList:
-		return RoleSlave
+		return constant.RoleSlave
 	case mysql.ComQuery:
 		if ClassifyWantSlave(sql) {
-			return RoleSlave
+			return constant.RoleSlave
 		}
-		return RoleMaster
+		return constant.RoleMaster
 	default:
-		return RoleMaster
+		return constant.RoleMaster
 	}
 }

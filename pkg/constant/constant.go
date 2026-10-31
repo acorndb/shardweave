@@ -15,6 +15,14 @@ const (
 	LoadBalanceRandom     = "random"
 )
 
+// Role is the backend role selected for one target.
+type Role string
+
+const (
+	RoleMaster Role = "master"
+	RoleSlave  Role = "slave"
+)
+
 // log.level
 const (
 	LogLevelDebug   = "debug"

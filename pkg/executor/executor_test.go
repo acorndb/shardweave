@@ -5,47 +5,46 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/acorndb/prism/pkg/backend_server"
+	"github.com/acorndb/prism/pkg/backend"
 	"github.com/acorndb/prism/pkg/constant"
 	"github.com/acorndb/prism/pkg/mysql"
-	"github.com/acorndb/prism/pkg/router"
 	"github.com/acorndb/prism/pkg/session"
 	"github.com/stretchr/testify/require"
 )
 
-type recordingBackend struct {
+type recordingConn struct {
 	resets int
 	closed bool
 	tag    string
 }
 
-func (b *recordingBackend) Reset(context.Context) error {
+func (b *recordingConn) Reset(context.Context) error {
 	b.resets++
 	return nil
 }
 
-func (b *recordingBackend) Close() error {
+func (b *recordingConn) Close() error {
 	b.closed = true
 	return nil
 }
 
-func (b *recordingBackend) Align(context.Context, string, string) error { return nil }
+func (b *recordingConn) Align(context.Context, string, string) error { return nil }
 
-func newTaggedPool(t *testing.T, tag string, opens *int) *backend_server.Pool {
+func newTaggedPool(t *testing.T, tag string, opens *int) *backend.Pool {
 	t.Helper()
-	p := backend_server.New(backend_server.Config{Capacity: 1, MaxCapacity: 4, GetTimeout: 0},
-		func(context.Context) (backend_server.Backend, error) {
+	p := backend.NewPool(backend.PoolConfig{Capacity: 1, MaxCapacity: 4, GetTimeout: 0},
+		func(context.Context) (backend.Conn, error) {
 			if opens != nil {
 				*opens++
 			}
-			return &recordingBackend{tag: tag}, nil
+			return &recordingConn{tag: tag}, nil
 		})
 	t.Cleanup(func() { _ = p.Close() })
 	return p
 }
 
 func TestNew_Modes(t *testing.T) {
-	g := &router.Group{Master: newTaggedPool(t, "m", nil)}
+	g := &backend.Slice{Master: newTaggedPool(t, "m", nil)}
 	e, err := New(constant.ModeSingle, g)
 	require.NoError(t, err)
 	require.Equal(t, constant.ModeSingle, e.Mode())
@@ -63,7 +62,7 @@ func TestNew_Modes(t *testing.T) {
 }
 
 func TestSharding_HandleUnimplemented(t *testing.T) {
-	e, err := New(constant.ModeSharding, &router.Group{})
+	e, err := New(constant.ModeSharding, &backend.Slice{})
 	require.NoError(t, err)
 	err = e.Handle(context.Background(), &Conn{State: session.NewState()}, Request{Cmd: mysql.ComQuery, SQL: "SELECT 1"})
 	require.Error(t, err)
@@ -72,9 +71,9 @@ func TestSharding_HandleUnimplemented(t *testing.T) {
 
 func TestSingle_SelectUsesMasterOnly(t *testing.T) {
 	var masterOpens, slaveOpens int
-	g := &router.Group{
+	g := &backend.Slice{
 		Master: newTaggedPool(t, "master", &masterOpens),
-		Slaves: []*backend_server.Pool{newTaggedPool(t, "slave", &slaveOpens)},
+		Slaves: []*backend.Pool{newTaggedPool(t, "slave", &slaveOpens)},
 	}
 	e, err := New(constant.ModeSingle, g)
 	require.NoError(t, err)
@@ -82,8 +81,8 @@ func TestSingle_SelectUsesMasterOnly(t *testing.T) {
 
 	c := &Conn{State: session.NewState()}
 	var gotTag string
-	require.NoError(t, pt.withBackend(context.Background(), c, Request{Cmd: mysql.ComQuery, SQL: "SELECT 1"}, func(b backend_server.Backend) error {
-		gotTag = b.(*recordingBackend).tag
+	require.NoError(t, pt.withBackend(context.Background(), c, Request{Cmd: mysql.ComQuery, SQL: "SELECT 1"}, func(b backend.Conn) error {
+		gotTag = b.(*recordingConn).tag
 		return nil
 	}))
 	require.Equal(t, "master", gotTag)
@@ -94,9 +93,9 @@ func TestSingle_SelectUsesMasterOnly(t *testing.T) {
 
 func TestRWSplit_SelectUsesSlave(t *testing.T) {
 	var masterOpens, slaveOpens int
-	g := &router.Group{
+	g := &backend.Slice{
 		Master: newTaggedPool(t, "master", &masterOpens),
-		Slaves: []*backend_server.Pool{newTaggedPool(t, "slave", &slaveOpens)},
+		Slaves: []*backend.Pool{newTaggedPool(t, "slave", &slaveOpens)},
 	}
 	e, err := New(constant.ModeRWSplit, g)
 	require.NoError(t, err)
@@ -104,8 +103,8 @@ func TestRWSplit_SelectUsesSlave(t *testing.T) {
 
 	c := &Conn{State: session.NewState()}
 	var gotTag string
-	require.NoError(t, pt.withBackend(context.Background(), c, Request{Cmd: mysql.ComQuery, SQL: "SELECT 1"}, func(b backend_server.Backend) error {
-		gotTag = b.(*recordingBackend).tag
+	require.NoError(t, pt.withBackend(context.Background(), c, Request{Cmd: mysql.ComQuery, SQL: "SELECT 1"}, func(b backend.Conn) error {
+		gotTag = b.(*recordingConn).tag
 		return nil
 	}))
 	require.Equal(t, "slave", gotTag)
@@ -135,9 +134,9 @@ func TestRWSplit_RouteSmoke(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var masterOpens, slaveOpens int
-			g := &router.Group{
+			g := &backend.Slice{
 				Master: newTaggedPool(t, "master", &masterOpens),
-				Slaves: []*backend_server.Pool{newTaggedPool(t, "slave", &slaveOpens)},
+				Slaves: []*backend.Pool{newTaggedPool(t, "slave", &slaveOpens)},
 			}
 			e, err := New(constant.ModeRWSplit, g)
 			require.NoError(t, err)
@@ -146,7 +145,7 @@ func TestRWSplit_RouteSmoke(t *testing.T) {
 			ctx := context.Background()
 
 			if tc.setupSticky {
-				require.NoError(t, pt.withBackend(ctx, c, Request{Cmd: mysql.ComQuery, SQL: "BEGIN"}, func(backend_server.Backend) error {
+				require.NoError(t, pt.withBackend(ctx, c, Request{Cmd: mysql.ComQuery, SQL: "BEGIN"}, func(backend.Conn) error {
 					c.State.SetInTx(true)
 					return nil
 				}))
@@ -155,8 +154,8 @@ func TestRWSplit_RouteSmoke(t *testing.T) {
 			}
 
 			var gotTag string
-			require.NoError(t, pt.withBackend(ctx, c, Request{Cmd: mysql.ComQuery, SQL: tc.sql}, func(b backend_server.Backend) error {
-				gotTag = b.(*recordingBackend).tag
+			require.NoError(t, pt.withBackend(ctx, c, Request{Cmd: mysql.ComQuery, SQL: tc.sql}, func(b backend.Conn) error {
+				gotTag = b.(*recordingConn).tag
 				return nil
 			}))
 			require.Equal(t, tc.wantTag, gotTag)
@@ -169,16 +168,16 @@ func TestRWSplit_RouteSmoke(t *testing.T) {
 
 func TestRWSplit_TxSelectStaysSticky(t *testing.T) {
 	var masterOpens, slaveOpens int
-	g := &router.Group{
+	g := &backend.Slice{
 		Master: newTaggedPool(t, "master", &masterOpens),
-		Slaves: []*backend_server.Pool{newTaggedPool(t, "slave", &slaveOpens)},
+		Slaves: []*backend.Pool{newTaggedPool(t, "slave", &slaveOpens)},
 	}
 	e, err := New(constant.ModeRWSplit, g)
 	require.NoError(t, err)
 	pt := e.(*passthrough)
 	c := &Conn{State: session.NewState()}
 
-	require.NoError(t, pt.withBackend(context.Background(), c, Request{Cmd: mysql.ComQuery, SQL: "BEGIN"}, func(backend_server.Backend) error {
+	require.NoError(t, pt.withBackend(context.Background(), c, Request{Cmd: mysql.ComQuery, SQL: "BEGIN"}, func(backend.Conn) error {
 		c.State.SetInTx(true)
 		return nil
 	}))
@@ -186,7 +185,7 @@ func TestRWSplit_TxSelectStaysSticky(t *testing.T) {
 	require.Equal(t, 1, masterOpens)
 	require.Equal(t, 0, slaveOpens)
 
-	require.NoError(t, pt.withBackend(context.Background(), c, Request{Cmd: mysql.ComQuery, SQL: "SELECT 1"}, func(backend_server.Backend) error {
+	require.NoError(t, pt.withBackend(context.Background(), c, Request{Cmd: mysql.ComQuery, SQL: "SELECT 1"}, func(backend.Conn) error {
 		return nil
 	}))
 	require.Equal(t, 1, masterOpens)
@@ -195,14 +194,14 @@ func TestRWSplit_TxSelectStaysSticky(t *testing.T) {
 }
 
 func TestReleaseSticky(t *testing.T) {
-	fb := &recordingBackend{tag: "sticky"}
-	p := backend_server.New(backend_server.Config{Capacity: 1, MaxCapacity: 2},
-		func(context.Context) (backend_server.Backend, error) {
+	fb := &recordingConn{tag: "sticky"}
+	p := backend.NewPool(backend.PoolConfig{Capacity: 1, MaxCapacity: 2},
+		func(context.Context) (backend.Conn, error) {
 			t.Fatal("should not open")
 			return nil, nil
 		})
 	t.Cleanup(func() { _ = p.Close() })
-	e, err := New(constant.ModeSingle, &router.Group{Master: p})
+	e, err := New(constant.ModeSingle, &backend.Slice{Master: p})
 	require.NoError(t, err)
 
 	c := &Conn{State: session.NewState(), Sticky: fb, StickyPool: p}
@@ -211,7 +210,7 @@ func TestReleaseSticky(t *testing.T) {
 	require.Nil(t, c.Sticky)
 	require.Equal(t, 1, fb.resets)
 
-	fb2 := &recordingBackend{tag: "drop"}
+	fb2 := &recordingConn{tag: "drop"}
 	c2 := &Conn{Sticky: fb2, StickyPool: p}
 	require.NoError(t, e.ReleaseSticky(c2, true))
 	require.Nil(t, c2.Sticky)

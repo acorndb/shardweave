@@ -89,13 +89,13 @@ prism/
 
 后置模块（P4 之后再建，不建空包）：`pkg/observability`、`pkg/admin`。
 
-当前实现 → 目标形态的映射：
+重构映射（R1 已完成前三行；`pkg/backend_server` / `pkg/router` 已删除）：
 
-| 当前 | 目标 | 阶段 |
+| 重构前 | 目标 | 阶段 |
 |---|---|---|
-| `pkg/backend_server`（Backend/Pool） | `pkg/backend`（Conn/Pool/Slice/Cluster） | P1 |
-| `pkg/router.Group` | `pkg/backend.Slice` / `Cluster` | P1 |
-| `pkg/router.Pick` / `ClassifyWantSlave` | `pkg/route/source` | P1 |
+| `pkg/backend_server`（Backend/Pool） | `pkg/backend`（Conn/Pool/Slice；Cluster 在 R6） | **R1 完成** |
+| `pkg/router.Group` | `pkg/backend.Slice` | **R1 完成** |
+| `pkg/router.Pick` / `ClassifyWantSlave` | `pkg/route/source` | **R1 完成** |
 | `pkg/executor.passthrough` | `pkg/execute` + `pkg/route/source` | P1 |
 | `pkg/executor.shardingExecutor` 桩 | 删除；sharding 变成 Router | P1 |
 | `pkg/executor/forward.go` | `pkg/execute` + `pkg/backend.Conn` | P1 |

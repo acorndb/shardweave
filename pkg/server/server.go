@@ -12,12 +12,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/acorndb/prism/pkg/backend_server"
+	"github.com/acorndb/prism/pkg/backend"
 	"github.com/acorndb/prism/pkg/config"
 	"github.com/acorndb/prism/pkg/constant"
 	"github.com/acorndb/prism/pkg/executor"
 	"github.com/acorndb/prism/pkg/proxy"
-	"github.com/acorndb/prism/pkg/router"
 )
 
 // Server is one proxy process: listen address + executor + live config.
@@ -77,26 +76,26 @@ func newExecutor(rt *config.Runtime, cfg *config.Config) (executor.Executor, err
 		mode = constant.ModeSingle
 	}
 
-	open := func(ep config.BackendEndpoint) backend_server.OpenFunc {
-		return func(ctx context.Context) (backend_server.Backend, error) {
-			return backend_server.DialMySQL(ctx, ep.Address, ep.User, ep.Password, ep.Database)
+	open := func(ep config.BackendEndpoint) backend.OpenFunc {
+		return func(ctx context.Context) (backend.Conn, error) {
+			return backend.DialMySQL(ctx, ep.Address, ep.User, ep.Password, ep.Database)
 		}
 	}
 
-	var g *router.Group
+	var g *backend.Slice
 	switch mode {
 	case constant.ModeSingle:
 		ep, err := bs.Primary()
 		if err != nil {
 			return nil, err
 		}
-		g = &router.Group{Master: backend_server.New(pcfg, open(ep))}
+		g = &backend.Slice{Master: backend.NewPool(pcfg, open(ep))}
 	case constant.ModeRWSplit:
 		if bs.Master == nil {
 			return nil, fmt.Errorf("server: rwsplit master required")
 		}
-		g = &router.Group{
-			Master:      backend_server.New(pcfg, open(*bs.Master)),
+		g = &backend.Slice{
+			Master:      backend.NewPool(pcfg, open(*bs.Master)),
 			LoadBalance: bs.LoadBalance,
 		}
 		if g.LoadBalance == "" {
@@ -104,7 +103,7 @@ func newExecutor(rt *config.Runtime, cfg *config.Config) (executor.Executor, err
 		}
 		for i := range bs.Slaves {
 			ep := bs.Slaves[i]
-			g.Slaves = append(g.Slaves, backend_server.New(pcfg, open(ep)))
+			g.Slaves = append(g.Slaves, backend.NewPool(pcfg, open(ep)))
 		}
 		_ = rt // pools dial from cfg snapshot at open; address reload still rejected
 	default:
@@ -185,8 +184,8 @@ func (s *Server) Close() {
 	})
 }
 
-func toPoolConfig(c config.Pool) backend_server.Config {
-	return backend_server.Config{
+func toPoolConfig(c config.Pool) backend.PoolConfig {
+	return backend.PoolConfig{
 		Capacity:    c.Capacity,
 		MaxCapacity: c.MaxCapacity,
 		IdleTimeout: c.IdleTimeout,

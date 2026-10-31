@@ -1,4 +1,4 @@
-package backend_server
+package backend
 
 import (
 	"context"
@@ -18,12 +18,12 @@ func writeOK(t *testing.T, w *packet.Conn) {
 	require.NoError(t, w.WritePacket(buf))
 }
 
-func TestMySQLBackend_Align_USEAndSetNames(t *testing.T) {
+func TestMySQLConn_Align_USEAndSetNames(t *testing.T) {
 	server, client := net.Pipe()
 	t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
 	srv := packet.NewConn(server)
 
-	b := &MySQLBackend{pc: packet.NewConn(client)}
+	b := &MySQLConn{pc: packet.NewConn(client)}
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- b.Align(context.Background(), "app", "utf8mb4")
@@ -50,20 +50,20 @@ func TestMySQLBackend_Align_USEAndSetNames(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
-func TestMySQLBackend_Align_SkipsEmpty(t *testing.T) {
+func TestMySQLConn_Align_SkipsEmpty(t *testing.T) {
 	server, client := net.Pipe()
 	t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
 
-	b := &MySQLBackend{pc: packet.NewConn(client)}
+	b := &MySQLConn{pc: packet.NewConn(client)}
 	require.NoError(t, b.Align(context.Background(), "", ""))
 }
 
-func TestMySQLBackend_Reset_ClearsKnownSettings(t *testing.T) {
+func TestMySQLConn_Reset_ClearsKnownSettings(t *testing.T) {
 	server, client := net.Pipe()
 	t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
 	srv := packet.NewConn(server)
 
-	b := &MySQLBackend{pc: packet.NewConn(client), database: "app", charset: "utf8mb4"}
+	b := &MySQLConn{pc: packet.NewConn(client), database: "app", charset: "utf8mb4"}
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- b.Reset(context.Background())

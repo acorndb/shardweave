@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/acorndb/prism/pkg/backend_server"
+	"github.com/acorndb/prism/pkg/backend"
 	"github.com/acorndb/prism/pkg/constant"
 	"github.com/acorndb/prism/pkg/mysql"
 	"github.com/acorndb/prism/pkg/mysql/packet"
-	"github.com/acorndb/prism/pkg/router"
+	"github.com/acorndb/prism/pkg/route/source"
 	"github.com/acorndb/prism/pkg/session"
 )
 
@@ -21,8 +21,8 @@ var ErrShardingNotImplemented = errors.New("executor: sharding not implemented")
 type Conn struct {
 	Front      *packet.Conn
 	State      *session.State
-	Sticky     backend_server.Backend
-	StickyPool *backend_server.Pool
+	Sticky     backend.Conn
+	StickyPool *backend.Pool
 }
 
 // Request is one frontend command for Handle.
@@ -41,7 +41,7 @@ type Executor interface {
 }
 
 // New builds an Executor for backend_server.mode.
-func New(mode string, g *router.Group) (Executor, error) {
+func New(mode string, g *backend.Slice) (Executor, error) {
 	if mode == "" {
 		mode = constant.ModeSingle
 	}
@@ -53,8 +53,8 @@ func New(mode string, g *router.Group) (Executor, error) {
 		return &passthrough{
 			mode:  constant.ModeSingle,
 			group: g,
-			pick: func(*session.State, byte, string) router.TargetRole {
-				return router.RoleMaster
+			pick: func(*session.State, byte, string) constant.Role {
+				return constant.RoleMaster
 			},
 		}, nil
 	case constant.ModeRWSplit:
@@ -64,7 +64,7 @@ func New(mode string, g *router.Group) (Executor, error) {
 		return &passthrough{
 			mode:  constant.ModeRWSplit,
 			group: g,
-			pick:  router.Pick,
+			pick:  source.Pick,
 		}, nil
 	case constant.ModeSharding:
 		return &shardingExecutor{}, nil
@@ -75,8 +75,8 @@ func New(mode string, g *router.Group) (Executor, error) {
 
 type passthrough struct {
 	mode  string
-	group *router.Group
-	pick  func(*session.State, byte, string) router.TargetRole
+	group *backend.Slice
+	pick  func(*session.State, byte, string) constant.Role
 }
 
 func (p *passthrough) Mode() string { return p.mode }
@@ -107,15 +107,15 @@ func (p *passthrough) Handle(ctx context.Context, c *Conn, req Request) error {
 	}
 	switch req.Cmd {
 	case mysql.ComStmtClose:
-		return p.withBackend(ctx, c, req, func(b backend_server.Backend) error {
+		return p.withBackend(ctx, c, req, func(b backend.Conn) error {
 			return writeBackend(b, req.Payload)
 		})
 	case mysql.ComStmtPrepare:
-		return p.withBackend(ctx, c, req, func(b backend_server.Backend) error {
+		return p.withBackend(ctx, c, req, func(b backend.Conn) error {
 			return execCommand(c.Front, b, c.State, req.Payload, true)
 		})
 	default:
-		return p.withBackend(ctx, c, req, func(b backend_server.Backend) error {
+		return p.withBackend(ctx, c, req, func(b backend.Conn) error {
 			return execCommand(c.Front, b, c.State, req.Payload, false)
 		})
 	}
@@ -125,10 +125,10 @@ func (p *passthrough) withBackend(
 	ctx context.Context,
 	c *Conn,
 	req Request,
-	fn func(backend_server.Backend) error,
+	fn func(backend.Conn) error,
 ) error {
-	var b backend_server.Backend
-	var pool *backend_server.Pool
+	var b backend.Conn
+	var pool *backend.Pool
 	var err error
 
 	if c.Sticky != nil {

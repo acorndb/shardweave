@@ -1,18 +1,10 @@
-// Package router implements backend_server pick rules (design §5).
-// Rules are ported from kingshard/Gaea/dbpack; see route_test.go refs.
-package router
+// Package source implements read/write source selection rules (design §5).
+// Rules are ported from kingshard/Gaea/dbpack; see classify_test.go refs.
+package source
 
 import (
 	"strings"
 	"unicode"
-)
-
-// TargetRole is master or slave intent before fallback.
-type TargetRole int
-
-const (
-	RoleMaster TargetRole = iota
-	RoleSlave
 )
 
 // ClassifyWantSlave reports Layer-B intent (ignore session). false → master.

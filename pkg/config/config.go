@@ -51,7 +51,7 @@ type BackendEndpoint struct {
 	Database string `yaml:"database"`
 }
 
-// Pool maps to backend_server.Config fields.
+// Pool maps to backend.PoolConfig fields.
 type Pool struct {
 	Capacity    int           `yaml:"capacity"`
 	MaxCapacity int           `yaml:"max_capacity"`
