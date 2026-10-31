@@ -1,6 +1,6 @@
 # AGENTS.md
 
-prism 是 Go 1.25+ 项目（module: `github.com/acorndb/prism`）：MySQL 分库分表代理。
+prism 是 Go 1.27+ 项目（module: `github.com/acorndb/prism`）：MySQL 分库分表代理。
 - 实现偏离已定设计时：**先改文档，再改代码**。
 
 ## 测试与 TDD 规范（强制）
@@ -117,18 +117,3 @@ files:
 - CI（`.github/workflows/ci.yml`）跑 `make test-unit` 与 `make test-integration`、以及 `make lint`。
 - 仓库若后续增加 `make coverage-gate`（增量覆盖率 + review `open` 扫描），以其为准；在此之前 Agent 仍须遵守本节报告格式与「无 open 再提交」约定。
 - **不要**为了「模拟门禁」自动跑全量 `make test`；等用户显式要求。
-
-## 实现时额外约束（本仓库）
-
-- M1 主路径：`NoopRouter → PassthroughPlan → Dispatch(1) → IdentityMerger`；分片/改写/聚合只经预留接口演进。
-- 后端拓扑：配置顶层 `backend_server.mode` = `single` / `rwsplit` / `sharding`（学 dbpack 三 mode 叙事）。**同接口三 Executor**（`pkg/executor`：Single / RWSplit / Sharding stub），mode 工厂装配；共享 forward，差异在选源。`rwsplit` 选源**对照 kingshard/Gaea 规则移植**（启发 + 会话），**事务/sticky 优先于读从**。详见 E10、`docs/design/backend-server-single-rwsplit-design.md`、`docs/design/executor-three-mode-design.md`。
-- 不采用 Gaea 式「全局物化再计算」作为默认跨片路径；分片规则后置调研。
-- `sharding` / 未实现字段：不要在 YAML 里预留“忽略生效”的假字段；用 KnownFields / Validate **拒绝**。
-- 用户变量 / 临时表 / 锁：会话 **reserved** 钉后端连接；系统变量白名单借连对齐；归还池前优先 `COM_RESET_CONNECTION`。
-- Prepare：前后端均走二进制协议（见 M1 设计 D2-A）。
-
-### 协议层实现原则（强制）
-
-- **对照移植，少自创**：`pkg/mysql/packet`、`auth`、握手与 COM 处理以 [`go-mysql-org/go-mysql`](https://github.com/go-mysql-org/go-mysql) 的包结构与 API 约定为第一参考（如 `WritePacket` 前 4 字节预留 header、`Sequence` 字段）；auth/能力协商细节对照 Vitess `go/mysql`。
-- 代码第一方维护，**不**把 go-mysql / Vitess 整库当运行时黑盒依赖；可复制/改编必要片段并注明来源。
-- 不发明与上述项目不一致的线格式或帧语义；压缩等复杂路径 P0 不做，需要时再按开源实现补。
