@@ -205,7 +205,7 @@ func TestDispatch_Rejects(t *testing.T) {
 		_, err := p.executePlan(ctx, newRuntime(), query("SELECT * FROM orders"), &plan.Plan{
 			Kind:    plan.MultiShard,
 			Targets: multiTargets(),
-			Merge:   plan.MergeSpec{Distinct: true, OrderBy: []plan.OrderKey{{Column: 0}}},
+			Merge:   plan.MergeSpec{Distinct: true, Aggregates: []plan.AggregateSpec{{Func: plan.AggCount}}},
 		})
 		var rej *errs.MySQL
 		require.ErrorAs(t, err, &rej)
@@ -448,6 +448,57 @@ func TestDispatch_Avg(t *testing.T) {
 	require.Empty(t, rt.leases)
 	require.Equal(t, 1, tr0.last(t).resets)
 	require.Equal(t, 1, tr1.last(t).resets)
+}
+
+func TestDispatch_GroupOrderLimit(t *testing.T) {
+	tr0, tr1 := &tracker{}, &tracker{}
+	fields := []result.Field{
+		{Name: "user_id", OrgName: "user_id", Type: result.TypeLong, Charset: 63},
+		{Name: "COUNT(*)", OrgName: "COUNT(*)", Type: result.TypeLongLong, Charset: 63},
+		{Name: "SUM(amount)", OrgName: "SUM(amount)", Type: result.TypeNewDecimal, Charset: 63},
+	}
+	p := newMultiPipeline(t, tr0, tr1,
+		func(c *fakeConn) {
+			c.fields = fields
+			c.rows = []result.Row{
+				{[]byte("1"), []byte("2"), []byte("30")},
+				{[]byte("2"), []byte("1"), []byte("100")},
+			}
+		},
+		func(c *fakeConn) {
+			c.fields = fields
+			c.rows = []result.Row{{[]byte("1"), []byte("1"), []byte("5")}}
+		})
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	_, err := p.executePlan(context.Background(), rt,
+		query("SELECT user_id, COUNT(*), SUM(amount) FROM orders GROUP BY user_id ORDER BY SUM(amount) DESC LIMIT 1"),
+		&plan.Plan{
+			Kind:    plan.MultiShard,
+			Targets: multiTargets(),
+			Merge: plan.MergeSpec{
+				GroupBy: []int{0},
+				Aggregates: []plan.AggregateSpec{
+					{Func: plan.AggCount, Column: 1, Output: 1},
+					{Func: plan.AggSum, Column: 2, Output: 2},
+				},
+				Output:  []int{0, 1, 2},
+				OrderBy: []plan.OrderKey{{Column: 2, Desc: true}},
+				Limit:   &plan.Limit{Count: 1},
+			},
+		})
+	require.NoError(t, err)
+
+	pkts := collect()
+	require.Len(t, pkts, 1+3+1+1)
+	cells, err := mysql.DecodeTextRow(pkts[4], 3)
+	require.NoError(t, err)
+	require.Equal(t, []string{"2", "1", "100"}, []string{string(cells[0]), string(cells[1]), string(cells[2])})
+	require.True(t, tr0.last(t).closed, "LIMIT after group may leave nothing unread, but is conservative")
+	require.True(t, tr1.last(t).closed)
+	require.Empty(t, rt.leases)
 }
 
 func TestDispatch_Distinct(t *testing.T) {

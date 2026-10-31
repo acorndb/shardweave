@@ -91,3 +91,14 @@ func TestSelect_ExtraFields(t *testing.T) {
 	require.Equal(t, "__sw_order_0", got.Fields.Fields[1].AsName.L)
 	require.Len(t, sel.Fields.Fields, 1, "caller AST must be restored")
 }
+
+func TestSelect_RemoveLimit(t *testing.T) {
+	sel := parseSelect(t, "SELECT DISTINCT amount FROM orders LIMIT 3")
+	out, err := rewrite.Select(sel, rewrite.Spec{RemoveLimit: true})
+	require.NoError(t, err)
+	res, err := sqlparser.Parse(out)
+	require.NoError(t, err)
+	got := res.Stmts[0].(*ast.SelectStmt)
+	require.Nil(t, got.Limit)
+	require.NotNil(t, sel.Limit, "caller AST must be restored")
+}

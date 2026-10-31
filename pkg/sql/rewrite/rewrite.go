@@ -35,6 +35,9 @@ type Spec struct {
 	// positions are therefore len(original)+2*i, +1 for AVG.
 	ExtraAggregates []ExtraAggregate
 	ExtraFields     []ExtraField
+	// RemoveLimit drops LIMIT from the per-shard SQL. GROUP BY/DISTINCT apply
+	// LIMIT after the global merge, so per-shard truncation is unsafe.
+	RemoveLimit bool
 }
 
 // Select restores sel with spec applied. The caller's AST is restored before
@@ -45,7 +48,10 @@ func Select(sel *ast.SelectStmt, spec Spec) (string, error) {
 	}
 	oldLimit := sel.Limit
 	oldFields := sel.Fields
-	if spec.PerShardLimit != nil {
+	switch {
+	case spec.RemoveLimit:
+		sel.Limit = nil
+	case spec.PerShardLimit != nil:
 		sel.Limit = &ast.Limit{Count: ast.NewValueExpr(*spec.PerShardLimit, "", "")}
 	}
 	if len(spec.ExtraAggregates) > 0 || len(spec.ExtraFields) > 0 {

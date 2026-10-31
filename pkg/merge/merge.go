@@ -16,19 +16,12 @@ import (
 // can reject unsupported plans before acquiring backends.
 func Validate(spec plan.MergeSpec) error {
 	if spec.Distinct {
-		if len(spec.GroupBy) > 0 || len(spec.Aggregates) > 0 || len(spec.OrderBy) > 0 ||
-			spec.Limit != nil || len(spec.Output) > 0 {
+		if len(spec.GroupBy) > 0 || len(spec.Aggregates) > 0 || len(spec.Output) > 0 {
 			return errs.Unsupported("multi-shard DISTINCT with other merge features is not supported")
 		}
 		return nil
 	}
 	if len(spec.GroupBy) > 0 {
-		if len(spec.OrderBy) > 0 {
-			return errs.Unsupported("multi-shard GROUP BY with ORDER BY is not supported")
-		}
-		if spec.Limit != nil {
-			return errs.Unsupported("multi-shard GROUP BY with LIMIT is not supported")
-		}
 		return nil
 	}
 	if len(spec.Aggregates) > 0 && len(spec.OrderBy) > 0 {
@@ -44,10 +37,18 @@ func Merge(streams []result.Stream, fields []result.Field, spec plan.MergeSpec) 
 		return nil, err
 	}
 	if spec.Distinct {
-		return Distinct(streams, fields)
+		out, err := Distinct(streams, fields)
+		if err != nil {
+			return nil, err
+		}
+		return sortAndLimit(out, spec)
 	}
 	if len(spec.GroupBy) > 0 {
-		return Group(streams, fields, spec.GroupBy, spec.Aggregates, spec.Output)
+		out, err := Group(streams, fields, spec.GroupBy, spec.Aggregates, spec.Output)
+		if err != nil {
+			return nil, err
+		}
+		return sortAndLimit(out, spec)
 	}
 	var out result.Stream
 	switch {
@@ -72,6 +73,21 @@ func Merge(streams []result.Stream, fields []result.Field, spec plan.MergeSpec) 
 			return nil, err
 		}
 		out = projected
+	}
+	if spec.Limit != nil {
+		out = Limit(out, spec.Limit.Offset, spec.Limit.Count)
+	}
+	return out, nil
+}
+
+func sortAndLimit(upstream result.Stream, spec plan.MergeSpec) (result.Stream, error) {
+	out := upstream
+	if len(spec.OrderBy) > 0 {
+		sorted, err := Sort(out, out.Fields(), spec.OrderBy)
+		if err != nil {
+			return nil, err
+		}
+		out = sorted
 	}
 	if spec.Limit != nil {
 		out = Limit(out, spec.Limit.Offset, spec.Limit.Count)

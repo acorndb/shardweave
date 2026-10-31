@@ -160,10 +160,26 @@ func TestMerge_Factory(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"1"}, collect(t, ordered))
 
+	grouped, err := merge.Merge(mk(), fields, plan.MergeSpec{
+		GroupBy: []int{0}, Output: []int{0},
+		OrderBy: []plan.OrderKey{{Column: 0, Desc: true}},
+		Limit:   &plan.Limit{Count: 1},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"2"}, collect(t, grouped))
+
+	distinct, err := merge.Merge(mk(), fields, plan.MergeSpec{
+		Distinct: true,
+		OrderBy:  []plan.OrderKey{{Column: 0}},
+		Limit:    &plan.Limit{Count: 1},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"1"}, collect(t, distinct))
+
 	cases := []plan.MergeSpec{
-		{GroupBy: []int{0}, OrderBy: []plan.OrderKey{{Column: 0}}},
-		{GroupBy: []int{0}, Limit: &plan.Limit{Count: 1}},
-		{Distinct: true, OrderBy: []plan.OrderKey{{Column: 0}}},
+		{Distinct: true, Aggregates: []plan.AggregateSpec{{Func: plan.AggCount}}},
+		{Distinct: true, GroupBy: []int{0}},
+		{Distinct: true, Output: []int{0}},
 		{
 			Aggregates: []plan.AggregateSpec{{Func: plan.AggCount, Column: 0, Output: 0}},
 			OrderBy:    []plan.OrderKey{{Column: 0}},
@@ -182,10 +198,20 @@ func TestValidate(t *testing.T) {
 		OrderBy: []plan.OrderKey{{Column: 0}},
 		Limit:   &plan.Limit{Count: 1},
 	}))
+	require.NoError(t, merge.Validate(plan.MergeSpec{
+		GroupBy: []int{0}, Output: []int{0},
+		OrderBy: []plan.OrderKey{{Column: 0}},
+		Limit:   &plan.Limit{Count: 1},
+	}))
+	require.NoError(t, merge.Validate(plan.MergeSpec{
+		Distinct: true,
+		OrderBy:  []plan.OrderKey{{Column: 0}},
+		Limit:    &plan.Limit{Count: 1},
+	}))
 	for _, spec := range []plan.MergeSpec{
-		{GroupBy: []int{0}, OrderBy: []plan.OrderKey{{Column: 0}}},
-		{GroupBy: []int{0}, Limit: &plan.Limit{Count: 1}},
-		{Distinct: true, OrderBy: []plan.OrderKey{{Column: 0}}},
+		{Distinct: true, Aggregates: []plan.AggregateSpec{{Func: plan.AggCount}}},
+		{Distinct: true, GroupBy: []int{0}},
+		{Distinct: true, Output: []int{0}},
 		{Aggregates: []plan.AggregateSpec{{Func: plan.AggCount}}, OrderBy: []plan.OrderKey{{Column: 0}}},
 	} {
 		var me *errs.MySQL

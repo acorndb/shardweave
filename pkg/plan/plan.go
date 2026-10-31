@@ -195,22 +195,50 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 		return MergeSpec{}, nil
 	}
 	if sel.Distinct {
-		if sel.GroupBy != nil || sel.OrderBy != nil || sel.Limit != nil {
-			return MergeSpec{}, errs.Unsupported("multi-shard DISTINCT with GROUP BY/ORDER BY/LIMIT is not supported")
+		if sel.GroupBy != nil {
+			return MergeSpec{}, errs.Unsupported("multi-shard DISTINCT with GROUP BY is not supported")
 		}
 		for _, field := range sel.Fields.Fields {
 			if field.Expr != nil && hasAggregate(field.Expr) {
 				return MergeSpec{}, errs.Unsupported("multi-shard DISTINCT with aggregates is not supported")
 			}
 		}
-		return MergeSpec{Distinct: true}, nil
+		keys, rej := postOrderKeys(sel)
+		if rej != nil {
+			return MergeSpec{}, rej
+		}
+		spec := MergeSpec{Distinct: true, OrderBy: keys}
+		removeLimit := false
+		if sel.Limit != nil {
+			offset, count, ok := sql.ParseLimit(sel.Limit)
+			if !ok {
+				return MergeSpec{}, errs.Unsupported("multi-shard LIMIT must be literal integers")
+			}
+			spec.Limit = &Limit{Offset: offset, Count: count}
+			removeLimit = true
+		}
+		return applyRewrite(sel, targets, spec, nil, nil, removeLimit)
 	}
 	if sel.GroupBy != nil {
 		spec, extras, rej := groupSpecs(sel)
 		if rej != nil {
 			return MergeSpec{}, rej
 		}
-		return applyRewrite(sel, targets, spec, extras, nil)
+		keys, rej := postOrderKeys(sel)
+		if rej != nil {
+			return MergeSpec{}, rej
+		}
+		spec.OrderBy = keys
+		removeLimit := false
+		if sel.Limit != nil {
+			offset, count, ok := sql.ParseLimit(sel.Limit)
+			if !ok {
+				return MergeSpec{}, errs.Unsupported("multi-shard LIMIT must be literal integers")
+			}
+			spec.Limit = &Limit{Offset: offset, Count: count}
+			removeLimit = true
+		}
+		return applyRewrite(sel, targets, spec, extras, nil, removeLimit)
 	}
 	aggs, extras, rej := aggregateSpecs(sel)
 	if rej != nil {
@@ -222,7 +250,7 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 			return MergeSpec{}, errs.Unsupported("multi-shard aggregate with ORDER BY is not supported")
 		}
 		spec.Aggregates = aggs
-		return applyRewrite(sel, targets, spec, extras, nil)
+		return applyRewrite(sel, targets, spec, extras, nil, false)
 	}
 	keys, orderFields, output, rej := orderSpec(sel)
 	if rej != nil {
@@ -230,7 +258,7 @@ func multiShardMerge(stmt *sql.Statement, targets []route.Target) (MergeSpec, *e
 	}
 	spec.OrderBy = keys
 	spec.Output = output
-	return applyRewrite(sel, targets, spec, nil, orderFields)
+	return applyRewrite(sel, targets, spec, nil, orderFields, false)
 }
 
 // applyRewrite parses LIMIT and rewrites per-shard SQL when OFFSET or hidden
@@ -241,9 +269,10 @@ func applyRewrite(
 	spec MergeSpec,
 	extras []rewrite.ExtraAggregate,
 	orderFields []rewrite.ExtraField,
+	removeLimit bool,
 ) (MergeSpec, *errs.MySQL) {
 	var perShard *int64
-	if sel.Limit != nil {
+	if sel.Limit != nil && !removeLimit {
 		offset, count, ok := sql.ParseLimit(sel.Limit)
 		if !ok {
 			return MergeSpec{}, errs.Unsupported("multi-shard LIMIT must be literal integers")
@@ -257,13 +286,14 @@ func applyRewrite(
 		}
 		spec.Limit = &Limit{Offset: offset, Count: count}
 	}
-	if perShard == nil && len(extras) == 0 && len(orderFields) == 0 {
+	if perShard == nil && len(extras) == 0 && len(orderFields) == 0 && !removeLimit {
 		return spec, nil
 	}
 	sqlText, err := rewrite.Select(sel, rewrite.Spec{
 		PerShardLimit:   perShard,
 		ExtraAggregates: extras,
 		ExtraFields:     orderFields,
+		RemoveLimit:     removeLimit,
 	})
 	if err != nil {
 		return MergeSpec{}, errs.Unsupported("multi-shard rewrite failed: %v", err)
@@ -277,12 +307,6 @@ func applyRewrite(
 // groupSpecs accepts projected group columns plus aggregate-only other fields.
 // Group keys must be in the select list so the merge layer has their values.
 func groupSpecs(sel *ast.SelectStmt) (MergeSpec, []rewrite.ExtraAggregate, *errs.MySQL) {
-	if sel.OrderBy != nil {
-		return MergeSpec{}, nil, errs.Unsupported("multi-shard GROUP BY with ORDER BY is not supported")
-	}
-	if sel.Limit != nil {
-		return MergeSpec{}, nil, errs.Unsupported("multi-shard GROUP BY with LIMIT is not supported")
-	}
 	base := len(sel.Fields.Fields)
 	output := make([]int, base)
 	for i := range output {
@@ -426,6 +450,34 @@ func aggregateSpecs(sel *ast.SelectStmt) ([]AggregateSpec, []rewrite.ExtraAggreg
 		return nil, nil, errs.Unsupported("multi-shard aggregate query must project only aggregate functions")
 	}
 	return specs, extras, nil
+}
+
+// postOrderKeys resolves ORDER BY against output columns after GROUP BY or
+// DISTINCT. Expressions must be selected columns/aliases or positions.
+func postOrderKeys(sel *ast.SelectStmt) ([]OrderKey, *errs.MySQL) {
+	if sel.OrderBy == nil {
+		return nil, nil
+	}
+	base := len(sel.Fields.Fields)
+	keys := make([]OrderKey, 0, len(sel.OrderBy.Items))
+	for _, item := range sel.OrderBy.Items {
+		switch e := item.Expr.(type) {
+		case *ast.PositionExpr:
+			if e.N < 1 || e.N > base {
+				return nil, errs.Unsupported("ORDER BY position %d is out of range", e.N)
+			}
+			keys = append(keys, OrderKey{Kind: OrderByPosition, Column: e.N - 1, Desc: item.Desc})
+		case *ast.ColumnNameExpr:
+			idx := selectFieldIndex(sel, e.Name.Name.L)
+			if idx < 0 {
+				return nil, errs.Unsupported("ORDER BY column %q must be selected", e.Name.Name.O)
+			}
+			keys = append(keys, OrderKey{Kind: OrderByPosition, Column: idx, Desc: item.Desc})
+		default:
+			return nil, errs.Unsupported("GROUP BY/DISTINCT ORDER BY supports selected columns or positions only")
+		}
+	}
+	return keys, nil
 }
 
 func orderSpec(sel *ast.SelectStmt) ([]OrderKey, []rewrite.ExtraField, []int, *errs.MySQL) {

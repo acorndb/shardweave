@@ -366,10 +366,9 @@ route → []Target
   未投影的列/表达式通过隐藏列下推，`Output` 投影去掉隐藏列；字符串/二进制/
   JSON 类型 1235；`SELECT *` 搭配表达式排序 1235；
 - 支持 `COUNT/SUM/MIN/MAX/AVG`（无 GROUP BY）、数值/日期列 GROUP BY、
-  数值/日期列 DISTINCT；
-- 不支持 `HAVING / 窗口函数 / 聚合 DISTINCT / GROUP BY 或 DISTINCT 搭配
-  ORDER BY/LIMIT / INTO / 锁定读 / SQL_CALC_FOUND_ROWS`；字符串列分组/去重
-  仍 1235；
+  数值/日期列 DISTINCT，以及其按已选列的 ORDER BY/LIMIT；
+- 不支持 `HAVING / 窗口函数 / 聚合 DISTINCT / 聚合表达式排序 / INTO /
+  锁定读 / SQL_CALC_FOUND_ROWS`；字符串列分组/去重/排序仍 1235；
 - `LIMIT n` / `LIMIT n OFFSET m`：OFFSET>0 时 per-shard 改写成 `LIMIT m+n`，
   归并后由 `Limit` 截断/跳过；
 - 每个 target 顺序执行（D7 再并发）；先解码全部列元数据并校验一致，再写
@@ -550,6 +549,15 @@ route → []Target
 - `DISTINCT + ORDER BY/LIMIT`、聚合 DISTINCT 仍 1235；
 - oracle 覆盖单列/多列 DISTINCT 与单库一致。
 
+已落地（B1.9，GROUP BY/DISTINCT 排序与 LIMIT，2026-10-31）：
+
+- `GROUP BY`/`DISTINCT` 支持按已选列/别名/位置 `ORDER BY`；
+- 分组/去重后在归并层排序（`merge.Sort`），再应用全局 `LIMIT/OFFSET`；
+- per-shard SQL 移除 LIMIT（`rewrite.Spec.RemoveLimit`），避免各片提前截断
+  部分分组；ORDER BY 仍保留在各片但最终以全局排序为准；
+- 聚合表达式排序（`ORDER BY COUNT(*)`）仍 1235，需先起别名或位置；
+- 字符串/二进制排序仍 1235（collation 权重表未引入）。
+
 未落地（B1.2）：
 
 - 结构化路由决策日志/metrics；
@@ -637,7 +645,13 @@ B1.7（已落地，GROUP BY）：
 B1.8（已落地，DISTINCT）：
 
 - 数值/日期列的跨片 DISTINCT；`pkg/merge.Distinct` 规范化行 key 去重；
-- 字符串/二进制列、DISTINCT + ORDER BY/LIMIT、聚合 DISTINCT 仍 1235。
+- 字符串/二进制列、聚合 DISTINCT 仍 1235。
+
+B1.9（已落地，GROUP BY/DISTINCT 排序与 LIMIT）：
+
+- 按已选列/别名/位置 ORDER BY，归并层排序后应用全局 LIMIT/OFFSET；
+- per-shard LIMIT 移除，避免部分分组被提前截断；
+- 聚合表达式排序、字符串排序仍 1235。
 
 DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代理始终显式 Reject。
 
@@ -647,8 +661,8 @@ DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代�
 - 分片键字面量类型与算法值域不匹配（如 `hash_mod` 下的 `'abc'`、
   `hash_mod_str` 下的 `1`）；
 - 分片表上需要归并的 SELECT（HAVING/窗口/INTO/锁定读/SQL_CALC_FOUND_ROWS）；
-  子查询；聚合 DISTINCT、聚合与非聚合投影混合、聚合 + ORDER BY；
-  GROUP BY/DISTINCT + ORDER BY/LIMIT；字符串/二进制 GROUP BY/DISTINCT/排序 1235；
+  子查询；聚合 DISTINCT、聚合与非聚合投影混合、聚合 + ORDER BY、聚合表达式
+  排序；字符串/二进制 GROUP BY/DISTINCT/排序 1235；
 - 事务 / `autocommit=0` / reserved / prepared pin 会话中的多分片语句；
 - 跨片/多表 JOIN、schema 限定表；
 - prepared 参数化分片键、prepared DML、prepared 多分片；

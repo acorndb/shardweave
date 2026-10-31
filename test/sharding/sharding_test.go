@@ -261,17 +261,27 @@ func TestSingleShardRouting(t *testing.T) {
 			"1": {"1", "50"},
 			"2": {"2", "250"},
 		})
+	requireRowValues(t, ctx, conn,
+		"SELECT user_id, COUNT(*) AS c, SUM(amount) AS s FROM orders GROUP BY user_id ORDER BY c DESC, user_id",
+		[][]string{{"2", "2", "250"}, {"1", "1", "50"}})
+	requireRowValues(t, ctx, conn,
+		"SELECT user_id, SUM(amount) AS s FROM orders GROUP BY user_id ORDER BY s DESC LIMIT 1",
+		[][]string{{"2", "250"}})
+	requireRowCount(t, ctx, conn, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id LIMIT 1", 1)
 	assertReject(t, ctx, conn, "SELECT COUNT(*) FROM orders GROUP BY user_id")
-	assertReject(t, ctx, conn, "SELECT amount, COUNT(*) FROM orders GROUP BY amount ORDER BY amount")
-	assertReject(t, ctx, conn, "SELECT amount, COUNT(*) FROM orders GROUP BY amount LIMIT 1")
+	assertReject(t, ctx, conn, "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id ORDER BY COUNT(*)")
 
 	requireGroupRows(t, ctx, conn, "SELECT DISTINCT amount FROM orders",
 		map[string][]string{"50": {}, "200": {}})
 	requireGroupRows(t, ctx, conn, "SELECT DISTINCT user_id FROM orders",
 		map[string][]string{"1": {}, "2": {}})
+	requireOrderedColumn(t, ctx, conn, "SELECT DISTINCT amount FROM orders ORDER BY amount DESC",
+		[]string{"200", "50"})
+	requireOrderedColumn(t, ctx, conn, "SELECT DISTINCT amount FROM orders ORDER BY amount DESC LIMIT 1",
+		[]string{"200"})
+	requireRowCount(t, ctx, conn, "SELECT DISTINCT amount FROM orders LIMIT 1", 1)
 	assertReject(t, ctx, conn, "SELECT DISTINCT name FROM profiles")
-	assertReject(t, ctx, conn, "SELECT DISTINCT amount FROM orders ORDER BY amount")
-	assertReject(t, ctx, conn, "SELECT DISTINCT amount FROM orders LIMIT 1")
+	assertReject(t, ctx, conn, "SELECT DISTINCT amount FROM orders ORDER BY user_id")
 
 	// Unsupported shapes are explicit 1235, not silent wrong results.
 	assertReject(t, ctx, conn, "SELECT * FROM users WHERE id = 1")
@@ -361,6 +371,31 @@ func connScalarString(t *testing.T, ctx context.Context, conn *sql.Conn, query s
 
 // requireShardRows asserts an order-insensitive (user_id, amount) result set
 // and that no row is duplicated or missing.
+func requireRowValues(t *testing.T, ctx context.Context, conn *sql.Conn, query string, want [][]string) {
+	t.Helper()
+	rows, err := conn.QueryContext(ctx, query)
+	require.NoErrorf(t, err, "查询失败: %s", query)
+	defer rows.Close()
+	cols, err := rows.Columns()
+	require.NoError(t, err)
+	var got [][]string
+	for rows.Next() {
+		cells := make([]sql.NullString, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range cells {
+			ptrs[i] = &cells[i]
+		}
+		require.NoError(t, rows.Scan(ptrs...))
+		row := make([]string, len(cells))
+		for i, c := range cells {
+			row[i] = c.String
+		}
+		got = append(got, row)
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, want, got, query)
+}
+
 func requireGroupRows(t *testing.T, ctx context.Context, conn *sql.Conn, query string, want map[string][]string) {
 	t.Helper()
 	rows, err := conn.QueryContext(ctx, query)

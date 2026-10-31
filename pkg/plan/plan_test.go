@@ -378,12 +378,13 @@ func TestBuilder_MultiShard(t *testing.T) {
 		require.Empty(t, p.Merge.Aggregates)
 	})
 
-	t.Run("distinct_order_rejected", func(t *testing.T) {
+	t.Run("distinct_order", func(t *testing.T) {
 		p, err := b.Build(context.Background(), session.NewState(),
 			selectStmt(t, "SELECT DISTINCT user_id FROM orders ORDER BY user_id"))
 		require.NoError(t, err)
-		require.Equal(t, plan.Reject, p.Kind)
-		require.Contains(t, p.Reject.Message, "DISTINCT")
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.True(t, p.Merge.Distinct)
+		require.Equal(t, []plan.OrderKey{{Kind: plan.OrderByPosition, Column: 0}}, p.Merge.OrderBy)
 	})
 
 	t.Run("distinct_aggregate_rejected", func(t *testing.T) {
@@ -449,20 +450,44 @@ func TestBuilder_MultiShard(t *testing.T) {
 		require.Contains(t, p.Reject.Message, "aggregate")
 	})
 
-	t.Run("group_by_order_rejected", func(t *testing.T) {
+	t.Run("group_by_order_limit", func(t *testing.T) {
+		st := selectStmt(t, "SELECT amount, COUNT(*) FROM orders GROUP BY amount ORDER BY amount DESC LIMIT 1")
+		p, err := b.Build(context.Background(), session.NewState(), st)
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []int{0}, p.Merge.GroupBy)
+		require.Equal(t, []plan.OrderKey{{Kind: plan.OrderByPosition, Column: 0, Desc: true}}, p.Merge.OrderBy)
+		require.NotNil(t, p.Merge.Limit)
+		require.Equal(t, int64(1), p.Merge.Limit.Count)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			sel := res.Stmts[0].(*ast.SelectStmt)
+			require.Nil(t, sel.Limit, "GROUP BY LIMIT is applied after the global merge")
+		}
+	})
+
+	t.Run("distinct_order_limit", func(t *testing.T) {
 		p, err := b.Build(context.Background(), session.NewState(),
-			selectStmt(t, "SELECT amount, COUNT(*) FROM orders GROUP BY amount ORDER BY amount"))
+			selectStmt(t, "SELECT DISTINCT amount FROM orders ORDER BY amount DESC LIMIT 1"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.True(t, p.Merge.Distinct)
+		require.Equal(t, []plan.OrderKey{{Kind: plan.OrderByPosition, Column: 0, Desc: true}}, p.Merge.OrderBy)
+		require.NotNil(t, p.Merge.Limit)
+		for _, target := range p.Targets {
+			res, err := sqlparser.Parse(target.SQL)
+			require.NoError(t, err)
+			require.Nil(t, res.Stmts[0].(*ast.SelectStmt).Limit)
+		}
+	})
+
+	t.Run("distinct_order_unselected_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT DISTINCT amount FROM orders ORDER BY user_id"))
 		require.NoError(t, err)
 		require.Equal(t, plan.Reject, p.Kind)
 		require.Contains(t, p.Reject.Message, "ORDER BY")
-	})
-
-	t.Run("group_by_limit_rejected", func(t *testing.T) {
-		p, err := b.Build(context.Background(), session.NewState(),
-			selectStmt(t, "SELECT amount, COUNT(*) FROM orders GROUP BY amount LIMIT 1"))
-		require.NoError(t, err)
-		require.Equal(t, plan.Reject, p.Kind)
-		require.Contains(t, p.Reject.Message, "LIMIT")
 	})
 
 	t.Run("aggregate_avg_distinct_rejected", func(t *testing.T) {
