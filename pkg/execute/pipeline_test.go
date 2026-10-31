@@ -652,3 +652,34 @@ func TestPipeline_MultiTargetNotImplemented(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "not implemented")
 }
+
+func TestExplainRows(t *testing.T) {
+	stmt := query("SELECT 1")
+
+	cols, rows := explainRows(stmt, &plan.Plan{
+		Kind:    plan.SingleShard,
+		Targets: []route.Target{{Slice: "s0", Role: constant.RoleSlave}},
+	}, nil)
+	require.Equal(t, []string{"kind", "slice", "role", "db", "sql", "reason"}, cols)
+	require.Equal(t, [][]string{{"SingleShard", "s0", "slave", "", "SELECT 1", ""}}, rows)
+
+	_, rows = explainRows(stmt, &plan.Plan{
+		Kind:    plan.SingleShard,
+		Targets: []route.Target{{Slice: "s1", Role: constant.RoleMaster, SQL: "SELECT 2"}},
+	}, nil)
+	require.Equal(t, "SELECT 2", rows[0][4])
+
+	_, rows = explainRows(stmt, &plan.Plan{
+		Kind: plan.Reject, Reject: &plan.RejectError{Message: "no key"},
+	}, nil)
+	require.Equal(t, "Reject", rows[0][0])
+	require.Equal(t, "no key", rows[0][5])
+
+	_, rows = explainRows(stmt, nil, &plan.RejectError{Message: "bad route"})
+	require.Equal(t, "Reject", rows[0][0])
+	require.Equal(t, "bad route", rows[0][5])
+
+	_, rows = explainRows(stmt, nil, errors.New("boom"))
+	require.Equal(t, "Error", rows[0][0])
+	require.Contains(t, rows[0][5], "boom")
+}

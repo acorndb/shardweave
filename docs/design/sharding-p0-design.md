@@ -140,7 +140,7 @@
 |---|---|---|
 | 本地 auto_increment | 是 | 单分片 INSERT 可用；跨片不保证全局唯一 |
 | 全局序列 / Snowflake | 否 | P2；多分片 INSERT 前必须解决 |
-| DDL 广播 | 是 | 所有 Slice 执行；部分失败要显式报错 |
+| DDL 广播 | 否 | 代理不广播；DDL 由外部迁移工具按片执行，proxy 显式 Reject |
 | `SHOW TABLES`/`SHOW CREATE` 合并 | 否 | P1；P0 可拒绝或只查一片 |
 | 在线扩缩容 | 否 | 非目标 |
 | 分片健康/熔断/重试 | 否 | P1 |
@@ -367,18 +367,25 @@ route → []Target
   部分失败必须报错，不能返回 OK；
 - P2：跨片事务（2PC/Saga）另立设计。
 
-### 6.4 DDL
+### 6.4 DDL 策略（2026-10-31 修订）
 
-- P0：广播到所有 Slice；任一失败 → 返回错误，并记录已执行/失败的 Slice；
-- 不做自动回滚（DDL 不可回滚），文档要求运维按幂等 DDL 处理；
-- `CREATE/ALTER/DROP TABLE` 只在有规则的表上广播；未配置表 Reject。
+**代理不广播 DDL。** 所有 Slice 同时执行 DDL 会放大风险：部分失败无法回滚、
+锁表/重建在不同分片异步发生、流量高峰影响稳定性。
+
+- sharding 模式下 `CREATE/ALTER/DROP/TRUNCATE/RENAME` 一律 1235；
+- DDL 由外部变更流程执行（gh-ost/pt-osc 等在线工具），按 Slice 分批/串行，
+  先小流量验证；
+- 代理后续只读校验 schema 版本/表结构一致性，发现不一致时拒绝路由或告警；
+- 全局/广播表 DDL 同样走外部流程；
+- 不在代理内做部分失败自动回滚；
+- 若未来支持代理内 DDL，必须单独立项：在线变更、限流、审计、回滚/补偿。
 
 ## 7. 分阶段计划
 
 | 阶段 | 内容 | 用户可见行为 | 退出条件 |
 |---|---|---|---|
 | **S0 执行/结果骨架** | `execute` 支持 `[]Target`；`LeaseSet`；`result.Decoder/Writer`；`StmtTable` 骨架；AST 上数据面；N=1 行为不变 | 无变化 | 现有单测/差分全绿；N=2 fake target 用例 |
-| **S1 P0 单分片** | `route/shard`（hash_mod + 等值/IN）；`SingleShard/Reject`；`EXPLAIN ROUTE`；DDL 广播；单分片事务/prepared；配置打开 `mode=sharding` | 单分片 SQL 可用；跨片/无键明确 Reject | 路由表驱动单测；多 Slice e2e；无静默错结果 |
+| **S1 P0 单分片** | `route/shard`（hash_mod + 等值/IN）；`SingleShard/Reject`；`EXPLAIN ROUTE`；单分片 DQL prepared；DDL 外部迁移（proxy 拒绝）；配置打开 `mode=sharding` | 单分片 SQL 可用；跨片/无键明确 Reject | 路由表驱动单测；多 Slice e2e；无静默错结果 |
 | **S2 多分片只读** | `MultiShard` dispatch；identity/aggregate/order/limit merge；结果编解码；`LIMIT` 下推 | 跨片 SELECT 可用 | 分片 vs 单库 metamorphic 全绿；内存上限 |
 | **S3 高级** | GROUP BY/HAVING/DISTINCT/UNION；全局表；全局序列；多分片 prepared；跨片 JOIN；2PC/Saga；在线 DDL | 逐步开放 | 每项单独设计+测试，不一次性开 |
 
@@ -397,7 +404,7 @@ route → []Target
 | **A4 结果骨架** | `backend.decodedStream`；`mysql` 结果集编码；`result.Field` 元数据；`deprecateEOF` 能力传递 | 无（不接数据面） | packet fixture + 脚本化 Stream |
 | **A5 计划/会话** | `SingleShard/MultiShard`、`TxPolicy`、`MergeSpec`；`StmtTable`；AST parse 一次 | 无（新类型未接线） | plan/session/sql 单测 |
 | **A6 测试拓扑** | `test/harness` 多 Slice + 单库 oracle | 无 | 能启动 N Slice + oracle；`-short` Skip |
-| **B1 单分片 sharding** | `route/shard`（等值/同片 IN）；`SingleShard/Reject`；`EXPLAIN ROUTE`；DDL 广播；单分片事务/prepared；打开 `mode=sharding` | 新功能 | 单分片 e2e；无键/跨片 Reject |
+| **B1 单分片 sharding** | `route/shard`（等值/同片 IN）；`SingleShard/Reject`；`EXPLAIN ROUTE`；单分片 DQL prepared；打开 `mode=sharding`；DDL 外部迁移 | 新功能 | 单分片 e2e；无键/跨片 Reject |
 | **B2 多分片只读** | rewrite 下推、merge operator、并发 dispatch、结果编码 | 新功能 | 分片 vs 单库 metamorphic；内存上限 |
 | **B3 高级** | GROUP BY/DISTINCT/UNION、全局表/序列、多分片 prepared、跨片 JOIN、2PC | 逐步 | 每项单独设计 |
 
@@ -430,13 +437,32 @@ route → []Target
 - 无 FROM 的 SELECT（常量、`LAST_INSERT_ID()`/`ROW_COUNT()` 改写）路由默认片；
 - 2 Slice 真拓扑 e2e：CRUD、数据落片、跨片拒绝、`LAST_INSERT_ID`/`ROW_COUNT`。
 
-未落地（B1.1，按优先级）：
+未落地（B1.1，DQL 优先）：
 
-- DDL 广播；
-- 单分片事务（BEGIN/COMMIT/ROLLBACK/SAVEPOINT）与 pin；
-- 单分片 prepared 与 `StmtTable` 接线；
-- `EXPLAIN ROUTE`；
-- `SHOW`/`USE`/`SET` 的 sharding 策略。
+- `EXPLAIN ROUTE` + 路由决策日志；
+- 单分片 prepared SELECT + `StmtTable` 接线；
+- `SHOW TABLES/COLUMNS/CREATE`、`USE`、`SET NAMES` 的连接兼容；
+- 分片读一致性：read-after-write / 从库延迟。
+
+DML/DDL 后置：
+
+- 单分片写事务（BEGIN/COMMIT/ROLLBACK/SAVEPOINT）与 prepared 写；
+- DDL 不在代理内广播，走外部迁移流程（§6.4）。
+
+### 7.3 DQL 优先 backlog
+
+| 顺序 | 任务 | 退出条件 |
+|---|---|---|
+| **D1** | `EXPLAIN ROUTE` + 路由决策日志 | 路由/计划单测；真实拓扑可读 |
+| **D2** | 单分片 prepared SELECT + `StmtTable` | 驱动 prepare/execute/close 往返 |
+| **D3** | `SHOW TABLES/COLUMNS/CREATE`、`USE`、`SET NAMES` | mysql cli/驱动连接初始化不被打断 |
+| **D4** | 分片读一致性：read-after-write、从库延迟 | 写后读命中主片；延迟用例 |
+| **D5** | 多分片 SELECT rewrite 下推（ORDER BY/LIMIT/聚合/隐藏列） | 分片 vs 单库一致 |
+| **D6** | 流式 merge operator（concat/order/limit/aggregate/group/distinct） | 单测 + metamorphic |
+| **D7** | execute 并发 dispatch + 结果写回 | N 片 e2e；失败取消 |
+| **D8** | DQL corpus/randgen/metamorphic | CI/nightly |
+
+DML 事务、prepared 写、全局序列、跨片 JOIN 后置；DDL 不进代理。
 
 ## 8. P0 明确范围
 
@@ -448,18 +474,20 @@ B1.0：
 - 单分片 `INSERT`：分片键存在且所有行落同一片；
 - 无 FROM 的常量 SELECT / 会话函数改写。
 
-B1.1（尚未实现）：
+B1.1（尚未实现，DQL 优先）：
 
-- 单分片事务：`BEGIN/COMMIT/ROLLBACK/SAVEPOINT`，期间所有语句同片；
-- 单分片 prepared：prepare/execute/close 映射到同片；
-- DDL：广播到规则涉及的所有 Slice；
-- `EXPLAIN ROUTE`：输出 Kind、Targets、Reject 原因。
+- `EXPLAIN ROUTE`：输出 Kind、Targets、Reject 原因；
+- 单分片 prepared SELECT（`StmtTable` 接线）；
+- `SHOW TABLES/COLUMNS/CREATE`、`USE`、`SET NAMES` 的连接兼容；
+- 分片读一致性：read-after-write / 从库延迟。
+
+DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代理始终显式 Reject。
 
 ### 8.2 Reject（当前）
 
 - 无分片键 / 非等值 / 多分片写；
 - 跨片/多表 JOIN、schema 限定表；
-- DDL、SHOW、事务控制、prepared（B1.0 显式 1235）；
+- DDL 永久 Reject（外部迁移工具按片变更，见 §6.4）；SHOW/事务控制/prepared 写当前 1235；
 - 多分片 `LAST_INSERT_ID` / `ROW_COUNT`；
 - 未配置规则的普通表（P0 无默认片）；
 - `FOUND_ROWS()` / `SQL_CALC_FOUND_ROWS`（沿用单机决策）；
@@ -501,7 +529,7 @@ B1.1（尚未实现）：
 | 3 | ID 生成 | P0 单分片用本地 auto_increment；多分片 INSERT 要求显式 ID 或 Reject | Snowflake/segment（P2） |
 | 4 | P0 是否含多分片读 | 否；S2 单独做 | 直接在 P0 做全缓冲归并 |
 | 5 | prepared | P0 单分片；多分片 Reject | 广播 prepare（S2） |
-| 6 | DDL 失败语义 | 广播、失败即报错，不回滚，要求幂等 DDL | 两阶段 DDL（P3） |
+| 6 | DDL 策略 | 代理不广播，sharding 模式 Reject；外部迁移工具按片变更 | 代理内在线 DDL（单独立项） |
 | 7 | 未配置表 | Reject | `default_slice`（P2） |
 | 8 | 归并内存 | 流式优先；GROUP BY/DISTINCT 半流式 + 上限；未下推排序 Reject | 全缓冲（不推荐） |
 | 9 | 解析器 | TiDB parser AST | token 启发式（不推荐） |
@@ -513,7 +541,7 @@ B1.1（尚未实现）：
 - **结果编解码**：二进制协议（prepared）与 DEPRECATE_EOF 的边界要单独测；
   单分片继续 raw，降低风险。
 - **事务语义**：跨片 Reject 必须稳定错误码；不能出现"部分成功但返回 OK"。
-- **DDL**：广播部分失败不可避免；需要明确错误与运维流程。
+- **DDL**：代理不广播；外部变更流程需保证各片 schema 一致，代理后续只读校验。
 - **ID**：本地 auto_increment 跨片不唯一；多分片 INSERT 在 P0 必须拒绝，
   不能静默生成冲突 ID。
 - **全局表/默认片**：P0 不做，避免"看似支持、实际错结果"。

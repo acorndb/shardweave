@@ -80,11 +80,17 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 		if len(data) > 1 {
 			switch cmd {
 			case mysql.ComQuery:
-				stmt.Raw = string(data[1:])
+				raw := string(data[1:])
 				stmt.Kind = sql.KindQuery
-				stmt.Effect = sql.ParseSessionEffect(stmt.Raw)
+				if inner, ok := sql.ParseExplainRoute(raw); ok {
+					stmt.Kind = sql.KindExplainRoute
+					raw = inner
+					stmt.Payload = append([]byte{mysql.ComQuery}, []byte(raw)...)
+				}
+				stmt.Raw = raw
+				stmt.Effect = sql.ParseSessionEffect(raw)
 				if cfg.ParseAST {
-					res, perr := sqlparser.Parse(stmt.Raw)
+					res, perr := sqlparser.Parse(raw)
 					if perr != nil {
 						stmt.Err = perr
 					} else if len(res.Stmts) == 1 {

@@ -76,6 +76,11 @@ func TestSingleShardRouting(t *testing.T) {
 
 	require.Equal(t, 1, connScalar(t, ctx, conn, "SELECT 1"))
 
+	assertRoute(t, ctx, conn, "EXPLAIN ROUTE SELECT amount FROM orders WHERE user_id = 2",
+		"SingleShard", "s0", "slave", "")
+	assertRoute(t, ctx, conn, "EXPLAIN ROUTE SELECT * FROM orders",
+		"Reject", "", "", "WHERE")
+
 	// Unsupported shapes are explicit 1235, not silent wrong results.
 	assertReject(t, ctx, conn, "SELECT * FROM orders WHERE user_id IN (1, 2)")
 	assertReject(t, ctx, conn, "SELECT * FROM orders")
@@ -128,4 +133,25 @@ func assertReject(t *testing.T, ctx context.Context, conn *sql.Conn, query strin
 	var me *drivermysql.MySQLError
 	require.ErrorAsf(t, err, &me, "期望 1235: %s", query)
 	require.Equal(t, uint16(1235), me.Number, query)
+}
+
+func assertRoute(t *testing.T, ctx context.Context, conn *sql.Conn, query, kind, slice, role, reasonPart string) {
+	t.Helper()
+	rows, err := conn.QueryContext(ctx, query)
+	require.NoError(t, err)
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	require.NoError(t, err)
+	require.Equal(t, []string{"kind", "slice", "role", "db", "sql", "reason"}, cols)
+	require.True(t, rows.Next())
+
+	var gotKind, gotSlice, gotRole, db, sqlText, reason string
+	require.NoError(t, rows.Scan(&gotKind, &gotSlice, &gotRole, &db, &sqlText, &reason))
+	require.Equal(t, kind, gotKind)
+	require.Equal(t, slice, gotSlice)
+	require.Equal(t, role, gotRole)
+	if reasonPart != "" {
+		require.Contains(t, reason, reasonPart)
+	}
 }

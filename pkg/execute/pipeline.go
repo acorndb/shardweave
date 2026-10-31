@@ -3,6 +3,7 @@ package execute
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -103,6 +104,11 @@ func (p *Pipeline) Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement)
 	}
 	if stmt == nil {
 		return fmt.Errorf("execute: nil statement")
+	}
+
+	if stmt.Kind == sql.KindExplainRoute {
+		rt.State.SetRowCount(-1)
+		return p.explainRoute(ctx, rt, stmt)
 	}
 
 	rewriteSessionFunc(rt.State, stmt)
@@ -218,6 +224,89 @@ func payloadFor(stmt *sql.Statement, target route.Target) []byte {
 	payload[0] = mysql.ComQuery
 	copy(payload[1:], target.SQL)
 	return payload
+}
+
+// explainRoute builds a plan without executing it and writes a synthetic
+// result set describing targets or the rejection reason.
+func (p *Pipeline) explainRoute(ctx context.Context, rt *Runtime, stmt *sql.Statement) error {
+	var (
+		pl       *plan.Plan
+		buildErr error
+	)
+	if stmt.Err != nil {
+		buildErr = stmt.Err
+	} else {
+		pl, buildErr = p.builder.Build(ctx, rt.State, stmt)
+	}
+	cols, rows := explainRows(stmt, pl, buildErr)
+	return writeTextResult(rt.Front, cols, rows)
+}
+
+func explainRows(stmt *sql.Statement, pl *plan.Plan, buildErr error) ([]string, [][]string) {
+	cols := []string{"kind", "slice", "role", "db", "sql", "reason"}
+	if buildErr != nil {
+		var rej *plan.RejectError
+		if errors.As(buildErr, &rej) {
+			return cols, [][]string{{"Reject", "", "", "", "", rej.Message}}
+		}
+		return cols, [][]string{{"Error", "", "", "", "", buildErr.Error()}}
+	}
+	if pl == nil {
+		return cols, [][]string{{"Error", "", "", "", "", "nil plan"}}
+	}
+	if pl.Kind == plan.Reject {
+		reason := ""
+		if pl.Reject != nil {
+			reason = pl.Reject.Message
+		}
+		return cols, [][]string{{"Reject", "", "", "", "", reason}}
+	}
+	rows := make([][]string, 0, len(pl.Targets))
+	for _, t := range pl.Targets {
+		sqlText := t.SQL
+		if sqlText == "" {
+			sqlText = stmt.Raw
+		}
+		rows = append(rows, []string{
+			pl.Kind.String(), t.Slice, string(t.Role), t.DB, sqlText, "",
+		})
+	}
+	return cols, rows
+}
+
+func writeTextResult(front *packet.Conn, cols []string, rows [][]string) error {
+	if front == nil {
+		return fmt.Errorf("execute: nil frontend for explain")
+	}
+	if err := writeFrontPayload(front, mysql.EncodeColumnCount(uint64(len(cols)))); err != nil {
+		return err
+	}
+	for _, name := range cols {
+		def := mysql.EncodeColumnDefinition(mysql.Column{
+			Name: name, Charset: 0x2d, ColumnLength: 1024, Type: 0xfd, // VAR_STRING
+		})
+		if err := writeFrontPayload(front, def); err != nil {
+			return err
+		}
+	}
+	for _, row := range rows {
+		cells := make([][]byte, len(row))
+		for i, v := range row {
+			cells[i] = []byte(v)
+		}
+		if err := writeFrontPayload(front, mysql.EncodeTextRow(cells)); err != nil {
+			return err
+		}
+	}
+	// The frontend handshake advertises CLIENT_DEPRECATE_EOF; keep this in sync
+	// if capability negotiation becomes per-session.
+	return writeFrontPayload(front, mysql.EncodeEOF(true, mysql.ServerStatusAutocommit, 0))
+}
+
+func writeFrontPayload(front *packet.Conn, payload []byte) error {
+	buf := make([]byte, 4+len(payload))
+	copy(buf[4:], payload)
+	return front.WritePacket(buf)
 }
 
 // rewriteSessionFunc answers SELECT LAST_INSERT_ID()/ROW_COUNT() from session

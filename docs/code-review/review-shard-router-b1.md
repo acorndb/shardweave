@@ -18,8 +18,9 @@ files:
 - status: wontfix
 - file: pkg/route/shard/router.go
 
-B1.0 只做文本协议的单分片 CRUD；DDL 广播、事务控制、prepared、`EXPLAIN ROUTE`
-统一返回 1235，不会静默执行部分目标。B1.1 按文档顺序补齐；在此之前 sharding
+B1.0 只做文本协议的单分片 CRUD；DDL 永久 Reject（由外部迁移工具按片变更），
+SHOW/事务控制/prepared 写当前 1235。DQL 优先补齐 `EXPLAIN ROUTE`、单分片
+prepared SELECT、SHOW/USE/SET NAMES 连接兼容与分片读一致性；在此之前 sharding
 模式只适合点查/点写验证。
 
 ### 无 FROM 的 SELECT 固定走默认片

@@ -378,3 +378,15 @@ func TestServe_ParseAST(t *testing.T) {
 		quit(t, pc, serveErr)
 	})
 }
+
+func TestServe_ParsesExplainRoute(t *testing.T) {
+	exec := newFakeExec()
+	pc, serveErr := newProxySession(t, exec)
+
+	writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("EXPLAIN ROUTE SELECT 1")...))
+	call := exec.waitCall(t)
+	require.Equal(t, sql.KindExplainRoute, call.stmt.Kind)
+	require.Equal(t, "SELECT 1", call.stmt.Raw)
+
+	quit(t, pc, serveErr)
+}
