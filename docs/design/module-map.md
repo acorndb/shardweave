@@ -19,7 +19,7 @@
 
 完整对照见 [architecture.md §2](../architecture.md#2-开源对照结论)。关键证据：
 
-| 项目 | 事实 | 对 prism 的含义 |
+| 项目 | 事实 | 对 shardweave 的含义 |
 |---|---|---|
 | Vitess | 一个 `Executor`；`engine.Plan{Type, Instructions Primitive}`；`PlanType` 含 `PlanPassthrough/PlanMultiShard/PlanScatter/PlanJoinOp` | 模式差异在 Plan 类型与 Primitive 树，不在执行器 |
 | ShardingSphere | `SQLRouteEngine → RouteContext → Rewrite → ExecutorEngine → MergeEngine`；分片是 `ShardingSQLRouter` 规则插件 | 五阶段 + 规则插件；模式不是执行分支 |
@@ -73,7 +73,7 @@
 | `pkg/execute` | 执行引擎：dispatch、lease、写回 | `Runtime`、`Executor`、`lease` | 解析 SQL、决定路由、按 mode 分支 | `plan`、`backend`、`session`、`merge`、`result`、`mysql` |
 | `pkg/proxy` | 前端 COM 循环与会话字段 | `Serve`、`SessionConfig` | USE/SET 语义、路由、acquire | `mysql/server`、`mysql`、`sql`、`session`、`execute` |
 | `pkg/server` | 监听、Accept、唯一装配点 | `Server`、`New`、mode→Cluster/Router/Executor | 参与单条 SQL 执行 | 全部（装配例外） |
-| `cmd/prism` | 入口、flag、信号、优雅退出 | `main` | 业务逻辑 | `server`、`config`、`log` |
+| `cmd/shardweave` | 入口、flag、信号、优雅退出 | `main` | 业务逻辑 | `server`、`config`、`log` |
 
 命名提醒：
 
@@ -103,7 +103,7 @@
 ### 4.1 依赖图
 
 ```
-                         cmd/prism
+                         cmd/shardweave
                              │
                        pkg/server            ← 唯一装配点
         ┌──────────────┬───┴────────────┬──────────────┐
@@ -145,9 +145,9 @@
 
 | 包 | 禁止 import |
 |---|---|
-| `pkg/mysql` | 所有 prism 上层 |
-| `pkg/result` | 所有 prism 模块 |
-| `pkg/sql` | 所有 prism 运行时（parser 依赖除外） |
+| `pkg/mysql` | 所有 shardweave 上层 |
+| `pkg/result` | 所有 shardweave 模块 |
+| `pkg/sql` | 所有 shardweave 运行时（parser 依赖除外） |
 | `pkg/session` | `backend`、`route`、`plan`、`execute`、`proxy` |
 | `pkg/backend` | `session`、`route`、`plan`、`execute`、`proxy`、`config` |
 | `pkg/route` | `backend`、`plan`、`execute`、`proxy`、`config` |

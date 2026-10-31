@@ -3,7 +3,7 @@ package session_test
 import (
 	"testing"
 
-	"github.com/acorndb/prism/pkg/session"
+	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/stretchr/testify/require"
 )
 

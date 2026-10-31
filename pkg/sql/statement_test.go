@@ -3,7 +3,7 @@ package sql_test
 import (
 	"testing"
 
-	"github.com/acorndb/prism/pkg/sql"
+	"github.com/acorndb/shardweave/pkg/sql"
 	"github.com/stretchr/testify/require"
 )
 

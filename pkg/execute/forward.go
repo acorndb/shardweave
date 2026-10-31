@@ -3,7 +3,7 @@ package execute
 import (
 	"context"
 
-	"github.com/acorndb/prism/pkg/mysql/packet"
+	"github.com/acorndb/shardweave/pkg/mysql/packet"
 )
 
 // rawForwarder is implemented by backend streams that can forward protocol packets.

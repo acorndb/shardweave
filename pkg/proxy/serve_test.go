@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acorndb/prism/pkg/execute"
-	"github.com/acorndb/prism/pkg/mysql"
-	"github.com/acorndb/prism/pkg/mysql/client"
-	"github.com/acorndb/prism/pkg/mysql/packet"
-	"github.com/acorndb/prism/pkg/session"
-	"github.com/acorndb/prism/pkg/sql"
+	"github.com/acorndb/shardweave/pkg/execute"
+	"github.com/acorndb/shardweave/pkg/mysql"
+	"github.com/acorndb/shardweave/pkg/mysql/client"
+	"github.com/acorndb/shardweave/pkg/mysql/packet"
+	"github.com/acorndb/shardweave/pkg/session"
+	"github.com/acorndb/shardweave/pkg/sql"
 	"github.com/stretchr/testify/require"
 )
 

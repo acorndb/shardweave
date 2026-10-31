@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/acorndb/prism/pkg/mysql/packet"
+	"github.com/acorndb/shardweave/pkg/mysql/packet"
 )
 
 // ForwardResponse copies one MySQL command response from src to dst,

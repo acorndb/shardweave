@@ -1,12 +1,12 @@
 ---
-title: cmd/prism + pkg/config + simple SIGUSR1 reload review
+title: cmd/shardweave + pkg/config + simple SIGUSR1 reload review
 files:
   - pkg/config/config.go
   - pkg/config/runtime.go
   - pkg/server/server.go
-  - cmd/prism/main.go
-  - cmd/prism/log.go
-  - etc/prism.yaml
+  - cmd/shardweave/main.go
+  - cmd/shardweave/log.go
+  - etc/shardweave.yaml
 ---
 
 ## Must Fix
@@ -37,6 +37,6 @@ files:
 
 ### main 职责过重（监听/池/信号揉在一起）
 - status: fixed
-- file: cmd/prism/main.go
+- file: cmd/shardweave/main.go
 
 对齐 kingshard/Gaea：`pkg/server` 提供 `New` / `Run` / `Close` / `UpdateConfig`；`main` = 加载配置 + 信号 goroutine + 阻塞 `Run()`。信号与热更留在 main（与开源一致），不塞进 `Run`。

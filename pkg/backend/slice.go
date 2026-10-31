@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/acorndb/prism/pkg/constant"
+	"github.com/acorndb/shardweave/pkg/constant"
 )
 
 // Slice is one logical topology: master pool + optional slave pools (design §5.5).

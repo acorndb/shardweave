@@ -4,9 +4,9 @@ package route
 import (
 	"context"
 
-	"github.com/acorndb/prism/pkg/constant"
-	"github.com/acorndb/prism/pkg/session"
-	"github.com/acorndb/prism/pkg/sql"
+	"github.com/acorndb/shardweave/pkg/constant"
+	"github.com/acorndb/shardweave/pkg/session"
+	"github.com/acorndb/shardweave/pkg/sql"
 )
 
 // DefaultSlice is the logical slice for single/rwsplit topologies.

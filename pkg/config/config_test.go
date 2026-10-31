@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acorndb/prism/pkg/constant"
+	"github.com/acorndb/shardweave/pkg/constant"
 	"github.com/stretchr/testify/require"
 )
 
@@ -442,7 +442,7 @@ func validRWSplit() *Config {
 func writeYAML(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "prism.yaml")
+	path := filepath.Join(dir, "shardweave.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 	return path
 }

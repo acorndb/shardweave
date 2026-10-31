@@ -4,8 +4,8 @@ import (
 	"net"
 	"testing"
 
-	"github.com/acorndb/prism/pkg/mysql/client"
-	"github.com/acorndb/prism/pkg/mysql/server"
+	"github.com/acorndb/shardweave/pkg/mysql/client"
+	"github.com/acorndb/shardweave/pkg/mysql/server"
 	"github.com/stretchr/testify/require"
 )
 

@@ -7,9 +7,9 @@ import (
 	"net"
 	"time"
 
-	"github.com/acorndb/prism/pkg/mysql"
-	"github.com/acorndb/prism/pkg/mysql/auth"
-	"github.com/acorndb/prism/pkg/mysql/packet"
+	"github.com/acorndb/shardweave/pkg/mysql"
+	"github.com/acorndb/shardweave/pkg/mysql/auth"
+	"github.com/acorndb/shardweave/pkg/mysql/packet"
 )
 
 // UserProvider looks up plaintext passwords for handshake (M1 local user table).
@@ -66,7 +66,7 @@ func NewConnWithOptions(raw net.Conn, users UserProvider, opts Options) (*Conn, 
 
 	hs := &auth.HandshakeV10{
 		ProtocolVersion: 10,
-		ServerVersion:   "8.0.36-prism",
+		ServerVersion:   "8.0.36-shardweave",
 		ConnectionID:    1,
 		AuthPluginData:  scramble,
 		Capability: mysql.ClientProtocol41 | mysql.ClientSecureConnection |

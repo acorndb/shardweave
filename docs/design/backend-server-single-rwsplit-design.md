@@ -4,17 +4,17 @@
 > （配置段已改为 `backend` + `slices`）；本文保留为历史调研与选源规则参考。
 > 实现计划：[backend-server-single-rwsplit-plan.md](backend-server-single-rwsplit-plan.md)
 
-> 日期：2026-10-30  
-> 范围：配置与选源；**先落地 `single` + `rwsplit`**；`sharding` 仅占位并拒绝  
-> 上位： [m1-passthrough-pipeline-design.md](m1-passthrough-pipeline-design.md)、[m1-process-and-pipeline-design.md](m1-process-and-pipeline-design.md)（**E10**）  
+> 日期：2026-10-30
+> 范围：配置与选源；**先落地 `single` + `rwsplit`**；`sharding` 仅占位并拒绝
+> 上位： [m1-passthrough-pipeline-design.md](m1-passthrough-pipeline-design.md)、[m1-process-and-pipeline-design.md](m1-process-and-pipeline-design.md)（**E10**）
 > 调研：浅克隆 `/tmp/prism-oss-survey/{dbpack,kingshard,Gaea}` **直接读源码**（非记忆）；规则以 §5–§5.12 为规范
 
 ---
 
 ## 0. 一句话
 
-配置顶层用 **`backend_server`**，用 **`mode: single | rwsplit | sharding`** 表达三种后端形态（产品语义学 dbpack 三 mode，命名用更直白的词）。  
-数据面仍是 **`Plan → Dispatch → Merge`**（M1 退化为透传）；mode 经工厂装配 **同接口三 Executor**（Single / RWSplit / Sharding stub，见 [executor-three-mode-design.md](executor-three-mode-design.md)），共享 forward，差异在选源 / 拓扑。  
+配置顶层用 **`backend_server`**，用 **`mode: single | rwsplit | sharding`** 表达三种后端形态（产品语义学 dbpack 三 mode，命名用更直白的词）。
+数据面仍是 **`Plan → Dispatch → Merge`**（M1 退化为透传）；mode 经工厂装配 **同接口三 Executor**（Single / RWSplit / Sharding stub，见 [executor-three-mode-design.md](executor-three-mode-design.md)），共享 forward，差异在选源 / 拓扑。
 `rwsplit` 选源 **对照 kingshard/Gaea/dbpack 源码逐条移植**（§5 规则表）：先会话/事务（`IN_TRANS || !autocommit`），再语句分类；变量靠 **State + Align**，不默认广播 `SET`。禁止脱离开源依据自创规则。
 
 ---
@@ -31,17 +31,17 @@
 
 ### 1.2 非目标（本切片）
 
-- `sharding` 实现与分片规则  
-- 多 master、读写权重 DSL（`r0w10`）、健康检查摘流（可后置接口）  
-- dbpack Filter / 分布式事务  
-- 完整 SQL parser / AST 作为路由唯一依据（可用轻量 tokenize；规则语义仍对齐开源）  
+- `sharding` 实现与分片规则
+- 多 master、读写权重 DSL（`r0w10`）、健康检查摘流（可后置接口）
+- dbpack Filter / 分布式事务
+- 完整 SQL parser / AST 作为路由唯一依据（可用轻量 tokenize；规则语义仍对齐开源）
 - 只读用户权限体系、监控/统计专用池（Gaea userType）——后置
 
 ---
 
 ## 2. 开源对照（选源与会话）
 
-| 维度 | dbpack RWS | kingshard | Gaea | **prism 选定** |
+| 维度 | dbpack RWS | kingshard | Gaea | **shardweave 选定** |
 |---|---|---|---|---|
 | 产品 mode | `sdb` / `rws` / `shd` | node master/slave | slice master/slaves | **`single` / `rwsplit` / `sharding`** |
 | 配置形状 | 列表 + `weight` + `master_name` | 显式 master/slave | 显式 Master/Slaves | **显式 master + slaves**（顶层段名 `backend_server`） |
@@ -115,8 +115,8 @@ termination_drain: 5s
 
 ### 3.3 命名
 
-- YAML / 文档：`backend_server`、`mode`、`rwsplit`  
-- Go 类型建议：`config.BackendServer`（配置根段）、叶子可用 `config.BackendEndpoint`（address/user/password/database）  
+- YAML / 文档：`backend_server`、`mode`、`rwsplit`
+- Go 类型建议：`config.BackendServer`（配置根段）、叶子可用 `config.BackendEndpoint`（address/user/password/database）
 - 运行时拓扑：`router` 或 `topology` 包内的 `Group`（master pool + slave pools），**不**把 `pool.Pool` 改名为 backend_server
 
 ---
@@ -124,7 +124,7 @@ termination_drain: 5s
 ## 4. 分层：如何把 mode 差屏蔽在下层
 
 ```text
-cmd/prism + pkg/server     装配：按 mode 建 Pool(s) + Router
+cmd/shardweave + pkg/server     装配：按 mode 建 Pool(s) + Router
         ↓
 pkg/proxy.Serve            COM 循环：Acquire 目标 → 转发 → 释放/sticky
         ↓  （无 mode 分支）
@@ -142,15 +142,15 @@ Target = 某个 pool.Pool（一地址一池）
 | Router 实现 | **是**（`SingleRouter` / `RWSplitRouter`） |
 | `pool.Pool` | **否** |
 
-`single`：Router 恒返回 master（唯一池）。  
-`rwsplit`：Router 按 §5 返回 master 或某个 slave 池。  
+`single`：Router 恒返回 master（唯一池）。
+`rwsplit`：Router 按 §5 返回 master 或某个 slave 池。
 `sharding`：以后返回 N；Merge 变复杂——本切片不做。
 
 ---
 
 ## 5. `rwsplit` 选源细则（对照源码移植，禁止自创）
 
-**实现方针**：规则从 kingshard / Gaea / dbpack **逐条对照搬迁**，落成 `RouteTarget(session, sql, cmd) → master|slave` 的纯函数 + 表驱动测试。  
+**实现方针**：规则从 kingshard / Gaea / dbpack **逐条对照搬迁**，落成 `RouteTarget(session, sql, cmd) → master|slave` 的纯函数 + 表驱动测试。
 **禁止**凭感觉加减规则；有差异必须在本节写明「跟谁、为何」。
 
 主参考文件（均相对 `/tmp/prism-oss-survey`）：
@@ -165,7 +165,7 @@ Target = 某个 pool.Pool（一地址一池）
 | Gaea | `backend/slice.go` `GetConn` | 从库失败可回落 master（配置项） |
 | dbpack | `pkg/executor/read_write_splitting.go` | AST 分支：写→Master，Select→Slave，tx map 优先；`SET autocommit=0` 开事务 |
 | dbpack | `pkg/group/group.go` `pick` | Slave 空 → 回落 master |
-| prism | `pkg/session/state.go` / `pkg/proxy/session.go` | 已有 sticky、`SetInTx(status&IN_TRANS)`、`Align`；**须补齐 autocommit** |
+| shardweave | `pkg/session/state.go` / `pkg/proxy/session.go` | 已有 sticky、`SetInTx(status&IN_TRANS)`、`Align`；**须补齐 autocommit** |
 
 ---
 
@@ -208,7 +208,7 @@ inTransaction := (status & SERVER_STATUS_IN_TRANS) != 0
 - kingshard `conn_tx.go`：`status&SERVER_STATUS_IN_TRANS > 0 || !isAutoCommit()`
 - Gaea `executor.go`：`status&ServerStatusInTrans > 0 || !isAutoCommit()`
 
-**prism 缺口**：当前仅 `ForwardResponse` 后 `SetInTx(status&IN_TRANS)`，**未跟踪 autocommit**。  
+**shardweave 缺口**：当前仅 `ForwardResponse` 后 `SetInTx(status&IN_TRANS)`，**未跟踪 autocommit**。
 本切片必须补：
 
 | 状态字段 | 更新时机 | 说明 |
@@ -217,8 +217,8 @@ inTransaction := (status & SERVER_STATUS_IN_TRANS) != 0
 | `Autocommit` | 握手后默认 `true`；`SET autocommit=0/1` / `ON/OFF` 更新；OK 包若带 Autocommit 位可校验 | **新增**（跟 Gaea `handleSetAutoCommit`） |
 | `NeedsSticky` | `InTx \|\| !Autocommit \|\| Reserved` | **扩展**（今日仅 InTx\|\|Reserved） |
 
-`SET autocommit=0`：dbpack `shouldStartTransaction` 会直接 `Begin` 并记入 tx map；Gaea/kingshard 清 Autocommit 位并在下次借主库时 `SetAutoCommit(0)`。  
-**prism 选定（跟 Gaea/kingshard）**：更新会话 `Autocommit=false`，选源走 master 并 sticky；在借到的 master 上执行该 `SET`（或等价 `SetAutoCommit(0)`），**不必**另发 `BEGIN`（与 Gaea 注释「SetAutoCommit(0) equivalent to starting a transaction」一致）。
+`SET autocommit=0`：dbpack `shouldStartTransaction` 会直接 `Begin` 并记入 tx map；Gaea/kingshard 清 Autocommit 位并在下次借主库时 `SetAutoCommit(0)`。
+**shardweave 选定（跟 Gaea/kingshard）**：更新会话 `Autocommit=false`，选源走 master 并 sticky；在借到的 master 上执行该 `SET`（或等价 `SetAutoCommit(0)`），**不必**另发 `BEGIN`（与 Gaea 注释「SetAutoCommit(0) equivalent to starting a transaction」一致）。
 
 `BEGIN` / `START TRANSACTION`：走 master；执行后依赖 OK 的 `IN_TRANS` 置位（已有转发路径）。
 
@@ -226,28 +226,28 @@ inTransaction := (status & SERVER_STATUS_IN_TRANS) != 0
 
 `ROLLBACK TO SAVEPOINT`：走 master；**不**清事务（跟 dbpack：仅无 SavepointName 时不 delete tx map）。
 
-#### 5.2.2 Reserved / Prepare / sticky（prism 已有 + 开源一致）
+#### 5.2.2 Reserved / Prepare / sticky（shardweave 已有 + 开源一致）
 
 | 条件 | 行为 | 依据 |
 |---|---|---|
-| `DetectReservedSQL`（用户变量、临时表、`GET_LOCK`、`LOCK TABLES`） | `MarkReserved`；之后全程 master + 钉连接 | prism 已有；语义同 Gaea keep 类需求 |
-| `COM_STMT_PREPARE` 及后续 `EXECUTE`/`RESET`/`CLOSE` 绑定 | Prepare 时 MarkReserved；钉 **master**（二进制协议连接局部） | prism 已 MarkReserved；dbpack 事务中 stmt 走 tx；非事务 Select prepare 可走从——**prism 第一版 Prepare 一律 master**（简单、避坑；与「连接局部 ID」一致） |
-| 已持有 sticky `Backend` | 下一条命令复用，**禁止**换 slave 池 | prism `withBackend`；kingshard `txConns` |
+| `DetectReservedSQL`（用户变量、临时表、`GET_LOCK`、`LOCK TABLES`） | `MarkReserved`；之后全程 master + 钉连接 | shardweave 已有；语义同 Gaea keep 类需求 |
+| `COM_STMT_PREPARE` 及后续 `EXECUTE`/`RESET`/`CLOSE` 绑定 | Prepare 时 MarkReserved；钉 **master**（二进制协议连接局部） | shardweave 已 MarkReserved；dbpack 事务中 stmt 走 tx；非事务 Select prepare 可走从——**shardweave 第一版 Prepare 一律 master**（简单、避坑；与「连接局部 ID」一致） |
+| 已持有 sticky `Backend` | 下一条命令复用，**禁止**换 slave 池 | shardweave `withBackend`；kingshard `txConns` |
 
 #### 5.2.3 Layer A 单测必覆盖
 
-1. `BEGIN` → `SELECT` → 两次都是同一 master  
-2. `SET autocommit=0` → `SELECT` → master（**不是** slave）  
-3. `COMMIT` 后 `autocommit=1` → `SELECT` 可 slave  
-4. `COMMIT` 后仍 `autocommit=0` → `SELECT` 仍 master  
-5. `SET @a=1`（reserved）→ 之后 `SELECT` master  
-6. Prepare → Execute → master  
+1. `BEGIN` → `SELECT` → 两次都是同一 master
+2. `SET autocommit=0` → `SELECT` → master（**不是** slave）
+3. `COMMIT` 后 `autocommit=1` → `SELECT` 可 slave
+4. `COMMIT` 后仍 `autocommit=0` → `SELECT` 仍 master
+5. `SET @a=1`（reserved）→ 之后 `SELECT` master
+6. Prepare → Execute → master
 
 ---
 
 ### 5.3 Layer B：语句分类规则表（搬迁清单）
 
-实现形态：对 SQL 做 `trim` + 去前导注释（prism 已有 `stripLeadingComments`），再 **前缀 / 关键字 / 尾部 token** 匹配；与 Gaea token + dbpack 语句种类对齐。  
+实现形态：对 SQL 做 `trim` + 去前导注释（shardweave 已有 `stripLeadingComments`），再 **前缀 / 关键字 / 尾部 token** 匹配；与 Gaea token + dbpack 语句种类对齐。
 输出：`wantSlave bool`（仅 Layer A 未命中时有效）。
 
 #### 5.3.1 强制 master（`wantSlave=false`）
@@ -257,7 +257,7 @@ inTransaction := (status & SERVER_STATUS_IN_TRANS) != 0
 | M1 | 前缀（忽略大小写）：`INSERT` `UPDATE` `DELETE` `REPLACE` `TRUNCATE` | kingshard `handleExec(..., fromSlave=false)`；dbpack Insert/Update/Delete→Master；Gaea 非 Select/Show → 不从 |
 | M2 | 前缀：`LOAD` `CREATE` `DROP` `ALTER` `RENAME` `GRANT` `REVOKE` `FLUSH` `ANALYZE` `OPTIMIZE` `REPAIR` `CHECK` `INSTALL` `UNINSTALL` `IMPORT` | Gaea：非 Select/Show 默认不从；保守跟「非读」 |
 | M3 | 前缀：`BEGIN` `START TRANSACTION` `COMMIT` `ROLLBACK` `SAVEPOINT` `RELEASE SAVEPOINT` `XA` | 三家均主路径；事务控制绝不能上从 |
-| M4 | 前缀：`SET`（任意 `SET`，含 `NAMES`/`autocommit`/系统变量） | kingshard/Gaea 在代理侧处理或打后端会话；dbpack 普通 SET→`QueryAll`——**prism 跟 Gaea：打 master + 记 State，不广播** |
+| M4 | 前缀：`SET`（任意 `SET`，含 `NAMES`/`autocommit`/系统变量） | kingshard/Gaea 在代理侧处理或打后端会话；dbpack 普通 SET→`QueryAll`——**shardweave 跟 Gaea：打 master + 记 State，不广播** |
 | M5 | `USE` / `COM_INIT_DB` | 更新 `State.Database` 并**必须打到一台后端**（透传）。选源：**无事务时允许 slave**（kingshard `getBackendConn(..., true)`）；事务/sticky 中钉当前连接。Gaea 纯改 `se.db` 不打后端——不适合透传。dbpack RWS UseDB unimplemented——不学。详见附录 A.5 |
 | M6 | `SELECT`/`SHOW` 但命中锁读：尾部或 token 含 `FOR UPDATE` / `FOR SHARE` / `LOCK IN SHARE MODE`（及 Gaea 所覆盖的 `nowait`/`skip locked` 组合） | Gaea `checkExecuteFromSlave` + `CheckSelectLock` |
 | M7 | master hint：注释或 token 含 `/*master*/` / `*master*`（Gaea 还认 `/*+ master */`） | kingshard `MasterComment`；Gaea `masterHint`/`standardMasterHint` |
@@ -271,7 +271,7 @@ inTransaction := (status & SERVER_STATUS_IN_TRANS) != 0
 | S1 | 前缀 `SELECT`（且未命中 M6/M7/M8） | kingshard Select 默认 fromSlave；dbpack Select→Slave；Gaea StmtSelect |
 | S2 | 前缀 `SHOW`（且未命中 M8） | Gaea StmtShow 可从 |
 | S3 | 前缀 `EXPLAIN` / `DESCRIBE` / `DESC`（非 `EXPLAIN` 改写类管理语句） | 读意图；Gaea 非强制但从保守角度：若实现困难可先 **master**（记开放项）；**建议第一版 EXPLAIN/DESC → slave**，与「只读」一致 |
-| S4 | kingshard `SimpleSelect`（无 FROM 的 select） | 走 Select 路径；prism 用同一 S1 |
+| S4 | kingshard `SimpleSelect`（无 FROM 的 select） | 走 Select 路径；shardweave 用同一 S1 |
 
 **明确不做（本切片）**：Gaea 只读用户拒写、Statistic 专用从库、dbpack 表 hint 指定 DS 名。
 
@@ -283,7 +283,7 @@ inTransaction := (status & SERVER_STATUS_IN_TRANS) != 0
 | `COM_INIT_DB` | 无事务 → slave 可（失败回落主）；事务/sticky → 钉当前（M5 / 附录 A.5） |
 | `COM_PING` / `COM_QUIT` | 可不借后端或借任意；现有逻辑可保持 |
 | `COM_STMT_PREPARE`/`EXECUTE`/`RESET`/`CLOSE`/`SEND_LONG_DATA` | master + reserved（§5.2.2） |
-| `COM_FIELD_LIST` | Gaea/dbpack 偏 slave；**prism：slave，失败回落 master** |
+| `COM_FIELD_LIST` | Gaea/dbpack 偏 slave；**shardweave：slave，失败回落 master** |
 
 ---
 
@@ -294,7 +294,7 @@ inTransaction := (status & SERVER_STATUS_IN_TRANS) != 0
 | `USE` / `COM_INIT_DB` | `State.SetDatabase`；打一台后端（无事务可从，见 M5）；其它池靠 Align |
 | `SET NAMES` / charset | `State.SetCharset`；在 **master** 执行 |
 | 其它 `SET` | 能解析进 State 的（autocommit）更新 State；一律在 **master** 执行；不解析的也打 master，避免从库会话漂移 |
-| 下次借 **另一台**（如 slave） | `Align(database, charset)`（prism 已有）；对齐 Gaea `initBackendConn` 的 USE + charset（系统变量白名单可后续扩） |
+| 下次借 **另一台**（如 slave） | `Align(database, charset)`（shardweave 已有）；对齐 Gaea `initBackendConn` 的 USE + charset（系统变量白名单可后续扩） |
 | 用户变量 `@x` | reserved → sticky master（已有），**不要**以为 Align 能同步用户变量 |
 
 **禁止**：dbpack RWS 对普通 `SET` 的 `QueryAll`（主从全广播）作为默认——成本高且与现 Align 模型重复。
@@ -329,18 +329,18 @@ pkg/router/rwsplit.go   // 或 session 旁纯函数，避免 proxy 膨胀
 
 ### 5.7 规则争议时的默认原则
 
-1. **会话一致性 > 读扩散**（事务 / autocommit=0 / reserved 绝不走从）  
-2. **跟两家以上开源的交集**；仅一家有的特例（如 Gaea `@@read_only`）值得搬则写入表并标来源  
-3. **拿不准 → master**  
+1. **会话一致性 > 读扩散**（事务 / autocommit=0 / reserved 绝不走从）
+2. **跟两家以上开源的交集**；仅一家有的特例（如 Gaea `@@read_only`）值得搬则写入表并标来源
+3. **拿不准 → master**
 4. 新增规则必须先加失败单测再改实现（TDD）
 
 ---
 
-### 5.8 三家分歧对照 → prism 显式选定（避免混抄）
+### 5.8 三家分歧对照 → shardweave 显式选定（避免混抄）
 
 实现时最容易「三家各抄一点」互相打架。下表把分歧钉死：
 
-| 议题 | kingshard | Gaea | dbpack RWS | **prism** |
+| 议题 | kingshard | Gaea | dbpack RWS | **shardweave** |
 |---|---|---|---|---|
 | `inTransaction` | `IN_TRANS \|\| !AC` | 同左 | 靠 `localTransactionMap` 有无 tx 句柄 | **跟 K/G：`IN_TRANS \|\| !AC`**；另保留 sticky/reserved |
 | `SET autocommit` | **代理侧改 status**，必要时对已借 tx 连接 `SetAutoCommit`；`=0` 时**不必立刻借连接** | 同左；keep-session 时对已持连接执行 | `autocommit=0` → **立刻 Begin** 并放入 tx map | **跟 K/G**：改会话位；若已有 sticky master 则在其上执行 `SET`/`SetAutoCommit`；若无连接则只改会话，下一条按 inTx 借 master 再对齐 |
@@ -356,7 +356,7 @@ pkg/router/rwsplit.go   // 或 session 旁纯函数，避免 proxy 膨胀
 | 归还连接 | 事务中不还（钉在 `txConns`） | `recycleBackendConn`：inTx 则 return 不 Recycle | tx 句柄持有至 commit | **跟现有 sticky：NeedsSticky 不 Release 回池** |
 | `USE` / InitDB | **优先从** `getBackendConn(..., true)` | **只改 `se.db`，不打后端** | **unimplemented** | **打后端 + 更新 State**；非事务可从（跟 K）；事务钉当前。不学 Gaea 空跑、不学 dbpack 未实现 |
 
-※ dbpack 对 `SelectStmt` 一律 Slave，**不**单独识别 `FOR UPDATE`——这是已知简化；**prism 不跟**，跟 Gaea，避免锁读打到从库。
+※ dbpack 对 `SelectStmt` 一律 Slave，**不**单独识别 `FOR UPDATE`——这是已知简化；**shardweave 不跟**，跟 Gaea，避免锁读打到从库。
 
 ---
 
@@ -379,7 +379,7 @@ sticky     = nil
 return st.InTx || !st.Autocommit
 ```
 
-与 kingshard `conn_tx.go` / Gaea `executor.go` 同构。  
+与 kingshard `conn_tx.go` / Gaea `executor.go` 同构。
 `NeedsSticky(st) := IsInTransaction(st) || st.Reserved`。
 
 #### 5.9.2 事件 → 状态迁移
@@ -399,9 +399,9 @@ return st.InTx || !st.Autocommit
 
 **关键语义（务必单测）**：
 
-- `Autocommit=false` 且 `InTx=false` 时，`IsInTransaction==true` → **SELECT 仍走 master**（K/G 同款，最易漏测）。  
-- `COMMIT` 后若仍 `Autocommit=false`，`IsInTransaction` 仍为 true → 继续 master。  
-- `SET autocommit=1` 在 K/G 会清 IN_TRANS 并 **回收 txConns**；prism 对应：清 InTx、若 `!Reserved` 则 Release sticky。
+- `Autocommit=false` 且 `InTx=false` 时，`IsInTransaction==true` → **SELECT 仍走 master**（K/G 同款，最易漏测）。
+- `COMMIT` 后若仍 `Autocommit=false`，`IsInTransaction` 仍为 true → 继续 master。
+- `SET autocommit=1` 在 K/G 会清 IN_TRANS 并 **回收 txConns**；shardweave 对应：清 InTx、若 `!Reserved` 则 Release sticky。
 
 #### 5.9.3 sticky 借还（对齐 Gaea `recycleBackendConn`）
 
@@ -432,7 +432,7 @@ sticky = pc
 
 ### 5.10 规范算法 `Pick`（实现必须等价）
 
-输入：`st *session.State`，`cmd`（COM 与 payload），`group`（master + slaves 池）。  
+输入：`st *session.State`，`cmd`（COM 与 payload），`group`（master + slaves 池）。
 输出：`target`（池 + 是否复用 sticky）。
 
 ```text
@@ -484,25 +484,25 @@ function Pick(st, cmd, sql, group, sticky):
 
 #### 5.10.1 `classifyPrefix`（扎实匹配，避免假前缀）
 
-1. `stripLeadingComments`（已有：`--` `#` `/* */`；**注意**：`/*master*/` 若在语句**中间/尾部**，前导剥离不会删掉——hint 检测须在整串或 token 上做，见 M7）。  
-2. 跳过空白；取第一个 SQL 关键字（字母开头连续 `[A-Za-z0-9_]`）。  
-3. 若关键字为 `START`，lookahead 下一词为 `TRANSACTION` → 归为 BEGIN 类。  
-4. 若关键字为 `SET`，整类 M4（不再细分是否变量，选源已定 master；状态更新见 §5.9）。  
+1. `stripLeadingComments`（已有：`--` `#` `/* */`；**注意**：`/*master*/` 若在语句**中间/尾部**，前导剥离不会删掉——hint 检测须在整串或 token 上做，见 M7）。
+2. 跳过空白；取第一个 SQL 关键字（字母开头连续 `[A-Za-z0-9_]`）。
+3. 若关键字为 `START`，lookahead 下一词为 `TRANSACTION` → 归为 BEGIN 类。
+4. 若关键字为 `SET`，整类 M4（不再细分是否变量，选源已定 master；状态更新见 §5.9）。
 5. **多语句**（`;` 连接）：第一版 **整条走 master**（K/G 亦非完整多语句路由）；或拒绝。选定：**整条 master**。
 
 #### 5.10.2 `isLockingRead`（跟 Gaea token 思路，启发实现）
 
 在 upper 后的 SQL 上检测（允许简单子串 + 边界，表驱动校准）：
 
-- `FOR UPDATE`  
-- `FOR SHARE`  
-- `LOCK IN SHARE MODE`  
+- `FOR UPDATE`
+- `FOR SHARE`
+- `LOCK IN SHARE MODE`
 - 以及 Gaea 覆盖的尾部组合：`... FOR UPDATE NOWAIT` / `SKIP LOCKED` 等（实现时把 Gaea `checkExecuteFromSlave` 的 token 条件译成测试用例，而不是只抄注释）
 
 #### 5.10.3 `hasMasterHint`
 
-- 子串（大小写不敏感注释）：`/*master*/`、`/*+ master */`  
-- 或 tokenize 后存在 `*master*`（Gaea analyzer 行为）  
+- 子串（大小写不敏感注释）：`/*master*/`、`/*+ master */`
+- 或 tokenize 后存在 `*master*`（Gaea analyzer 行为）
 
 命中 → master，**即使**是普通 SELECT。
 
@@ -521,7 +521,7 @@ return AcquireMaster(group, st)
 
 ### 5.11 验收语料（实现前先落成测试表）
 
-下列用例 **必须** 在 `Classify`/`Pick` 单测中出现；注释写 `ref: kingshard|Gaea|dbpack` + 函数名。  
+下列用例 **必须** 在 `Classify`/`Pick` 单测中出现；注释写 `ref: kingshard|Gaea|dbpack` + 函数名。
 约定：`AC=autocommit`，期望为 `M`/`S`（slave 可回落 M，断言「意图为 S」时用 mock：slave 可用）。
 
 #### A. 事务 / AC（Layer A）
@@ -604,8 +604,8 @@ READ:  SELECT SHOW EXPLAIN DESCRIBE DESC
 | 现有 | 变化 |
 |---|---|
 | `config.Backend` | 改为 `BackendServer` 段 + `mode`；叶子 `BackendEndpoint` |
-| `etc/prism.yaml` | `backend:` → `backend_server.mode: single` |
-| `cmd/prism` / `pkg/server` | 按 mode 建 1 个或多个 Pool，注入 Router |
+| `etc/shardweave.yaml` | `backend:` → `backend_server.mode: single` |
+| `cmd/shardweave` / `pkg/server` | 按 mode 建 1 个或多个 Pool，注入 Router |
 | `pkg/proxy.SessionConfig` | `Pool *pool.Pool` → 抽象为「按 Route 取池」（或持有 `BackendGroup`） |
 | `pkg/session` | 补 `Autocommit`；`NeedsSticky` 含 `!Autocommit`；保留 reserved 检测 |
 | `pkg/router`（新建或暂放 session） | `Pick` / `ClassifyWantSlave`；§5 表驱动单测，注释标开源出处 |
@@ -656,7 +656,7 @@ READ:  SELECT SHOW EXPLAIN DESCRIBE DESC
 | `mode` 缺省 | **`single`** |
 | `EXPLAIN`/`DESC` | **slave（S3）** |
 | 集成测进 CI | **有主从夹具后再加**；现阶段以 §5.11 单测为准 |
-| Align 系统变量白名单 | **本阶段仅 database + charset**；扩白名单后置 |  
+| Align 系统变量白名单 | **本阶段仅 database + charset**；扩白名单后置 |
 
 ---
 
@@ -667,13 +667,13 @@ READ:  SELECT SHOW EXPLAIN DESCRIBE DESC
 | dbpack | `pkg/executor/read_write_splitting.go`，`misc.go`（`shouldStartTransaction`），`pkg/group/group.go`，`docker/conf/config_{sdb,rws}.yaml` |
 | kingshard | `proxy/server/conn_query.go`（`getBackendConn`/`handleExec`），`conn_select.go`（`/*master*/`），`conn_tx.go`，`conn_set.go`，`backend/node.go` |
 | Gaea | `proxy/server/executor.go`（`isInTransaction`、`checkExecuteFromSlave`、`handleBegin`），`executor_handle.go`（`handleSet*`），`backend/slice.go`（`GetConn` 回落） |
-| prism | `pkg/session/state.go`，`pkg/pool/backend.go`（`Align`），`pkg/proxy/session.go`（`SetInTx`） |
+| shardweave | `pkg/session/state.go`，`pkg/pool/backend.go`（`Align`），`pkg/proxy/session.go`（`SetInTx`） |
 
 规则正文以 **§5–§5.12** 与 **附录 A（全文件通读纪要）** 为准。实现 PR 必须：
 
-1. `Pick` 与 §5.10 伪代码行为一致；  
-2. §5.11 语料全覆盖；  
-3. 测试注释标注 **A#/B#/C#** 或 **M#/S#** + 开源 `文件/函数`；  
+1. `Pick` 与 §5.10 伪代码行为一致；
+2. §5.11 语料全覆盖；
+3. 测试注释标注 **A#/B#/C#** 或 **M#/S#** + 开源 `文件/函数`；
 4. 与 §5.8 / 附录 A.4 分歧表冲突的「顺手改行为」视为 bug。
 
 实现切片步骤见同目录：[backend-server-single-rwsplit-plan.md](backend-server-single-rwsplit-plan.md)。
@@ -706,7 +706,7 @@ READ:  SELECT SHOW EXPLAIN DESCRIBE DESC
 
 ```text
 handleQuery
-  → preHandleShard? 
+  → preHandleShard?
   → Parse
   → switch stmt:
        Select      → handleSelect: fromSlave=true；Comments[0]=="/*master*/"则 false
@@ -732,8 +732,8 @@ closeConn / closeShardConns:
 isInTransaction = IN_TRANS || !AUTOCOMMIT   // conn_tx.go 全文仅此语义
 
 SET（conn_set.go 全文）:
-  仅处理 AUTOCOMMIT / NAMES / character_set_* 
-  其它 SET → 打错误日志但仍 writeOK（吞掉，不转发后端）——prism 不学
+  仅处理 AUTOCOMMIT / NAMES / character_set_*
+  其它 SET → 打错误日志但仍 writeOK（吞掉，不转发后端）——shardweave 不学
   autocommit=1 → 置 AC、清 IN_TRANS、对 txConns SetAutoCommit(1) 后 Close 清空
   autocommit=0 → 仅清 AC 位，不立刻借连接
 
@@ -743,7 +743,7 @@ USE（conn_use.go 全文）:
 
 Prepare（conn_stmt.go）:
   getBackendConn(n, false)  // 明确走主；Prepare 完 ClosePrepare，不长期钉后端语句 ID
-  （kingshard 前端 stmt id 自管，后端 prepare 用完即关——与 prism「前后端均二进制、钉连接」不同）
+  （kingshard 前端 stmt id 自管，后端 prepare 用完即关——与 shardweave「前后端均二进制、钉连接」不同）
 
 FieldList（conn_select.go）:
   getBackendConn(n, false)  // 走主
@@ -752,7 +752,7 @@ Node（backend/node.go）:
   Master 单 DB；Slave[] + 权重轮询；Ping 摘流 DownAfterNoAlive
 ```
 
-**对 prism 的硬启示**：Layer A 事务钉主 + 借连 Align 与 K 同构；语句层 Select 默认可从、写强制主；**USE 开源是优先从**——见 A.4 选定。
+**对 shardweave 的硬启示**：Layer A 事务钉主 + 借连 Align 与 K 同构；语句层 Select 默认可从、写强制主；**USE 开源是优先从**——见 A.4 选定。
 
 ### A.3 Gaea — 控制流（整文件结论）
 
@@ -810,7 +810,7 @@ slice.GetConn:
   DirectMaster | DirectSlave | SlaveFallbackMaster（可配置从失败回主）
 ```
 
-**对 prism**：`checkExecuteFromSlave` 是 Layer B 的权威模板；Begin/AC 状态机跟 Gaea；**USE/SET 大量代理侧**——prism 透传代理需折中（见 A.4）。
+**对 shardweave**：`checkExecuteFromSlave` 是 Layer B 的权威模板；Begin/AC 状态机跟 Gaea；**USE/SET 大量代理侧**——shardweave 透传代理需折中（见 A.4）。
 
 ### A.4 dbpack RWS — 控制流（全文结论）
 
@@ -839,11 +839,11 @@ Begin/XAStart → getAvailableMasters()[0]
 QueryAll → 对所有主从 go Query，返回空 OK Result（不等待错误汇总）
 ```
 
-**对 prism**：**不**学 default→Slave、**不**学 QueryAll、**不**学 UseDB unimplemented；学「tx map 优先于语句类型」与「无从回落主」。
+**对 shardweave**：**不**学 default→Slave、**不**学 QueryAll、**不**学 UseDB unimplemented；学「tx map 优先于语句类型」与「无从回落主」。
 
 ### A.5 通读后对设计正文的修正（相对早期草稿）
 
-| 点 | 旧草稿 | 通读后 **prism 锁定** |
+| 点 | 旧草稿 | 通读后 **shardweave 锁定** |
 |---|---|---|
 | `USE` / `COM_INIT_DB` | 一律 master | **更新 `State.Database`；选源：无事务时允许 slave（跟 kingshard `fromSlave=true`），有事务/sticky 仍钉当前连接；Align 保证其它池稍后一致**。Gaea 纯代理侧不打后端——透传场景我们仍要打一台后端执行 `USE`/`COM_INIT_DB`。 |
 | `SET` 未知变量 | 转发 master | **保持转发 master**（拒绝 kingshard 吞 OK、拒绝 dbpack QueryAll） |
@@ -856,7 +856,7 @@ QueryAll → 对所有主从 go Query，返回空 OK Result（不等待错误汇
 
 正文 §5.3 M5、§5.8 USE 行、§5.10 `COM_INIT_DB` **以本表为准**（覆盖前文「USE 一律 master」）。
 
-### A.6 与 prism 现状缺口（通读 × 代码）
+### A.6 与 shardweave 现状缺口（通读 × 代码）
 
 | 缺口 | 位置 | 闭环 |
 |---|---|---|

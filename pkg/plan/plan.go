@@ -5,9 +5,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/acorndb/prism/pkg/route"
-	"github.com/acorndb/prism/pkg/session"
-	"github.com/acorndb/prism/pkg/sql"
+	"github.com/acorndb/shardweave/pkg/route"
+	"github.com/acorndb/shardweave/pkg/session"
+	"github.com/acorndb/shardweave/pkg/sql"
 )
 
 // Kind is the three-state plan contract.

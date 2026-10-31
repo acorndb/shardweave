@@ -1,4 +1,4 @@
-module github.com/acorndb/prism
+module github.com/acorndb/shardweave
 
 go 1.27.3
 

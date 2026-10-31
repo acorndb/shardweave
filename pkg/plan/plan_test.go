@@ -5,13 +5,13 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/acorndb/prism/pkg/constant"
-	"github.com/acorndb/prism/pkg/mysql"
-	"github.com/acorndb/prism/pkg/plan"
-	"github.com/acorndb/prism/pkg/route"
-	"github.com/acorndb/prism/pkg/route/source"
-	"github.com/acorndb/prism/pkg/session"
-	"github.com/acorndb/prism/pkg/sql"
+	"github.com/acorndb/shardweave/pkg/constant"
+	"github.com/acorndb/shardweave/pkg/mysql"
+	"github.com/acorndb/shardweave/pkg/plan"
+	"github.com/acorndb/shardweave/pkg/route"
+	"github.com/acorndb/shardweave/pkg/route/source"
+	"github.com/acorndb/shardweave/pkg/session"
+	"github.com/acorndb/shardweave/pkg/sql"
 	"github.com/stretchr/testify/require"
 )
 

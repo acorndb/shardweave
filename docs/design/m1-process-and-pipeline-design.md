@@ -1,18 +1,18 @@
 # M1 下一阶段：可运行进程 + 管线显式化（源码调研与设计）
 
-> 状态：**已定优先切片，进入实现** — EXPLAIN 形态仍调研中；Prometheus 后置。  
-> 日期：2026-10-30  
-> 调研方式：浅克隆到 `/tmp/prism-oss-survey/{kingshard,dbpack,Gaea,go-mysql}` **直接读源码**（非 README/记忆）。  
-> 上位：[m1-passthrough-pipeline-design.md](m1-passthrough-pipeline-design.md)、[architecture.md](../architecture.md)  
-> 现状：库级透传（`proxy.Serve` + 池/会话保真）已可用；**无 `cmd/prism`、无 `config/`、无 `executor/`**。
+> 状态：**已定优先切片，进入实现** — EXPLAIN 形态仍调研中；Prometheus 后置。
+> 日期：2026-10-30
+> 调研方式：浅克隆到 `/tmp/prism-oss-survey/{kingshard,dbpack,Gaea,go-mysql}` **直接读源码**（非 README/记忆）。
+> 上位：[m1-passthrough-pipeline-design.md](m1-passthrough-pipeline-design.md)、[architecture.md](../architecture.md)
+> 现状：库级透传（`proxy.Serve` + 池/会话保真）已可用；**无 `cmd/shardweave`、无 `config/`、无 `executor/`**。
 
 ---
 
 ## 0. 一句话
 
-下一阶段交付 **可手工连接的代理进程**，并把数据面收敛到 **Plan → Dispatch → Merge** 装配点。  
-进程骨架以 **kingshard `main` + Accept 循环** 为模板，协议层继续用已有第一方 `mysql/`（对齐 go-mysql）；装配与命名参考 **dbpack 的 Listener↔Executor 解耦**；配置用 **单 YAML + `-config`**，并做 **进程内热加载**（抄 kingshard `SIGUSR1` → 重读 YAML → `UpdateConfig`）。  
-目录采用 Go 常见的 **`cmd/` + `pkg/`**：可导入库代码一律放 `pkg/<domain>`（对齐 dbpack 与广泛 Go 工程习惯）；`cmd/prism` 只做装配。  
+下一阶段交付 **可手工连接的代理进程**，并把数据面收敛到 **Plan → Dispatch → Merge** 装配点。
+进程骨架以 **kingshard `main` + Accept 循环** 为模板，协议层继续用已有第一方 `mysql/`（对齐 go-mysql）；装配与命名参考 **dbpack 的 Listener↔Executor 解耦**；配置用 **单 YAML + `-config`**，并做 **进程内热加载**（抄 kingshard `SIGUSR1` → 重读 YAML → `UpdateConfig`）。
+目录采用 Go 常见的 **`cmd/` + `pkg/`**：可导入库代码一律放 `pkg/<domain>`（对齐 dbpack 与广泛 Go 工程习惯）；`cmd/shardweave` 只做装配。
 **不做多租户**：无 Gaea namespace / etcd / cc 两阶段；整机一份配置。拒绝 Vitess topo、ProxySQL 多层 DB、dbpack 分布式事务 etcd 作为 M1 默认。
 
 ---
@@ -52,11 +52,11 @@ dispatch: COM_QUIT/PING/INIT_DB/QUERY/STMT_* …
 
 **后端池**（`backend/db.go`、`backend_conn.go`）：
 
-- `BackendConn.Close()`：若无 pkgErr，先 **`ResetSession()` = `COM_RESET_CONNECTION`**，失败则丢弃，成功再 `PushConn` 入池  
-  （与 prism 已实现的 Release→Reset 同思路，kingshard 注释写明对齐 `database/sql` SessionResetter）
+- `BackendConn.Close()`：若无 pkgErr，先 **`ResetSession()` = `COM_RESET_CONNECTION`**，失败则丢弃，成功再 `PushConn` 入池
+  （与 shardweave 已实现的 Release→Reset 同思路，kingshard 注释写明对齐 `database/sql` SessionResetter）
 - `IsInTransaction()` 读 `SERVER_STATUS_IN_TRANS`（与我们刚做的 status sticky 一致）
 
-**对 prism**：
+**对 shardweave**：
 
 | 抄 | 不抄 |
 |---|---|
@@ -90,7 +90,7 @@ app_config:
 ```
 
 - `Normalize()` 校验：listener 引用的 executor 必须存在、datasource 完整等（**比 kingshard 严格**）
-- 池字段命名与 prism/`Gaea` 同源：`capacity` / `max_capacity` / `idle_timeout`
+- 池字段命名与 shardweave/`Gaea` 同源：`capacity` / `max_capacity` / `idle_timeout`
 
 **Listener**（`pkg/listener/mysql.go`）：
 
@@ -110,14 +110,14 @@ InLocalTransaction / ConnectionClose / GetPreFilters…
 
 **Server**（`pkg/server/server.go`）：仅管理多个 Listener 的 `Listen`/`Close`，极薄。
 
-**对 prism**：
+**对 shardweave**：
 
 | 抄 | 不抄 |
 |---|---|
 | **Listener（协议）与 Executor（转发/计划）解耦**；cmd 里按名装配 | etcd 分布式事务、Filter 全家桶、多 AppID mesh |
 | `termination_drain_duration` 二次信号语义 | 后端走 `database/sql`/connector 为主（我们坚持 raw `mysql/client`） |
 | **配置面三种后端模式** `single`（≈sdb）/ `rws` / `sharding`（≈shd）——见 **E10** | **不**复制三套互斥大 Executor 类；mode 只装配 Router，数据面仍 Plan→Dispatch→Merge |
-| 配置 Normalize 校验；**`pkg/` 伞（prism 跟此目录习惯）** | Cobra；probe 端口可后置；JSON 往返解析子配置；Filter/DT 全家桶 |
+| 配置 Normalize 校验；**`pkg/` 伞（shardweave 跟此目录习惯）** | Cobra；probe 端口可后置；JSON 往返解析子配置；Filter/DT 全家桶 |
 
 ---
 
@@ -135,10 +135,10 @@ InLocalTransaction / ConnectionClose / GetPreFilters…
 **池**（`backend/connection_pool.go` + `direct_connection.go` + `executor.go`）：
 
 - `tryReuse` → `ResetConnection()`（清事务/autocommit/charset/sql_mode 等）
-- 借出后 **`initBackendConn`**：按会话 `USE` + charset/collation + session variables 批量对齐  
+- 借出后 **`initBackendConn`**：按会话 `USE` + charset/collation + session variables 批量对齐
   （与 M1 已定「Release Reset + Acquire Align」双保险一致，Gaea 是对齐侧的主参考）
 
-**对 prism**：抄 **借连对齐 / tryReuse Reset** 语义（已在上一阶段落地）；日志级热更可参考 `ReloadProxyConfig`；**不抄** ini+etcd namespace、cc 两阶段、装饰器改写主路径。
+**对 shardweave**：抄 **借连对齐 / tryReuse Reset** 语义（已在上一阶段落地）；日志级热更可参考 `ReloadProxyConfig`；**不抄** ini+etcd namespace、cc 两阶段、装饰器改写主路径。
 
 ---
 
@@ -146,13 +146,13 @@ InLocalTransaction / ConnectionClose / GetPreFilters…
 
 **入口**（`cmd/go-mysqlserver/main.go`）：教学用——`Listen` → **单次** `Accept` → `NewConn` → `HandleCommand` 循环；生产必须自己加 Accept 循环与 goroutine。
 
-**价值**：`server.Handler` / `WritePacket` 头预留等 API 约定；prism 协议层已对照移植，**cmd 不要照抄单连接示例**。其根下按能力拆包（`mysql/`、`packet/`、`server/`）——prism 把同类包收拢到 `pkg/` 下，避免模块根被库包占满。
+**价值**：`server.Handler` / `WritePacket` 头预留等 API 约定；shardweave 协议层已对照移植，**cmd 不要照抄单连接示例**。其根下按能力拆包（`mysql/`、`packet/`、`server/`）——shardweave 把同类包收拢到 `pkg/` 下，避免模块根被库包占满。
 
 ---
 
 ### 1.5 对照总表（进程 / 配置 / 管线）
 
-| 维度 | kingshard | dbpack | Gaea | go-mysql server | prism M1 选定 |
+| 维度 | kingshard | dbpack | Gaea | go-mysql server | shardweave M1 选定 |
 |---|---|---|---|---|---|
 | CLI | `-config` YAML | `start -c` YAML | `-config` ini | 无配置 | **`-config` YAML**（kingshard 形） |
 | Accept | per-conn goroutine | per-conn goroutine | per-conn | 示例单连接 | **per-conn → `proxy.Serve`** |
@@ -175,13 +175,13 @@ InLocalTransaction / ConnectionClose / GetPreFilters…
 | **go-mysql** | 模块根按能力扁平 | `cmd/*`、`mysql/`、`packet/`、`server/`、`client/`、`replication/`… |
 | **dbpack** | **`pkg/` 伞** + 瘦 `cmd/` | `pkg/{config,listener,executor,server,plan,mysql,packet,proto,…}` |
 
-**结论（已改）**：代理专项目录上 kingshard/Gaea 偏根下扁平，但 **Go 工程更常见的是 `cmd/` + `pkg/`**（库代码可被外部 import 的约定位置；dbpack 即此）。prism **选定 `pkg/`**：既有 `mysql/`、`pool/`、`proxy/`、`session/`、`sql/` **迁入 `pkg/`**，新增包也只在 `pkg/` 下生长。`test/`、`docs/`、`etc/`、`cmd/` 仍留在模块根。
+**结论（已改）**：代理专项目录上 kingshard/Gaea 偏根下扁平，但 **Go 工程更常见的是 `cmd/` + `pkg/`**（库代码可被外部 import 的约定位置；dbpack 即此）。shardweave **选定 `pkg/`**：既有 `mysql/`、`pool/`、`proxy/`、`session/`、`sql/` **迁入 `pkg/`**，新增包也只在 `pkg/` 下生长。`test/`、`docs/`、`etc/`、`cmd/` 仍留在模块根。
 
 **职责落点对照（M1）**：
 
-| 职责 | kingshard | Gaea | dbpack | prism（选定） |
+| 职责 | kingshard | Gaea | dbpack | shardweave（选定） |
 |---|---|---|---|---|
-| 进程入口 | `cmd/kingshard` | `cmd/gaea` | `cmd/` | **`cmd/prism`** |
+| 进程入口 | `cmd/kingshard` | `cmd/gaea` | `cmd/` | **`cmd/shardweave`** |
 | 配置 | `config/` | `models/` | `pkg/config` | **`pkg/config`** |
 | Accept / 会话 | `proxy/server` | `proxy/server` | `pkg/listener`+`server` | **`pkg/proxy`**（现有 Serve 迁入）；main 只 Listen/Accept |
 | 执行 / Plan | 揉进 ClientConn | `proxy/plan` | `pkg/executor`+`plan` | **`pkg/executor`**（勿塞进 proxy） |
@@ -198,7 +198,7 @@ InLocalTransaction / ConnectionClose / GetPreFilters…
 
 ### 2.1 目标
 
-1. `go run ./cmd/prism -config …` 可连，透传可用。
+1. `go run ./cmd/shardweave -config …` 可连，透传可用。
 2. `config` 强类型加载 + **校验**（未知字段拒绝；`sharding` warn 忽略）。
 3. Accept 循环装配现有 `proxy.Serve`；信号优雅退出（参考 dbpack drain + kingshard Close listener）。
 4. **配置热加载**：`SIGUSR1` 重读同一 `-config` 路径 → `Validate` → 原子替换运行时快照；失败保留旧配置并打错误日志。
@@ -207,12 +207,12 @@ InLocalTransaction / ConnectionClose / GetPreFilters…
 
 ### 2.2 非目标
 
-- **多租户 / 多 namespace**：Gaea etcd + `ReloadNamespacePrepare/Commit`、按租户隔离的用户地图与后端拓扑  
-- dbpack 分布式事务 / etcd 配置中心；用 etcd/Consul 做配置源（热更只读**本地 YAML**）  
-- 把库包再拆进 `internal/`（M1 无必要）；把 `pool` 改名为 `backend`  
-- kingshard 式多节点结果全量 merge  
-- ProxySQL 多层配置、Vitess topo  
-- TLS、caching_sha2 full-auth、gnet  
+- **多租户 / 多 namespace**：Gaea etcd + `ReloadNamespacePrepare/Commit`、按租户隔离的用户地图与后端拓扑
+- dbpack 分布式事务 / etcd 配置中心；用 etcd/Consul 做配置源（热更只读**本地 YAML**）
+- 把库包再拆进 `internal/`（M1 无必要）；把 `pool` 改名为 `backend`
+- kingshard 式多节点结果全量 merge
+- ProxySQL 多层配置、Vitess topo
+- TLS、caching_sha2 full-auth、gnet
 
 ---
 
@@ -221,7 +221,7 @@ InLocalTransaction / ConnectionClose / GetPreFilters…
 | 切片 | 内容 | 主要抄自 | 退出 |
 |---|---|---|---|
 | **N0** | 现有根包迁入 `pkg/`（`mysql`/`pool`/`proxy`/`session`/`sql`） | dbpack `pkg/`；Go `cmd`+`pkg` | **已完成** |
-| **N1** | `pkg/config` + `cmd/prism` + `etc/`；Listen/Accept → `pkg/proxy.Serve` | kingshard main；dbpack drain | mysql 客户端 `SELECT 1` |
+| **N1** | `pkg/config` + `cmd/shardweave` + `etc/`；Listen/Accept → `pkg/proxy.Serve` | kingshard main；dbpack drain | mysql 客户端 `SELECT 1` |
 | **N1b** | `SIGUSR1` 热加载 + 字段契约（§4.3） | kingshard `UpdateConfig`；失败不换配置 | `kill -USR1` 改 users/log 生效；listen/backend 变更则失败 |
 | **N2** | `pkg/executor` + Noop/Identity；proxy 走装配 | dbpack Listener↔Executor；Vitess Plan 退化 | A5；差分不回归 |
 | **N3** | `pkg/admin`：`EXPLAIN ROUTE` + HTTP（**形态待调研定稿**） | Vitess 等续研 | A4 |
@@ -234,7 +234,7 @@ flowchart TB
   end
   subgraph n1 [N1]
     yaml[pkg/config]
-    main[cmd/prism]
+    main[cmd/shardweave]
     accept[Accept loop]
     serve[pkg/proxy.Serve]
     yaml --> main --> accept --> serve
@@ -262,8 +262,8 @@ flowchart TB
 ### 4.0 M1 落地目录（`cmd/` + `pkg/`）
 
 ```
-prism/
-├── cmd/prism/                 # NEW：flag、信号、Listen/Accept、装配
+shardweave/
+├── cmd/shardweave/                 # NEW：flag、信号、Listen/Accept、装配
 ├── pkg/
 │   ├── mysql/                 # N0 迁入：packet、auth、server、client
 │   ├── pool/                  # N0 迁入
@@ -274,15 +274,15 @@ prism/
 │   ├── executor/              # N2：plan / dispatch / merge
 │   ├── admin/                 # N3：EXPLAIN HTTP
 │   └── obs/                   # N4：slog 辅助、Prometheus
-├── etc/                       # NEW：示例 prism.yaml（无 Go import）
+├── etc/                       # NEW：示例 shardweave.yaml（无 Go import）
 ├── docs/
 └── test/                      # 仍在根：differential / handshake / passthrough
 ```
 
-**刻意不做**：不把 Plan/Merge 塞进 `pkg/proxy`；不建 `models/etcd` / `cc/`；M1 不强制再套一层 `internal/`。  
+**刻意不做**：不把 Plan/Merge 塞进 `pkg/proxy`；不建 `models/etcd` / `cc/`；M1 不强制再套一层 `internal/`。
 **已改名**：叶子连接池包为 **`pkg/backend_server`**（原 `pkg/pool`），与配置段 `backend_server` 对齐；类型仍用 `Pool`/`Backend` 表示池叶子。
 
-### 4.1 `cmd/prism` 伪流程（源码对照后）
+### 4.1 `cmd/shardweave` 伪流程（源码对照后）
 
 ```text
 flag -config
@@ -307,10 +307,10 @@ on shutdown: cancel; ln.Close; TerminationDrain; pool.Close
 
 ### 4.3 配置热加载契约（N1b）
 
-**触发**：`SIGUSR1` → 重读 `-config` 路径 → `Validate` → 成功则原子替换；失败不替换。  
+**触发**：`SIGUSR1` → 重读 `-config` 路径 → `Validate` → 成功则原子替换；失败不替换。
 不做文件 watch（半写风险）；不做 etcd；**无** Gaea namespace 两阶段。
 
-| 项目 | 行为 | prism 取舍 |
+| 项目 | 行为 | shardweave 取舍 |
 |---|---|---|
 | kingshard `UpdateConfig` | 先 parse 全成功，再 mutex 下换 users/nodes/schemas；blacklist 双缓冲 | 抄失败早退 + 原子换快照；M1 可用 `atomic.Pointer[Config]` |
 | Gaea `ReloadProxyConfig` | 只热更日志等静态项 | 日志级别可抄；不抄 namespace |
@@ -363,7 +363,7 @@ on shutdown: cancel; ln.Close; TerminationDrain; pool.Close
 
 | 项 | 结论 |
 |---|---|
-| 实现顺序 | **`cmd/prism` + `pkg/config`（含简单热更）**；库代码均在 `pkg/`（N0 已迁）；executor / EXPLAIN 再后 |
+| 实现顺序 | **`cmd/shardweave` + `pkg/config`（含简单热更）**；库代码均在 `pkg/`（N0 已迁）；executor / EXPLAIN 再后 |
 | 热更边界 | listen / backend 变更 → reload **失败须重启**；users / log.level 热更生效（简单版） |
 | 目录 | **已定 `cmd/` + `pkg/`**；现有库包已迁入 `pkg/` |
 | 后端拓扑 | **已定学 dbpack 三 mode（E10）**；M1 仅 `single`；rws/sharding 未实现前配置拒绝 |

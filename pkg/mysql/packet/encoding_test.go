@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/acorndb/prism/pkg/mysql/packet"
+	"github.com/acorndb/shardweave/pkg/mysql/packet"
 	"github.com/stretchr/testify/require"
 )
 

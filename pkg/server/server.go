@@ -13,13 +13,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/acorndb/prism/pkg/backend"
-	"github.com/acorndb/prism/pkg/config"
-	"github.com/acorndb/prism/pkg/constant"
-	"github.com/acorndb/prism/pkg/execute"
-	"github.com/acorndb/prism/pkg/plan"
-	"github.com/acorndb/prism/pkg/proxy"
-	"github.com/acorndb/prism/pkg/route/source"
+	"github.com/acorndb/shardweave/pkg/backend"
+	"github.com/acorndb/shardweave/pkg/config"
+	"github.com/acorndb/shardweave/pkg/constant"
+	"github.com/acorndb/shardweave/pkg/execute"
+	"github.com/acorndb/shardweave/pkg/plan"
+	"github.com/acorndb/shardweave/pkg/proxy"
+	"github.com/acorndb/shardweave/pkg/route/source"
 )
 
 // Server is one proxy process: listen address + executor + live config.

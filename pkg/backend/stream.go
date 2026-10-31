@@ -4,9 +4,9 @@ import (
 	"context"
 	"io"
 
-	"github.com/acorndb/prism/pkg/mysql"
-	"github.com/acorndb/prism/pkg/mysql/packet"
-	"github.com/acorndb/prism/pkg/result"
+	"github.com/acorndb/shardweave/pkg/mysql"
+	"github.com/acorndb/shardweave/pkg/mysql/packet"
+	"github.com/acorndb/shardweave/pkg/result"
 )
 
 // rawStream forwards the backend response packets to the frontend unchanged.

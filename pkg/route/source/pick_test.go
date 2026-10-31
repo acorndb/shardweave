@@ -3,10 +3,10 @@ package source_test
 import (
 	"testing"
 
-	"github.com/acorndb/prism/pkg/constant"
-	"github.com/acorndb/prism/pkg/mysql"
-	"github.com/acorndb/prism/pkg/route/source"
-	"github.com/acorndb/prism/pkg/session"
+	"github.com/acorndb/shardweave/pkg/constant"
+	"github.com/acorndb/shardweave/pkg/mysql"
+	"github.com/acorndb/shardweave/pkg/route/source"
+	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/stretchr/testify/require"
 )
 

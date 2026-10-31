@@ -54,7 +54,7 @@ flowchart LR
    - 旧键 `backend:` → KnownFields 失败  
    - single 与 master 双写 → error  
 2. **Green**：`BackendServer` / `BackendEndpoint` 结构 + Validate  
-3. 改 `etc/prism.yaml`、现有 config 测例、`cmd`/`server` 读新字段（可先只支持 single 装配，rwsplit 结构能 Load）
+3. 改 `etc/shardweave.yaml`、现有 config 测例、`cmd`/`server` 读新字段（可先只支持 single 装配，rwsplit 结构能 Load）
 
 **退出**：config 包测试全绿；示例 YAML 为 `backend_server.mode: single`。
 
@@ -102,7 +102,7 @@ flowchart LR
 
 ## P5 — 装配接线：`server` / `cmd` / `proxy`
 
-**包**：`pkg/server`、`cmd/prism`、`pkg/proxy`
+**包**：`pkg/server`、`cmd/shardweave`、`pkg/proxy`
 
 1. **Red**：proxy 测：给定 fake Group + sticky，事务中 SELECT 不换连接（可接口注入 Pick）  
 2. **Green**：  

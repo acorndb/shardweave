@@ -1,4 +1,4 @@
-// Command prism is the MySQL sharding proxy process entrypoint (M1 passthrough).
+// Command shardweave is the MySQL sharding proxy process entrypoint (M1 passthrough).
 // Layout mirrors kingshard/Gaea: load config → NewServer → signal loop → blocking Run.
 package main
 
@@ -10,13 +10,13 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/acorndb/prism/pkg/config"
-	"github.com/acorndb/prism/pkg/log"
-	"github.com/acorndb/prism/pkg/server"
+	"github.com/acorndb/shardweave/pkg/config"
+	"github.com/acorndb/shardweave/pkg/log"
+	"github.com/acorndb/shardweave/pkg/server"
 )
 
 func main() {
-	configPath := flag.String("config", "etc/prism.yaml", "path to prism YAML config")
+	configPath := flag.String("config", "etc/shardweave.yaml", "path to shardweave YAML config")
 	flag.Parse()
 
 	cfg, err := config.LoadFile(*configPath)

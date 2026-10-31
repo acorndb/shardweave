@@ -6,10 +6,10 @@ import (
 	"net"
 	"time"
 
-	"github.com/acorndb/prism/pkg/mysql"
-	"github.com/acorndb/prism/pkg/mysql/client"
-	"github.com/acorndb/prism/pkg/mysql/packet"
-	"github.com/acorndb/prism/pkg/result"
+	"github.com/acorndb/shardweave/pkg/mysql"
+	"github.com/acorndb/shardweave/pkg/mysql/client"
+	"github.com/acorndb/shardweave/pkg/mysql/packet"
+	"github.com/acorndb/shardweave/pkg/result"
 )
 
 // AlignSettings is the backend session state to align before Exec.

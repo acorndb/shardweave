@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acorndb/prism/pkg/backend"
-	"github.com/acorndb/prism/pkg/execute"
-	"github.com/acorndb/prism/pkg/plan"
-	"github.com/acorndb/prism/pkg/proxy"
-	"github.com/acorndb/prism/pkg/route/source"
+	"github.com/acorndb/shardweave/pkg/backend"
+	"github.com/acorndb/shardweave/pkg/execute"
+	"github.com/acorndb/shardweave/pkg/plan"
+	"github.com/acorndb/shardweave/pkg/proxy"
+	"github.com/acorndb/shardweave/pkg/route/source"
 	"github.com/stretchr/testify/require"
 	mysqltc "github.com/testcontainers/testcontainers-go/modules/mysql"
 )

@@ -65,7 +65,7 @@ files:
 | Druid | `maxWait` 默认 60s |
 
 结论：acquire timeout 是标准概念，但 Go 生态更常用调用方 ctx，Java 池多为
-可配置等待；“池满直接报错”同样是合法策略。prism 选择默认 fail-fast，
+可配置等待；“池满直接报错”同样是合法策略。shardweave 选择默认 fail-fast，
 保留 `>0` 的显式等待，不再隐式等待 2s。
 
 ## 验证

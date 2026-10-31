@@ -1,9 +1,9 @@
 package source
 
 import (
-	"github.com/acorndb/prism/pkg/constant"
-	"github.com/acorndb/prism/pkg/mysql"
-	"github.com/acorndb/prism/pkg/session"
+	"github.com/acorndb/shardweave/pkg/constant"
+	"github.com/acorndb/shardweave/pkg/mysql"
+	"github.com/acorndb/shardweave/pkg/session"
 )
 
 // PickRole chooses master vs slave intent for one command (design §5.10).

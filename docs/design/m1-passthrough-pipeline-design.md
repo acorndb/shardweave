@@ -104,7 +104,7 @@ mysql/server 编码响应 → client
 ### 3.2 包与依赖
 
 ```
-cmd/prism/
+cmd/shardweave/
 mysql/{packet,auth,server,client,charset}
 session/{state,stickiness}          # stickiness M1 可仅接口/空实现
 pool/

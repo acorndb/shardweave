@@ -62,7 +62,7 @@ func compareStep(idx int, name string, a, b StepResult) []string {
 		}
 	}
 
-	// After a statement error, prism releases the backend with COM_RESET_CONNECTION,
+	// After a statement error, shardweave releases the backend with COM_RESET_CONNECTION,
 	// so session warnings are not preserved across the follow-up SHOW WARNINGS.
 	// Only compare warnings when both sides succeeded.
 	if a.Err == nil && b.Err == nil {

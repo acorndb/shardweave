@@ -1,5 +1,5 @@
-# Example prism M1 passthrough config.
-# Start: go run ./cmd/prism -config etc/prism.yaml
+# Example shardweave M1 passthrough config.
+# Start: go run ./cmd/shardweave -config etc/shardweave.yaml
 # Reload users/log: kill -USR1 <pid>
 
 listen: "0.0.0.0:3307"

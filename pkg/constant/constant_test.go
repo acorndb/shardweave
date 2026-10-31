@@ -3,7 +3,7 @@ package constant_test
 import (
 	"testing"
 
-	"github.com/acorndb/prism/pkg/constant"
+	"github.com/acorndb/shardweave/pkg/constant"
 	"github.com/stretchr/testify/require"
 )
 

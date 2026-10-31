@@ -3,7 +3,7 @@ package backend_test
 import (
 	"testing"
 
-	"github.com/acorndb/prism/pkg/backend"
+	"github.com/acorndb/shardweave/pkg/backend"
 	"github.com/stretchr/testify/require"
 )
 

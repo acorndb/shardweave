@@ -50,7 +50,7 @@
 4. **测试先行**：新增接口/行为先写失败测试；纯移动类重构先确认既有测试覆盖，再 `git mv` 测试并保持全绿。
 5. **依赖规则**：每个 PR 结束跑依赖 grep（见 §6），不允许新增反向依赖。
 6. **Code review**：每个 PR 按 AGENTS.md 产出 `docs/code-review/review-<topic>.md`；Must/Should 必须修复。
-7. **文档同步**：涉及配置/包名/接口的 PR 同步更新 `architecture.md`、`module-map.md`、`README.md`、`etc/prism.yaml`。
+7. **文档同步**：涉及配置/包名/接口的 PR 同步更新 `architecture.md`、`module-map.md`、`README.md`、`etc/shardweave.yaml`。
 
 ## 3. 基线盘点
 
@@ -355,7 +355,7 @@ type rawForwarder interface {
   - `Clone` 深拷贝 slices。
 - `pkg/server`：从 `BackendConfig.Slices` 构建单个 `backend.Slice`
   （single/rwsplit 只有 1 个）；`mode` 校验通过后才装配。
-- `etc/prism.yaml`、`README.md`、`docs/architecture.md`、`docs/design/*` 同步。
+- `etc/shardweave.yaml`、`README.md`、`docs/architecture.md`、`docs/design/*` 同步。
 - 配置迁移：pre-1.0 直接 breaking；旧字段不进新结构体，`KnownFields(true)` 报错。
 
 **Red / Green**
@@ -483,7 +483,7 @@ grep -rn "ModeSingle\|ModeRWSplit\|ModeSharding" \
 - `single` / `rwsplit` 差分全绿，外部行为与重构前一致。
 - 配置只接受 `backend.slices`；`mode=sharding` 仍明确拒绝。
 - 每个 PR 的 review 报告无 `status: open` 的 Must/Should。
-- `architecture.md`、`module-map.md`、`README.md`、`etc/prism.yaml` 与实现一致。
+- `architecture.md`、`module-map.md`、`README.md`、`etc/shardweave.yaml` 与实现一致。
 - 没有新增运行时依赖；`pkg/mysql` 无行为 diff。
 
 ## 9. 后续

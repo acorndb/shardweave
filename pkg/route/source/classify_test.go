@@ -3,7 +3,7 @@ package source_test
 import (
 	"testing"
 
-	"github.com/acorndb/prism/pkg/route/source"
+	"github.com/acorndb/shardweave/pkg/route/source"
 	"github.com/stretchr/testify/require"
 )
 

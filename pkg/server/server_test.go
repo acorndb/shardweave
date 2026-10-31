@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acorndb/prism/pkg/backend"
-	"github.com/acorndb/prism/pkg/config"
-	"github.com/acorndb/prism/pkg/constant"
+	"github.com/acorndb/shardweave/pkg/backend"
+	"github.com/acorndb/shardweave/pkg/config"
+	"github.com/acorndb/shardweave/pkg/constant"
 	"github.com/stretchr/testify/require"
 )
 
@@ -162,7 +162,7 @@ func minimalConfig() *config.Config {
 func writeConfig(t *testing.T, cfg *config.Config) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "prism.yaml")
+	path := filepath.Join(dir, "shardweave.yaml")
 	body := "listen: \"" + cfg.Listen + "\"\n" +
 		"users:\n  - name: app\n    password: p1\n" +
 		"backend:\n  mode: single\n  slices:\n    - name: default\n" +

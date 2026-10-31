@@ -4,7 +4,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/acorndb/prism/pkg/result"
+	"github.com/acorndb/shardweave/pkg/result"
 	"github.com/stretchr/testify/require"
 )
 

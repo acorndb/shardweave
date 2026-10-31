@@ -5,12 +5,12 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/acorndb/prism/pkg/backend"
-	"github.com/acorndb/prism/pkg/mysql"
-	"github.com/acorndb/prism/pkg/mysql/packet"
-	"github.com/acorndb/prism/pkg/plan"
-	"github.com/acorndb/prism/pkg/session"
-	"github.com/acorndb/prism/pkg/sql"
+	"github.com/acorndb/shardweave/pkg/backend"
+	"github.com/acorndb/shardweave/pkg/mysql"
+	"github.com/acorndb/shardweave/pkg/mysql/packet"
+	"github.com/acorndb/shardweave/pkg/plan"
+	"github.com/acorndb/shardweave/pkg/session"
+	"github.com/acorndb/shardweave/pkg/sql"
 )
 
 // ErrPoolExhausted is returned when the backend pool is at capacity and

@@ -92,13 +92,13 @@
   （必须显式命名用例，不能跑整套）。官方 intro 页没有展开 `--extern`，
   以对应版本的 `mysql-test-run.pl` 参考页/README 为准。
 
-### 3.2 对 prism 的适配度
+### 3.2 对 shardweave 的适配度
 
 适合：
 
 - **SQL 语义与协议透明度的现成语料**：`mysql-test/t` 有数百个 `.test` 文件、
   语句级语料上万条；跑通一个白名单就是很大的覆盖。
-- `--extern` 可以把 `--host/--port` 指到 prism，后端仍是真 MySQL。
+- `--extern` 可以把 `--host/--port` 指到 shardweave，后端仍是真 MySQL。
 - `--record` 模式适合把“代理与直连一致”的结果固化成回归语料。
 
 不适合：
@@ -113,7 +113,7 @@
 **做 MTR-lite，不做 MTR 全量门禁。**
 
 1. 先选 5–10 个不依赖 restart/error log/内部表的 `.test`（基础 SELECT/DML/
-   join/type/alias 类），用 `--extern` 指向 prism。
+   join/type/alias 类），用 `--extern` 指向 shardweave。
 2. 固定 MySQL 版本与 `.result`；失败进入“不支持/差异”清单，不阻塞主 CI。
 3. 更推荐：把 `.test` 只当 **SQL 语句来源**，导入 `test/corpus/sql`，
    用我们自己的差分 runner 对比直连，而不是依赖静态 `.result`。
@@ -130,7 +130,7 @@
 - 校验器：`ResultsetComparator`（两个 DSN 结果对比）、`SelectStability`、
   `RepeatableRead`、`DatabaseConsistency` 等。
 
-### 4.2 对 prism 的适配度
+### 4.2 对 shardweave 的适配度
 
 适合：
 
@@ -158,7 +158,7 @@
 
 ## 5. 其他工具对照
 
-| 工具 | 语言 | 形态 | 对 prism 的价值 | 建议 |
+| 工具 | 语言 | 形态 | 对 shardweave 的价值 | 建议 |
 |---|---|---|---|---|
 | **go-randgen**（PingCAP） | Go | BNF grammar 随机生成 SQL | 易集成 CI；可自带 grammar | **首选**做 T3 |
 | **go-sqlsmith**（PingCAP） | Go | sqlsmith 移植，AST 随机查询 | 随机 SELECT/表达式覆盖 | 作为补充 fuzz |

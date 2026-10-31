@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acorndb/prism/pkg/backend"
-	"github.com/acorndb/prism/pkg/result"
+	"github.com/acorndb/shardweave/pkg/backend"
+	"github.com/acorndb/shardweave/pkg/result"
 	"github.com/stretchr/testify/require"
 )
 

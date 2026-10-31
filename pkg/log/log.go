@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/acorndb/prism/pkg/constant"
+	"github.com/acorndb/shardweave/pkg/constant"
 )
 
 var (

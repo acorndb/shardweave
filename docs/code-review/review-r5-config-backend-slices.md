@@ -42,7 +42,7 @@ files:
 
 - `go build ./...`：通过
 - `go vet ./...`：通过
-- `go test -race -short -count=1 ./pkg/config/ ./pkg/server/ ./pkg/execute/ ./pkg/proxy/ ./pkg/mysql/... ./pkg/sql/... ./cmd/prism/`：全绿
+- `go test -race -short -count=1 ./pkg/config/ ./pkg/server/ ./pkg/execute/ ./pkg/proxy/ ./pkg/mysql/... ./pkg/sql/... ./cmd/shardweave/`：全绿
 - `go test -short -run '^$' -count=1 ./test/...`：编译通过（差分未跑，Docker 不可用）
 - 覆盖率：`pkg/config` 93.8%、`pkg/server` 64.0%
 - `grep BackendServer|SameIdentity|\.Primary()`：Go 代码无结果

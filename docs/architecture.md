@@ -1,11 +1,11 @@
-# prism 架构设计（v0.2：模块化形态）
+# shardweave 架构设计（v0.2：模块化形态）
 
 > 状态：讨论稿。模块形态已定；模块边界、接口与配置细节以
 > [design/module-map.md](design/module-map.md) 为准（该文件当前位于被 gitignore 的
 > `docs/design/`，提交时需 `git add -f`）。
 > 本文是项目的 north star；实现偏离此处记录的设计时先改文档。
 > 日期：2026-10-31
-> 模块路径：`github.com/acorndb/prism`
+> 模块路径：`github.com/acorndb/shardweave`
 
 ## 1. 设计原则
 
@@ -43,13 +43,13 @@
 1. **Plan 是分片的分水岭**：所有支持分片的项目都有独立的计划/路由产物；
    没有 Plan 的 dbatman 也正好没有分片。
 2. **拓扑与连接池必须在路由之外**：Gaea 的 `backend.Slice`、kingshard 的 `backend.Node`、
-   dbpack 的 resource/group 都是这个结构；prism 当前的 `router.Group` 是反例。
+   dbpack 的 resource/group 都是这个结构；shardweave 当前的 `router.Group` 是反例。
 3. **单分片必须是独立快路径**：Gaea 的 `continueConn`、dbpack 的 `QueryOnSingleDBPlan`；
    kingshard 不分单/多分片，单分片也走全量归并，是性能坑。
 4. **模式是规则/拓扑，不是执行分支**：Vitess、ShardingSphere、Gaea、kingshard、dbatman
    都是单入口 + 策略；只有 dbpack 用三 Executor，代价是管线复制。
 5. **归并普遍全缓冲**：dbpack 的 k 路 + LIMIT 下推做得最好，但聚合仍不完整。
-   prism 的接口按流式设计，P0 只实现 identity，跨分片归并后置。
+   shardweave 的接口按流式设计，P0 只实现 identity，跨分片归并后置。
 
 结论：**一个 Executor + 一个 PlanBuilder + 三个 Router 实现 + `backend.Slice` 拓扑。**
 不是三个 Plan，也不是三个 Executor。
@@ -57,8 +57,8 @@
 ## 3. 模块划分（目标态）
 
 ```
-prism/
-├── cmd/prism/                 # 入口：装配、信号处理、优雅退出（单二进制）
+shardweave/
+├── cmd/shardweave/                 # 入口：装配、信号处理、优雅退出（单二进制）
 ├── pkg/
 │   ├── mysql/                 # 【协议层】第一方代码
 │   │   ├── packet/            #   帧读写、长度编码

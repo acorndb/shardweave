@@ -1,4 +1,4 @@
-// Package config loads and validates prism YAML configuration.
+// Package config loads and validates shardweave YAML configuration.
 package config
 
 import (
@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/acorndb/prism/pkg/constant"
+	"github.com/acorndb/shardweave/pkg/constant"
 	"go.yaml.in/yaml/v3"
 )
 

@@ -3,7 +3,7 @@ title: rwsplit stub route smoke review
 files:
   - pkg/executor/executor_test.go
   - docs/design/rwsplit-route-smoke-design.md
-  - etc/prism.yaml
+  - etc/shardweave.yaml
 ---
 
 ## Must Fix
