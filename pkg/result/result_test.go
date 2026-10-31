@@ -16,6 +16,7 @@ func (s *fakeStream) Fields() []result.Field { return []result.Field{{Name: "id"
 func (s *fakeStream) Next() (result.Row, error) {
 	return nil, io.EOF
 }
+
 func (s *fakeStream) Close() error {
 	s.closed = true
 	return nil

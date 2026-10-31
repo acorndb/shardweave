@@ -12,7 +12,7 @@ import (
 )
 
 func TestServer_RunExitsOnClose(t *testing.T) {
-	cfg := minimalConfig("127.0.0.1:0")
+	cfg := minimalConfig()
 	path := writeConfig(t, cfg)
 
 	srv, err := New(cfg, path)
@@ -34,7 +34,7 @@ func TestServer_RunExitsOnClose(t *testing.T) {
 }
 
 func TestServer_UpdateConfigUsers(t *testing.T) {
-	cfg := minimalConfig("127.0.0.1:0")
+	cfg := minimalConfig()
 	path := writeConfig(t, cfg)
 	srv, err := New(cfg, path)
 	require.NoError(t, err)
@@ -55,7 +55,7 @@ func TestServer_UpdateConfigUsers(t *testing.T) {
 }
 
 func TestServer_UpdateConfigRejectsListenChange(t *testing.T) {
-	cfg := minimalConfig("127.0.0.1:0")
+	cfg := minimalConfig()
 	path := writeConfig(t, cfg)
 	srv, err := New(cfg, path)
 	require.NoError(t, err)
@@ -69,7 +69,7 @@ func TestServer_UpdateConfigRejectsListenChange(t *testing.T) {
 }
 
 func TestNewExecutor_RWSplit(t *testing.T) {
-	cfg := minimalConfig("127.0.0.1:0")
+	cfg := minimalConfig()
 	cfg.Backend = config.BackendConfig{
 		Mode: constant.ModeRWSplit,
 		Slices: []config.SliceConfig{{
@@ -85,9 +85,9 @@ func TestNewExecutor_RWSplit(t *testing.T) {
 	require.NoError(t, exec.Close())
 }
 
-func minimalConfig(listen string) *config.Config {
+func minimalConfig() *config.Config {
 	return &config.Config{
-		Listen: listen,
+		Listen: "127.0.0.1:0",
 		Users:  []config.User{{Name: "app", Password: "p1"}},
 		Backend: config.BackendConfig{
 			Mode: constant.ModeSingle,
