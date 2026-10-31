@@ -17,16 +17,30 @@ import (
 //     a short 0xfe packet (OK that replaces EOF).
 //   - otherwise: EOF after columns, then rows, then EOF.
 func ForwardResponse(dst, src *packet.Conn, deprecateEOF bool) (serverStatus uint16, err error) {
+	status, _, err := ForwardResponseResult(dst, src, deprecateEOF)
+	return status, err
+}
+
+// ForwardResponseResult is ForwardResponse plus whether the backend returned an
+// ERR packet. Callers that mutate session state must skip the mutation when
+// serverErr is true: an ERR packet has no SERVER_STATUS field, so status is 0
+// and is not a valid state transition.
+func ForwardResponseResult(dst, src *packet.Conn, deprecateEOF bool) (serverStatus uint16, serverErr bool, err error) {
 	for {
 		var more bool
 		var status uint16
-		more, status, err = forwardOne(dst, src, deprecateEOF)
+		var errPacket bool
+		more, status, errPacket, err = forwardOne(dst, src, deprecateEOF)
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
-		serverStatus = status
+		if errPacket {
+			serverErr = true
+		} else {
+			serverStatus = status
+		}
 		if !more {
-			return serverStatus, nil
+			return serverStatus, serverErr, nil
 		}
 	}
 }
@@ -66,53 +80,53 @@ func ForwardPrepareResponse(dst, src *packet.Conn, deprecateEOF bool) error {
 	return nil
 }
 
-func forwardOne(dst, src *packet.Conn, deprecateEOF bool) (more bool, status uint16, err error) {
+func forwardOne(dst, src *packet.Conn, deprecateEOF bool) (more bool, status uint16, serverErr bool, err error) {
 	data, err := src.ReadPacket()
 	if err != nil {
-		return false, 0, err
+		return false, 0, false, err
 	}
 	if err := writePayload(dst, data); err != nil {
-		return false, 0, err
+		return false, 0, false, err
 	}
 	if len(data) == 0 {
-		return false, 0, nil
+		return false, 0, false, nil
 	}
 	switch data[0] {
 	case ErrHeader:
-		return false, 0, nil
+		return false, 0, true, nil
 	case OKHeader:
 		status = okStatus(data)
-		return statusHasMore(status), status, nil
+		return statusHasMore(status), status, false, nil
 	case 0xfb: // LOCAL INFILE — not supported in P1/P2
-		return false, 0, fmt.Errorf("mysql: LOCAL INFILE not supported")
+		return false, 0, false, fmt.Errorf("mysql: LOCAL INFILE not supported")
 	}
 
 	cols, _, err := readLenEncInt(data)
 	if err != nil {
-		return false, 0, err
+		return false, 0, false, err
 	}
 	if err := forwardDefinitions(dst, src, cols, deprecateEOF); err != nil {
-		return false, 0, err
+		return false, 0, false, err
 	}
 
 	for {
 		row, err := src.ReadPacket()
 		if err != nil {
-			return false, 0, err
+			return false, 0, false, err
 		}
 		if err := writePayload(dst, row); err != nil {
-			return false, 0, err
+			return false, 0, false, err
 		}
 		if len(row) == 0 {
 			continue
 		}
 		if row[0] == ErrHeader {
-			return false, 0, nil
+			return false, 0, true, nil
 		}
 		// Terminator: classic EOF or OK-replacing-EOF (0xfe, len < 9).
 		if row[0] == EOFHeader && len(row) < 9 {
 			status = eofStatus(row, deprecateEOF)
-			return statusHasMore(status), status, nil
+			return statusHasMore(status), status, false, nil
 		}
 	}
 }

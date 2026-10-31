@@ -191,9 +191,13 @@ type Statement struct {
     Raw  string        // 原文（COM_QUERY 时）
     AST  ast.StmtNode  // 可空：命令类或解析失败
     Kind Kind
-    Err  error         // 解析失败时保留，供 PlanReject 使用
+    Effect Effect      // USE/SET 等会话副作用
+    Err  error
 }
 ```
+
+`Effect` 由 `pkg/sql.ParseSessionEffect` 识别，由 `execute` 在后端返回 OK
+（非 ERR 包）后应用；ERR 包不改变会话状态。
 
 规则：`proxy` 只构造一次；`route`/`rewrite`/`plan` 复用 `AST`；不得二次 parse。
 
@@ -363,7 +367,8 @@ type Executor interface {
 }
 ```
 
-`Handle` 内部：`plan.Build → acquire/align → Conn.Exec → rawForwarder.ForwardTo`。
+`Handle` 内部：`plan.Build → acquire/align → Conn.Exec → rawForwarder.ForwardTo`；
+后端返回 OK（非 ERR）后更新 `InTx` 并应用 `Statement.Effect`，再做 sticky 判断。
 这是唯一 import `backend` 的数据面模块。R3 用 fake `Conn`/`Stream` 做单测，
 不依赖真实 MySQL；R6 把单条 lease 扩成按 Slice 的 map。
 

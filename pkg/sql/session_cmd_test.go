@@ -1,10 +1,12 @@
-package proxy
+package sql
 
 import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func boolPtr(v bool) *bool { return &v }
 
 func TestParseUse(t *testing.T) {
 	cases := []struct {
@@ -66,5 +68,25 @@ func TestParseSetAutocommit(t *testing.T) {
 		if tc.ok {
 			require.Equal(t, tc.want, v, tc.sql)
 		}
+	}
+}
+
+func TestParseSessionEffect(t *testing.T) {
+	cases := []struct {
+		name string
+		sql  string
+		want Effect
+	}{
+		{name: "use", sql: "USE app", want: Effect{UseDB: "app"}},
+		{name: "set_names", sql: "SET NAMES utf8mb4", want: Effect{Charset: "utf8mb4"}},
+		{name: "autocommit_off", sql: "SET autocommit=0", want: Effect{Autocommit: boolPtr(false)}},
+		{name: "autocommit_on", sql: "SET SESSION autocommit=ON", want: Effect{Autocommit: boolPtr(true)}},
+		{name: "no_effect", sql: "SELECT 1", want: Effect{}},
+		{name: "user_var", sql: "SET @x=1", want: Effect{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, ParseSessionEffect(tc.sql))
+		})
 	}
 }

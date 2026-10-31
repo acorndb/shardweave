@@ -136,9 +136,26 @@ func (p *Pipeline) Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement)
 	if !ok {
 		return fmt.Errorf("execute: stream %T not forwardable", stream)
 	}
-	status, err := raw.ForwardTo(ctx, rt.Front)
-	if err == nil && !req.Prepare && !req.NoReply {
-		rt.State.SetInTx(status&mysql.ServerStatusInTrans != 0)
+	status, serverErr, err := raw.ForwardTo(ctx, rt.Front)
+	if err == nil && !serverErr {
+		if !req.Prepare && !req.NoReply {
+			rt.State.SetInTx(status&mysql.ServerStatusInTrans != 0)
+		}
+		applyEffect(rt.State, stmt.Effect)
 	}
 	return err
+}
+
+// applyEffect applies a statement's session effect only after a successful
+// backend response. Autocommit must be applied before the deferred sticky check.
+func applyEffect(st *session.State, e sql.Effect) {
+	if e.UseDB != "" {
+		st.SetDatabase(e.UseDB)
+	}
+	if e.Charset != "" {
+		st.SetCharset(e.Charset)
+	}
+	if e.Autocommit != nil {
+		st.SetAutocommit(*e.Autocommit)
+	}
 }

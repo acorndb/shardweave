@@ -28,5 +28,6 @@ type Statement struct {
 	Raw     string
 	AST     ast.StmtNode
 	Kind    Kind
+	Effect  Effect
 	Err     error
 }

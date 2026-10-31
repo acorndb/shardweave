@@ -18,14 +18,15 @@
 
 | 包 | 覆盖率 |
 |---|---|
+| `pkg/sql` | 93.4%（R4 session effect 后） |
 | `pkg/plan` | 95.0% |
-| `pkg/execute` | 86.2%（R3 execution seam 后） |
+| `pkg/execute` | 87.9%（R4 后） |
 | `pkg/route/source` | 82.5% |
-| `pkg/proxy` | 81.5%（H0-a fake Executor 后） |
+| `pkg/proxy` | 73.3%（R4 后；解析测试迁到 `pkg/sql`） |
 | `pkg/config` | 73.5% |
+| `pkg/mysql` | 69.0% |
 | `pkg/backend` | 66.8% |
 | `pkg/server` | 53.3% |
-| `pkg/sql` | 无语句（纯类型） |
 
 ### 0.2 缺口
 

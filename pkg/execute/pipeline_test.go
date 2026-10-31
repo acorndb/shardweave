@@ -26,6 +26,7 @@ type fakeConn struct {
 
 	mu        sync.Mutex
 	status    uint16
+	serverErr bool
 	alignErr  error
 	execErr   error
 	execCalls int
@@ -40,12 +41,12 @@ func (c *fakeConn) Exec(_ context.Context, req backend.ExecRequest) (result.Stre
 	c.mu.Lock()
 	c.execCalls++
 	c.lastReq = req
-	status, err := c.status, c.execErr
+	status, serverErr, err := c.status, c.serverErr, c.execErr
 	c.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	return &fakeStream{status: status}, nil
+	return &fakeStream{status: status, serverErr: serverErr}, nil
 }
 
 func (c *fakeConn) Align(_ context.Context, s backend.AlignSettings) error {
@@ -72,12 +73,13 @@ func (c *fakeConn) Close() error {
 }
 
 type fakeStream struct {
-	status uint16
-	closed bool
+	status    uint16
+	serverErr bool
+	closed    bool
 }
 
-func (s *fakeStream) ForwardTo(context.Context, *packet.Conn) (uint16, error) {
-	return s.status, nil
+func (s *fakeStream) ForwardTo(context.Context, *packet.Conn) (uint16, bool, error) {
+	return s.status, s.serverErr, nil
 }
 
 func (s *fakeStream) Fields() []result.Field { return nil }
@@ -156,6 +158,8 @@ func closeQuery() *sql.Statement {
 		Payload: []byte{mysql.ComStmtClose, 0x01, 0x00, 0x00, 0x00},
 	}
 }
+
+func boolPtr(v bool) *bool { return &v }
 
 func TestNew_Errors(t *testing.T) {
 	_, err := New(nil, plan.Builder{Router: source.AllMaster{}})
@@ -284,6 +288,60 @@ func TestPipeline_ExecFailureReleases(t *testing.T) {
 	c := tr.last(t)
 	require.Equal(t, 1, c.execCalls)
 	require.Equal(t, 1, c.resets)
+}
+
+func TestPipeline_EffectAppliedAfterSuccess(t *testing.T) {
+	tr := &tracker{}
+	g := &backend.Slice{Master: newPool(t, "master", tr, nil)}
+	p, err := New(g, plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	stmt := query("SET autocommit=0")
+	stmt.Effect = sql.Effect{UseDB: "app", Charset: "utf8mb4", Autocommit: boolPtr(false)}
+	require.NoError(t, p.Handle(context.Background(), rt, stmt))
+
+	require.Equal(t, "app", rt.State.Database())
+	require.Equal(t, "utf8mb4", rt.State.Charset())
+	require.False(t, rt.State.Autocommit())
+	require.NotNil(t, rt.lease, "autocommit=0 must keep the lease")
+	require.NoError(t, p.Release(rt, false))
+}
+
+func TestPipeline_EffectSkippedOnServerErr(t *testing.T) {
+	tr := &tracker{}
+	g := &backend.Slice{Master: newPool(t, "master", tr, func(c *fakeConn) {
+		c.serverErr = true
+	})}
+	p, err := New(g, plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	stmt := query("SET autocommit=0")
+	stmt.Effect = sql.Effect{UseDB: "app", Autocommit: boolPtr(false)}
+	require.NoError(t, p.Handle(context.Background(), rt, stmt))
+
+	require.Empty(t, rt.State.Database())
+	require.True(t, rt.State.Autocommit())
+	require.Nil(t, rt.lease, "non-sticky server error must release")
+	require.Equal(t, 1, tr.last(t).resets)
+}
+
+func TestPipeline_ServerErrKeepsInTx(t *testing.T) {
+	tr := &tracker{}
+	g := &backend.Slice{Master: newPool(t, "master", tr, func(c *fakeConn) {
+		c.serverErr = true
+	})}
+	p, err := New(g, plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	rt.State.SetInTx(true)
+	require.NoError(t, p.Handle(context.Background(), rt, query("SELECT 1")))
+	require.True(t, rt.State.InTx(), "ERR must not clear transaction state")
+	require.NotNil(t, rt.lease)
+	require.Equal(t, 0, tr.last(t).resets)
+	require.NoError(t, p.Release(rt, true))
 }
 
 func TestPipeline_ExecFlags(t *testing.T) {

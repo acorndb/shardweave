@@ -15,7 +15,7 @@ M1 透传进行中。P0–P2 已可用：协议握手、后端池、`COM_QUERY` 
 
 - `pkg/mysql/packet`：长度编码 + 帧读写（对齐 go-mysql `WritePacket` 前 4 字节 header）
 - `pkg/mysql/auth` + `server`/`client`：HandshakeV10 / native-password 内存闭环
-- `pkg/sql`：`Statement`（Cmd/Payload/Raw/Kind）统一命令形态；`parser` 包装 tidb/parser
+- `pkg/sql`：`Statement`（Cmd/Payload/Raw/Kind/Effect）统一命令形态；USE/SET effect 成功后由 `execute` 应用
 - `pkg/constant`：mode / load_balance / role / log level 等全局常量
 - `pkg/backend` + `pkg/session`：后端连接、连接池、主从 Slice、`Conn.Exec/Align`
 - `pkg/route/source`：主从选源规则（Pick / ClassifyWantSlave）

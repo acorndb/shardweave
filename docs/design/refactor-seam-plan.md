@@ -300,28 +300,38 @@ type rawForwarder interface {
 
 **文件动作**
 
-- 新增 `pkg/sql/session_cmd.go`（或并入 `statement.go`）：
-  `ParseUse`、`ParseSetNames`、`ParseSetAutocommit`，返回 `sql.Effect`。
-- `Statement` 增加 `Effect *Effect`（或 `Effect` 值）。
-- `pkg/proxy/session.go`：
-  - 删除 `parseUse/parseSetNames/parseSetAutocommit`；
-  - 先构造 `Statement`，执行成功后 `session.Apply(stmt.Effect)`；
-  - 失败时不动状态。
-- `pkg/session`：新增 `Apply(effect)` 或对应 setter；补 `Reset` 测试。
+- 新增 `pkg/sql/session_cmd.go`：`ParseSessionEffect(raw) Effect`，
+  `Effect{UseDB, Charset, Autocommit *bool}`。
+- `Statement` 增加 `Effect` 字段；`proxy` 只构造 Effect，不再改状态。
+- `pkg/mysql`：新增 `ForwardResponseResult(dst, src, deprecateEOF) (status, serverErr, err)`；
+  `ForwardResponse` 保留为 wrapper。`serverErr=true` 表示后端回了 ERR 包
+  （ERR 没有 SERVER_STATUS，不能拿 status=0 当状态转换）。
+- `pkg/execute`：`ForwardTo` 返回 `(status, serverErr, err)`；仅在
+  `err==nil && !serverErr` 时更新 `InTx` 并应用 `stmt.Effect`。
+  应用顺序必须在 deferred sticky 判断之前，否则 `SET autocommit=0` 会提前释放 lease。
+- `pkg/proxy`：删除 `parseUse/parseSetNames/parseSetAutocommit`；`COM_INIT_DB` 也改成
+  `Effect{UseDB}`，不再在 Handle 前 `st.SetDatabase`。
+- `pkg/session`：不新增 `Apply`（避免 session→sql 依赖）；由 `execute` 调用现有 setter。
 - `session.StmtTable` **不在 R4 落地**：prepare 的 id 映射需要解析
-  `COM_STMT_PREPARE_OK`，属于 P3 的 sharding prepare 设计，避免引入未使用类型。
+  `COM_STMT_PREPARE_OK`，属于 P3 的 sharding prepare 设计。
 
 **Red / Green**
 
-- 先写 `pkg/sql/session_cmd_test.go`：覆盖现有的 USE/SET NAMES/autocommit 解析表，
-  与原 `proxy` 测试一一对应。
-- 先写 `pkg/proxy/session_test.go` 失败路径：执行返回错误时，DB/charset/autocommit 不变。
-- 成功路径保持现有差分结果。
+- `pkg/sql/session_cmd_test.go`：迁移原 proxy 解析表，增加 `ParseSessionEffect` 组合用例。
+- `pkg/mysql/forward_test.go`：`ForwardResponseResult` 的 OK/ERR 用例。
+- `pkg/proxy/serve_test.go`：fake Executor 断言 `Statement.Effect`；
+  USE/SET/COM_INIT_DB 的效果由 fake 模拟，验证下一条语句看到新状态。
+- `pkg/execute/pipeline_test.go`：
+  - 成功后应用 Effect；
+  - `serverErr` 时跳过 Effect；
+  - `serverErr` 不清 InTx；
+  - `SET autocommit=0` 成功后保持 lease。
 
 **退出条件**
 
 - 聚焦测试全绿；差分全绿；
-- `grep -n "parseUse\|parseSetNames\|parseSetAutocommit" pkg/proxy` 为空。
+- `grep -n "parseUse\|parseSetNames\|parseSetAutocommit" pkg/proxy` 为空；
+- `pkg/sql` 覆盖率 ≥ 85%（当前 93.4%）。
 
 **风险 / 回滚**
 

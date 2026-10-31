@@ -100,7 +100,7 @@ prism/
 | `pkg/executor.shardingExecutor` 桩 | 删除；sharding 变成 Router | **R3 完成** |
 | `pkg/executor/forward.go` | `pkg/execute` + `pkg/backend.Conn` | **R3 完成** |
 | `pkg/session.State` | `pkg/session.State` + `StmtTable` | P3（StmtTable 随 prepare 落地） |
-| `pkg/proxy` 内的 USE/SET 解析 | `pkg/sql` 统一成 `Statement` | P2（R4） |
+| `pkg/proxy` 内的 USE/SET 解析 | `pkg/sql` 统一成 `Statement` | **R4 完成** |
 | `pkg/config.BackendServer` | `pkg/config.BackendConfig`（YAML `backend`） | P2（R5） |
 | `pkg/sql/parser` | 增加 `pkg/sql.Statement` 与分类 | **R2 完成 Statement 骨架** |
 | 无 Plan / 无 EXPLAIN ROUTE | `pkg/plan` + `EXPLAIN ROUTE` | **R2 完成 Plan 骨架**；EXPLAIN P3 |

@@ -17,12 +17,12 @@ type rawStream struct {
 	prepare bool
 }
 
-func (s *rawStream) ForwardTo(ctx context.Context, front *packet.Conn) (uint16, error) {
+func (s *rawStream) ForwardTo(ctx context.Context, front *packet.Conn) (uint16, bool, error) {
 	_ = ctx
 	if s.prepare {
-		return 0, mysql.ForwardPrepareResponse(front, s.pc, true)
+		return 0, false, mysql.ForwardPrepareResponse(front, s.pc, true)
 	}
-	return mysql.ForwardResponse(front, s.pc, true)
+	return mysql.ForwardResponseResult(front, s.pc, true)
 }
 
 func (s *rawStream) Fields() []result.Field { return nil }
@@ -34,7 +34,9 @@ func (s *rawStream) Close() error { return nil }
 // noReplyStream is used for commands that expect no response (COM_STMT_CLOSE).
 type noReplyStream struct{}
 
-func (noReplyStream) ForwardTo(context.Context, *packet.Conn) (uint16, error) { return 0, nil }
+func (noReplyStream) ForwardTo(context.Context, *packet.Conn) (uint16, bool, error) {
+	return 0, false, nil
+}
 
 func (noReplyStream) Fields() []result.Field { return nil }
 

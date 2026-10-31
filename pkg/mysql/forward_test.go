@@ -95,6 +95,34 @@ func TestForwardResponse_ERR(t *testing.T) {
 	require.Equal(t, [][]byte{er}, got)
 }
 
+func TestForwardResponseResult_ERR(t *testing.T) {
+	src, dst, bw, fr := pipePair(t)
+	er := mysql.EncodeERR(1064, "42000", "You have an error")
+	werr := writePackets(t, bw, [][]byte{er})
+	front := drainFront(t, fr, 1)
+
+	status, serverErr, err := mysql.ForwardResponseResult(dst, src, true)
+	require.NoError(t, err)
+	require.True(t, serverErr)
+	require.Equal(t, uint16(0), status)
+	require.NoError(t, <-werr)
+	require.Equal(t, [][]byte{er}, <-front)
+}
+
+func TestForwardResponseResult_OK(t *testing.T) {
+	src, dst, bw, fr := pipePair(t)
+	ok := mysql.EncodeOK(1, 0, mysql.ServerStatusAutocommit, 0)
+	werr := writePackets(t, bw, [][]byte{ok})
+	front := drainFront(t, fr, 1)
+
+	status, serverErr, err := mysql.ForwardResponseResult(dst, src, true)
+	require.NoError(t, err)
+	require.False(t, serverErr)
+	require.Equal(t, mysql.ServerStatusAutocommit, status)
+	require.NoError(t, <-werr)
+	require.Equal(t, [][]byte{ok}, <-front)
+}
+
 func TestForwardResponse_ResultsetDeprecateEOF(t *testing.T) {
 	src, dst, bw, fr := pipePair(t)
 

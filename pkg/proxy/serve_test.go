@@ -13,6 +13,7 @@ import (
 	"github.com/acorndb/prism/pkg/mysql"
 	"github.com/acorndb/prism/pkg/mysql/client"
 	"github.com/acorndb/prism/pkg/mysql/packet"
+	"github.com/acorndb/prism/pkg/session"
 	"github.com/acorndb/prism/pkg/sql"
 	"github.com/stretchr/testify/require"
 )
@@ -45,16 +46,32 @@ func newFakeExec() *fakeExec {
 }
 
 func (f *fakeExec) Handle(_ context.Context, c *execute.Runtime, stmt *sql.Statement) error {
-	f.mu.Lock()
-	f.calls = append(f.calls, handleCall{
+	call := handleCall{
 		stmt:       stmt,
 		db:         c.State.Database(),
 		charset:    c.State.Charset(),
 		autocommit: c.State.Autocommit(),
-	})
+	}
+	if f.handleErr == nil {
+		applyTestEffect(c.State, stmt.Effect)
+	}
+	f.mu.Lock()
+	f.calls = append(f.calls, call)
 	f.mu.Unlock()
 	f.signal <- struct{}{}
 	return f.handleErr
+}
+
+func applyTestEffect(st *session.State, e sql.Effect) {
+	if e.UseDB != "" {
+		st.SetDatabase(e.UseDB)
+	}
+	if e.Charset != "" {
+		st.SetCharset(e.Charset)
+	}
+	if e.Autocommit != nil {
+		st.SetAutocommit(*e.Autocommit)
+	}
 }
 
 func (f *fakeExec) Release(_ *execute.Runtime, discard bool) error {
@@ -177,8 +194,12 @@ func TestServe_UseQueryUpdatesState(t *testing.T) {
 
 	writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("USE app")...))
 	call := exec.waitCall(t)
-	require.Equal(t, "app", call.db)
+	require.Equal(t, "app", call.stmt.Effect.UseDB)
 	require.Equal(t, "USE app", call.stmt.Raw)
+
+	writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("SELECT 1")...))
+	next := exec.waitCall(t)
+	require.Equal(t, "app", next.db, "USE effect must apply after success")
 
 	quit(t, pc, serveErr)
 }
@@ -189,8 +210,13 @@ func TestServe_SetAutocommitUpdatesState(t *testing.T) {
 
 	writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("SET autocommit=0")...))
 	call := exec.waitCall(t)
-	require.False(t, call.autocommit)
+	require.NotNil(t, call.stmt.Effect.Autocommit)
+	require.False(t, *call.stmt.Effect.Autocommit)
 	require.Equal(t, "SET autocommit=0", call.stmt.Raw)
+
+	writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("SELECT 1")...))
+	next := exec.waitCall(t)
+	require.False(t, next.autocommit, "SET autocommit effect must apply after success")
 
 	quit(t, pc, serveErr)
 }
@@ -201,9 +227,13 @@ func TestServe_ComInitDB(t *testing.T) {
 
 	writeCommand(t, pc, append([]byte{mysql.ComInitDB}, []byte("app2")...))
 	call := exec.waitCall(t)
-	require.Equal(t, "app2", call.db)
+	require.Equal(t, "app2", call.stmt.Effect.UseDB)
 	require.Equal(t, "app2", call.stmt.Raw)
 	require.Equal(t, sql.KindUse, call.stmt.Kind)
+
+	writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("SELECT 1")...))
+	next := exec.waitCall(t)
+	require.Equal(t, "app2", next.db, "COM_INIT_DB effect must apply after success")
 
 	quit(t, pc, serveErr)
 }
