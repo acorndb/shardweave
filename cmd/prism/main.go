@@ -21,14 +21,14 @@ func main() {
 
 	cfg, err := config.LoadFile(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "prism: %v\n", err)
+		fmt.Fprintf(os.Stderr, "load config failed, error: %v\n", err)
 		os.Exit(1)
 	}
 	log.Init(cfg.Log.Level)
 
 	svr, err := server.New(cfg, *configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "prism: %v\n", err)
+		fmt.Fprintf(os.Stderr, "new server failed, error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -64,6 +64,6 @@ func main() {
 		}
 	}()
 
-	slog.Info("listening", "addr", svr.Addr(), "config", *configPath)
+	slog.Info("server is listening", "addr", svr.Addr(), "config", *configPath)
 	_ = svr.Run()
 }
