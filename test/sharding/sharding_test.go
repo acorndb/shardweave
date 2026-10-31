@@ -148,6 +148,21 @@ func TestSingleShardRouting(t *testing.T) {
 	require.Equal(t, 1, connScalar(t, ctx, conn, "SELECT 1"), "limit must not break the session")
 	assertReject(t, ctx, conn, "SELECT user_id, amount FROM orders LIMIT 1 OFFSET 1")
 
+	// ORDER BY is executed per shard and merged with a k-way heap.
+	requireOrderedColumn(t, ctx, conn, "SELECT user_id FROM orders ORDER BY user_id",
+		[]string{"1", "2"})
+	requireOrderedColumn(t, ctx, conn, "SELECT user_id FROM orders ORDER BY user_id DESC",
+		[]string{"2", "1"})
+	requireOrderedColumn(t, ctx, conn, "SELECT user_id FROM orders ORDER BY 1 DESC",
+		[]string{"2", "1"})
+	requireOrderedColumn(t, ctx, conn, "SELECT user_id FROM orders ORDER BY user_id LIMIT 1",
+		[]string{"1"})
+	assertReject(t, ctx, conn, "SELECT amount FROM orders ORDER BY user_id")
+	assertReject(t, ctx, conn, "SELECT user_id FROM orders ORDER BY user_id + 1")
+	// String ORDER BY needs collation-aware comparison; reject instead of
+	// returning a byte-order result that may differ from MySQL.
+	assertReject(t, ctx, conn, "SELECT name FROM profiles ORDER BY name")
+
 	// hash_mod accepts quoted numeric literals as the same integer key.
 	var quotedAmount int
 	require.NoError(t, conn.QueryRowContext(ctx,
@@ -184,8 +199,7 @@ func TestSingleShardRouting(t *testing.T) {
 	requireShardRows(t, ctx, conn, "SELECT user_id, amount FROM orders",
 		map[int]int{1: 50, 2: 200})
 
-	// ORDER BY/aggregates/DISTINCT still need the merge engine (D5/D6).
-	assertReject(t, ctx, conn, "SELECT * FROM orders ORDER BY id")
+	// Aggregates/DISTINCT still need more merge operators (D5.2).
 	assertReject(t, ctx, conn, "SELECT COUNT(*) FROM orders")
 	assertReject(t, ctx, conn, "SELECT DISTINCT user_id FROM orders")
 
@@ -296,6 +310,21 @@ func requireShardRows(t *testing.T, ctx context.Context, conn *sql.Conn, query s
 	}
 	require.NoError(t, rows.Err())
 	require.Equal(t, len(want), n, "行数不一致: %s", query)
+	require.Equal(t, want, got, query)
+}
+
+func requireOrderedColumn(t *testing.T, ctx context.Context, conn *sql.Conn, query string, want []string) {
+	t.Helper()
+	rows, err := conn.QueryContext(ctx, query)
+	require.NoErrorf(t, err, "查询失败: %s", query)
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var v string
+		require.NoError(t, rows.Scan(&v))
+		got = append(got, v)
+	}
+	require.NoError(t, rows.Err())
 	require.Equal(t, want, got, query)
 }
 

@@ -87,18 +87,30 @@ func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statemen
 		opened = append(opened, shardResult{slice: target.Slice, stream: stream})
 	}
 
-	// All headers are valid, so a partial result set is no longer possible.
-	if err := writeResultHeader(rt.Front, fields); err != nil {
-		cleanup(true)
-		return false, err
-	}
 	streams := make([]result.Stream, 0, len(opened))
 	for _, o := range opened {
 		streams = append(streams, o.stream)
 	}
-	merged := merge.Concat(streams)
+	var merged result.Stream
+	if len(pl.Merge.OrderBy) > 0 {
+		ordered, mErr := merge.Ordered(streams, fields, pl.Merge.OrderBy)
+		if mErr != nil {
+			cleanup(true)
+			return false, mErr
+		}
+		merged = ordered
+	} else {
+		merged = merge.Concat(streams)
+	}
 	if pl.Merge.Limit != nil {
 		merged = merge.Limit(merged, pl.Merge.Limit.Offset, pl.Merge.Limit.Count)
+	}
+
+	// All headers and ORDER BY comparators are valid, so a partial result set
+	// is no longer possible.
+	if err := writeResultHeader(rt.Front, fields); err != nil {
+		cleanup(true)
+		return false, err
 	}
 	for {
 		row, err := merged.Next()
@@ -196,12 +208,10 @@ func sameFields(a, b []result.Field) bool {
 	return true
 }
 
-// supportedMerge reports merge features the current concat path can honor.
-// LIMIT is applied after concat; ORDER BY/aggregate/group/distinct need the
-// ordered/aggregate operators and are rejected by the router today.
+// supportedMerge reports merge features execute can honor today. ORDER BY and
+// LIMIT are implemented; aggregate/group/distinct need more operators.
 func supportedMerge(m plan.MergeSpec) bool {
-	return len(m.OrderBy) == 0 && len(m.Aggregates) == 0 &&
-		len(m.GroupBy) == 0 && !m.Distinct && len(m.Output) == 0
+	return len(m.Aggregates) == 0 && len(m.GroupBy) == 0 && !m.Distinct && len(m.Output) == 0
 }
 
 func encodeCells(row result.Row, n int) ([][]byte, error) {

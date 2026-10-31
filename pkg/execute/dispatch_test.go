@@ -205,7 +205,7 @@ func TestDispatch_Rejects(t *testing.T) {
 		_, err := p.executePlan(ctx, newRuntime(), query("SELECT * FROM orders"), &plan.Plan{
 			Kind:    plan.MultiShard,
 			Targets: multiTargets(),
-			Merge:   plan.MergeSpec{OrderBy: []plan.OrderKey{{Column: 0}}},
+			Merge:   plan.MergeSpec{Aggregates: []plan.AggregateSpec{{Func: plan.AggCount, Column: 0, Output: 0}}},
 		})
 		var rej *errs.MySQL
 		require.ErrorAs(t, err, &rej)
@@ -216,6 +216,114 @@ func TestDispatch_Rejects(t *testing.T) {
 		_, err := p.executePlan(ctx, newRuntime(), query("SELECT * FROM orders"), &plan.Plan{Kind: plan.MultiShard})
 		require.ErrorContains(t, err, "no targets")
 	})
+}
+
+func TestDispatch_Ordered(t *testing.T) {
+	tr0, tr1 := &tracker{}, &tracker{}
+	p := newMultiPipeline(t, tr0, tr1,
+		func(c *fakeConn) {
+			c.fields = orderFields("id")
+			c.rows = []result.Row{{[]byte("2"), []byte("20")}, {[]byte("4"), []byte("40")}}
+		},
+		func(c *fakeConn) {
+			c.fields = orderFields("id")
+			c.rows = []result.Row{{[]byte("1"), []byte("10")}, {[]byte("3"), []byte("30")}}
+		})
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	_, err := p.executePlan(context.Background(), rt, query("SELECT id, amount FROM orders ORDER BY id"),
+		&plan.Plan{
+			Kind:    plan.MultiShard,
+			Targets: multiTargets(),
+			Merge:   plan.MergeSpec{OrderBy: []plan.OrderKey{{Column: -1, Name: "id"}}},
+		})
+	require.NoError(t, err)
+
+	pkts := collect()
+	require.Len(t, pkts, 1+2+4+1)
+	var ids []string
+	for _, pkt := range pkts[3:7] {
+		cells, err := mysql.DecodeTextRow(pkt, 2)
+		require.NoError(t, err)
+		ids = append(ids, string(cells[0]))
+	}
+	require.Equal(t, []string{"1", "2", "3", "4"}, ids)
+	require.Empty(t, rt.leases)
+	require.Equal(t, 1, tr0.last(t).resets, "fully consumed ordered streams are released")
+	require.Equal(t, 1, tr1.last(t).resets)
+}
+
+func TestDispatch_OrderedLimit(t *testing.T) {
+	tr0, tr1 := &tracker{}, &tracker{}
+	p := newMultiPipeline(t, tr0, tr1,
+		func(c *fakeConn) {
+			c.fields = orderFields("id")
+			c.rows = []result.Row{{[]byte("2"), []byte("20")}, {[]byte("4"), []byte("40")}}
+		},
+		func(c *fakeConn) {
+			c.fields = orderFields("id")
+			c.rows = []result.Row{{[]byte("1"), []byte("10")}, {[]byte("3"), []byte("30")}}
+		})
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	_, err := p.executePlan(context.Background(), rt, query("SELECT id, amount FROM orders ORDER BY id LIMIT 2"),
+		&plan.Plan{
+			Kind:    plan.MultiShard,
+			Targets: multiTargets(),
+			Merge: plan.MergeSpec{
+				OrderBy: []plan.OrderKey{{Column: -1, Name: "id"}},
+				Limit:   &plan.Limit{Count: 2},
+			},
+		})
+	require.NoError(t, err)
+
+	pkts := collect()
+	require.Len(t, pkts, 1+2+2+1)
+	var ids []string
+	for _, pkt := range pkts[3:5] {
+		cells, err := mysql.DecodeTextRow(pkt, 2)
+		require.NoError(t, err)
+		ids = append(ids, string(cells[0]))
+	}
+	require.Equal(t, []string{"1", "2"}, ids)
+	require.True(t, tr0.last(t).closed, "limit may leave unread rows; discard")
+	require.True(t, tr1.last(t).closed)
+	require.Empty(t, rt.leases)
+}
+
+func TestDispatch_OrderedRejectsUnsupportedTypeBeforeHeader(t *testing.T) {
+	tr0, tr1 := &tracker{}, &tracker{}
+	strFields := []result.Field{{Name: "id", OrgName: "id", Type: 0xfd}}
+	p := newMultiPipeline(t, tr0, tr1,
+		func(c *fakeConn) {
+			c.fields = strFields
+			c.rows = []result.Row{{[]byte("a")}}
+		},
+		func(c *fakeConn) {
+			c.fields = strFields
+			c.rows = []result.Row{{[]byte("b")}}
+		})
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	_, err := p.executePlan(context.Background(), rt, query("SELECT id FROM orders ORDER BY id"),
+		&plan.Plan{
+			Kind:    plan.MultiShard,
+			Targets: multiTargets(),
+			Merge:   plan.MergeSpec{OrderBy: []plan.OrderKey{{Column: -1, Name: "id"}}},
+		})
+	var rej *errs.MySQL
+	require.ErrorAs(t, err, &rej)
+	require.Equal(t, uint16(1235), rej.Number)
+	require.Empty(t, collect(), "ORDER BY validation happens before any result packet")
+	require.True(t, tr0.last(t).closed)
+	require.True(t, tr1.last(t).closed)
+	require.Empty(t, rt.leases)
 }
 
 func TestDispatch_Limit(t *testing.T) {

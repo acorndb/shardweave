@@ -60,9 +60,11 @@ func (p TxPolicy) String() string {
 	}
 }
 
-// OrderKey is one ORDER BY column index in the rewritten result.
+// OrderKey is one ORDER BY key. Column >= 0 is a 0-based output column index;
+// Column < 0 means resolve Name against the result fields (Name or OrgName).
 type OrderKey struct {
 	Column int
+	Name   string
 	Desc   bool
 }
 
@@ -169,13 +171,22 @@ func (b Builder) Build(ctx context.Context, st *session.State, stmt *sql.Stateme
 	}
 }
 
-// multiShardMerge extracts merge hints that need no SQL rewrite. LIMIT without
-// ORDER BY is safe after concat (each shard already applied the same LIMIT);
+// multiShardMerge extracts merge hints that need no SQL rewrite. ORDER BY is
+// evaluated by each shard and merged with a k-way heap; LIMIT without OFFSET
+// is safe after the merge (each shard already applied the same LIMIT).
 // OFFSET needs per-shard rewriting and is rejected until D5.1.
 func multiShardMerge(stmt *sql.Statement) (MergeSpec, *errs.MySQL) {
 	sel, ok := stmt.AST.(*ast.SelectStmt)
-	if !ok || sel.Limit == nil {
+	if !ok {
 		return MergeSpec{}, nil
+	}
+	keys, rej := orderKeys(sel)
+	if rej != nil {
+		return MergeSpec{}, rej
+	}
+	spec := MergeSpec{OrderBy: keys}
+	if sel.Limit == nil {
+		return spec, nil
 	}
 	offset, count, ok := sql.ParseLimit(sel.Limit)
 	if !ok {
@@ -184,7 +195,29 @@ func multiShardMerge(stmt *sql.Statement) (MergeSpec, *errs.MySQL) {
 	if offset != 0 {
 		return MergeSpec{}, errs.Unsupported("multi-shard LIMIT with OFFSET is not supported")
 	}
-	return MergeSpec{Limit: &Limit{Offset: offset, Count: count}}, nil
+	spec.Limit = &Limit{Offset: offset, Count: count}
+	return spec, nil
+}
+
+func orderKeys(sel *ast.SelectStmt) ([]OrderKey, *errs.MySQL) {
+	if sel.OrderBy == nil {
+		return nil, nil
+	}
+	keys := make([]OrderKey, 0, len(sel.OrderBy.Items))
+	for _, item := range sel.OrderBy.Items {
+		switch e := item.Expr.(type) {
+		case *ast.ColumnNameExpr:
+			keys = append(keys, OrderKey{Column: -1, Name: e.Name.Name.L, Desc: item.Desc})
+		case *ast.PositionExpr:
+			if e.N < 1 {
+				return nil, errs.Unsupported("multi-shard ORDER BY position must be >= 1")
+			}
+			keys = append(keys, OrderKey{Column: e.N - 1, Desc: item.Desc})
+		default:
+			return nil, errs.Unsupported("multi-shard ORDER BY supports column names or positions only")
+		}
+	}
+	return keys, nil
 }
 
 // multiShardRejectReason lists session states where routing one statement to

@@ -173,6 +173,41 @@ func TestBuilder_MultiShard(t *testing.T) {
 		require.Equal(t, uint16(1235), p.Reject.Number)
 		require.Contains(t, p.Reject.Message, "OFFSET")
 	})
+
+	t.Run("order_by_name", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT id, amount FROM orders ORDER BY id DESC"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.OrderKey{{Column: -1, Name: "id", Desc: true}}, p.Merge.OrderBy)
+	})
+
+	t.Run("order_by_position", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT id, amount FROM orders ORDER BY 2 DESC"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Equal(t, []plan.OrderKey{{Column: 1, Desc: true}}, p.Merge.OrderBy)
+	})
+
+	t.Run("order_by_limit", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT id FROM orders ORDER BY id LIMIT 5"))
+		require.NoError(t, err)
+		require.Equal(t, plan.MultiShard, p.Kind)
+		require.Len(t, p.Merge.OrderBy, 1)
+		require.NotNil(t, p.Merge.Limit)
+		require.Equal(t, int64(5), p.Merge.Limit.Count)
+	})
+
+	t.Run("order_by_expression_rejected", func(t *testing.T) {
+		p, err := b.Build(context.Background(), session.NewState(),
+			selectStmt(t, "SELECT id FROM orders ORDER BY amount + 1"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Equal(t, uint16(1235), p.Reject.Number)
+		require.Contains(t, p.Reject.Message, "ORDER BY")
+	})
 }
 
 func TestBuilder_Errors(t *testing.T) {

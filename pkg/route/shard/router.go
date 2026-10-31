@@ -260,17 +260,15 @@ func slicesForValues(rule Rule, values []any) ([]string, error) {
 	return out, nil
 }
 
-// checkScatterSelect bounds the P0 multi-shard path to result concatenation.
-// ORDER BY/LIMIT/aggregates/DISTINCT need the merge engine (D5/D6), so they are
-// rejected instead of silently returning per-shard partial semantics.
+// checkScatterSelect bounds the multi-shard path to shapes the merge layer can
+// honor. ORDER BY/LIMIT are validated and rewritten by plan; aggregates,
+// DISTINCT, window functions, INTO and locking reads are rejected here.
 func checkScatterSelect(s *ast.SelectStmt) error {
 	switch {
 	case s.Distinct:
 		return reject("multi-shard SELECT with DISTINCT is not supported")
 	case s.GroupBy != nil || s.Having != nil:
 		return reject("multi-shard SELECT with GROUP BY/HAVING is not supported")
-	case s.OrderBy != nil:
-		return reject("multi-shard SELECT with ORDER BY is not supported")
 	case len(s.WindowSpecs) > 0:
 		return reject("multi-shard SELECT with window functions is not supported")
 	case s.SelectIntoOpt != nil:

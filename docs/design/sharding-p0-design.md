@@ -364,9 +364,10 @@ route → []Target
 
 - 触发条件：分片表 SELECT 没有可证明的单片键约束（无 WHERE、范围、
   非键列 OR、跨片 `IN` 等），或键值映射到多个 slice；
-- 只允许“逐行拼接后语义不变”的 SELECT：无 `ORDER BY / GROUP BY / HAVING /
-  DISTINCT / 窗口函数 / 聚合 / INTO / 锁定读 / SQL_CALC_FOUND_ROWS`；
-  `LIMIT ... OFFSET` 仍 1235；其余 1235；
+- 支持 `ORDER BY` 列名/位置（多列、ASC/DESC），由 k 路堆归并；字符串列、
+  表达式、未投影列显式 1235；
+- 不支持 `GROUP BY / HAVING / DISTINCT / 窗口函数 / 聚合 / INTO / 锁定读 /
+  SQL_CALC_FOUND_ROWS`；`LIMIT ... OFFSET` 仍 1235；
 - `LIMIT n`（OFFSET=0）在各分片执行后由 `Limit` 流式截断到 n 行；
 - 每个 target 顺序执行（D7 再并发）；先解码全部列元数据并校验一致，再写
   列头，最后按 target 顺序流式拼接行；LIMIT 提前结束时未读完的后端连接
@@ -501,6 +502,20 @@ route → []Target
 - LIMIT 提前结束时后端仍有未读 packet，dispatch 直接 Discard，不把连接放回池；
 - e2e：`LIMIT 0/1/100`、跨片 `IN + LIMIT`、OFFSET 拒绝与会话恢复。
 
+已落地（B1.5，多分片 ORDER BY，2026-10-31）：
+
+- 每片执行原 ORDER BY，`pkg/merge.Ordered` 用 k 路堆归并已排序流，只持有
+  每片一行；支持多列、ASC/DESC、位置（`ORDER BY 1`）；
+- 比较类型：整数/无符号整数、FLOAT/DOUBLE、DECIMAL、DATE/DATETIME/TIMESTAMP
+  （日期按规范文本）；NULL 按 MySQL 语义 ASC 在前、DESC 在后；
+- 字符串/二进制/JSON 等 collation 相关类型显式 1235，避免字节序与 MySQL
+  排序不一致；
+- ORDER BY 列必须出现在结果集中（按输出名或 OrgName 解析）；未投影列、
+  表达式（`ORDER BY a+1`）1235；类型/列校验在写列头前完成；
+- `ORDER BY ... LIMIT n`（OFFSET=0）可用：各片原 LIMIT 已裁剪，归并后截断；
+  OFFSET 仍需 per-shard 改写，暂 1235；
+- e2e：ASC/DESC/位置/LIMIT、隐藏列/表达式/字符串排序的显式拒绝。
+
 未落地（B1.2）：
 
 - 结构化路由决策日志/metrics；
@@ -522,7 +537,7 @@ DML/DDL 后置：
 | **D4.0** | 多分片 SELECT scatter + concat（`MultiShard`、`execute.dispatch`、列元数据校验、stmt pin 释放） | 2 片 e2e；无键/跨片 IN 行集合正确；merge 类语句 1235 |
 | **D4.2** | 分片键值域严格化：`hash_mod` 整数 / `hash_mod_str` 字符串；引号数字、负数、混合 IN | 表驱动单测；字符串键 e2e；类型不匹配 1235 |
 | **D4.1** | 从库健康/延迟探测：池内定期探测，选源屏蔽不可用从库，回落主库（**延后**，单机与分片共用） | `STOP REPLICA`/杀从库后读请求不落坏从库；恢复后重新纳入 |
-| **D5** | 多分片 SELECT rewrite 下推（ORDER BY/LIMIT OFFSET/聚合/隐藏列）；LIMIT(OFFSET=0) + `pkg/merge` 已落地 | 分片 vs 单库一致 |
+| **D5** | 多分片 SELECT rewrite 下推（LIMIT OFFSET/聚合/隐藏列）；ORDER BY + LIMIT(OFFSET=0) 与 `pkg/merge.Concat/Limit/Ordered` 已落地 | 分片 vs 单库一致 |
 | **D6** | 流式 merge operator（concat/order/limit/aggregate/group/distinct） | 单测 + metamorphic |
 | **D7** | execute 并发 dispatch + 结果写回 | N 片 e2e；失败取消 |
 | **D8** | DQL corpus/randgen/metamorphic | CI/nightly |
@@ -567,6 +582,12 @@ B1.4（已落地，多分片 LIMIT）：
 - 无 `ORDER BY` 的 `LIMIT n`（OFFSET=0）按片执行后在 concat 流上截断；
 - `LIMIT ... OFFSET` 仍 1235。
 
+B1.5（已落地，多分片 ORDER BY）：
+
+- 列名/位置的 ASC/DESC、多列排序；整数/无符号/浮点/DECIMAL/日期文本；
+- 字符串/二进制/JSON、表达式、未投影列 1235；
+- `ORDER BY ... LIMIT n`（OFFSET=0）可用，OFFSET 仍 1235。
+
 DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代理始终显式 Reject。
 
 ### 8.2 Reject（当前）
@@ -574,8 +595,9 @@ DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代�
 - 多分片写（INSERT/UPDATE/DELETE）；跨片 `IN` 的写语句；
 - 分片键字面量类型与算法值域不匹配（如 `hash_mod` 下的 `'abc'`、
   `hash_mod_str` 下的 `1`）；
-- 分片表上需要归并的 SELECT（ORDER BY/GROUP BY/HAVING/DISTINCT/窗口/聚合/
-  INTO/锁定读/SQL_CALC_FOUND_ROWS）；`LIMIT ... OFFSET` 仍 1235；
+- 分片表上需要归并的 SELECT（GROUP BY/HAVING/DISTINCT/窗口/聚合/INTO/
+  锁定读/SQL_CALC_FOUND_ROWS）；字符串/表达式/未投影列的 ORDER BY；
+  `LIMIT ... OFFSET` 仍 1235；
 - 事务 / `autocommit=0` / reserved / prepared pin 会话中的多分片语句；
 - 跨片/多表 JOIN、schema 限定表；
 - prepared 参数化分片键、prepared DML、prepared 多分片；

@@ -311,7 +311,8 @@ execute.dispatch(targets) → []result.Stream
 | 阶段 | 归并能力 | 说明 |
 |---|---|---|
 | P0 单分片 | identity（不进入 merge） | raw 直通 |
-| P0.5 多分片 concat + limit | `Concat` + `Limit` | 已落地于 `pkg/merge`：逐片拼接后按最终 LIMIT 截断（OFFSET=0）；ORDER BY/聚合/去重仍 Reject。并发 dispatch 列入 D7 |
+| P0.5 多分片 concat + limit | `Concat` + `Limit` | 已落地于 `pkg/merge`：逐片拼接后按最终 LIMIT 截断（OFFSET=0）；聚合/去重仍 Reject。并发 dispatch 列入 D7 |
+| P0.6 多分片 ordered | `Ordered`（k 路堆） | 已落地：每片执行同一 ORDER BY，堆内每片一行；整数/浮点/DECIMAL/日期文本比较，NULL 按 MySQL 语义；字符串 collation、表达式、未投影列 Reject。LIMIT OFFSET 仍待改写 |
 | P1 多分片只读 v1 | concat、ordered、limit、COUNT/SUM/MIN/MAX/AVG | ORDER BY 仅数值/时间/二进制字符串 |
 | P1.5 | GROUP BY、DISTINCT、UNION 去重 | 加内存上限 |
 | P2 | 字符串 collation、bufferSort、spill、GROUP_CONCAT、窗口/跨片 JOIN | 单独设计 |
