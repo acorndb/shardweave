@@ -11,6 +11,7 @@ import (
 
 	"github.com/acorndb/shardweave/pkg/backend"
 	"github.com/acorndb/shardweave/pkg/constant"
+	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/mysql"
 	"github.com/acorndb/shardweave/pkg/mysql/packet"
 	"github.com/acorndb/shardweave/pkg/plan"
@@ -40,6 +41,11 @@ type fakeConn struct {
 	closed       bool
 	lastReq      backend.ExecRequest
 	lastAlign    backend.AlignSettings
+
+	fields    []result.Field
+	rows      []result.Row
+	decodeErr error
+	rowErr    error
 }
 
 func (c *fakeConn) Ping(context.Context) error {
@@ -55,6 +61,7 @@ func (c *fakeConn) Exec(_ context.Context, req backend.ExecRequest) (result.Stre
 	status, serverErr, err := c.status, c.serverErr, c.execErr
 	affected, lastID, resultSet := c.affectedRows, c.lastInsertID, c.resultSet
 	prepareID := c.prepareID
+	fields, rows, decodeErr, rowErr := c.fields, c.rows, c.decodeErr, c.rowErr
 	c.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -66,6 +73,10 @@ func (c *fakeConn) Exec(_ context.Context, req backend.ExecRequest) (result.Stre
 		lastInsertID: lastID,
 		resultSet:    resultSet,
 		prepareID:    prepareID,
+		fields:       fields,
+		rows:         rows,
+		decodeErr:    decodeErr,
+		rowErr:       rowErr,
 	}, nil
 }
 
@@ -100,9 +111,17 @@ type fakeStream struct {
 	resultSet    bool
 	prepareID    uint32
 	closed       bool
+
+	fields    []result.Field
+	rows      []result.Row
+	decodeErr error
+	rowErr    error
 }
 
-var _ prepareForwarder = (*fakeStream)(nil)
+var (
+	_ prepareForwarder = (*fakeStream)(nil)
+	_ decodedStreamer  = (*fakeStream)(nil)
+)
 
 func (s *fakeStream) ForwardPrepareTo(*packet.Conn, uint32) (mysql.ResponseInfo, uint32, error) {
 	return mysql.ResponseInfo{ServerErr: s.serverErr}, s.prepareID, nil
@@ -118,11 +137,45 @@ func (s *fakeStream) ForwardTo(context.Context, *packet.Conn) (mysql.ResponseInf
 	}, nil
 }
 
-func (s *fakeStream) Fields() []result.Field { return nil }
+func (s *fakeStream) Decode() (result.Stream, error) {
+	if s.decodeErr != nil {
+		return nil, s.decodeErr
+	}
+	return &fakeResultStream{fields: s.fields, rows: s.rows, rowErr: s.rowErr}, nil
+}
+
+func (s *fakeStream) Fields() []result.Field { return s.fields }
 
 func (s *fakeStream) Next() (result.Row, error) { return nil, io.EOF }
 
 func (s *fakeStream) Close() error {
+	s.closed = true
+	return nil
+}
+
+type fakeResultStream struct {
+	fields []result.Field
+	rows   []result.Row
+	rowErr error
+	i      int
+	closed bool
+}
+
+func (s *fakeResultStream) Fields() []result.Field { return s.fields }
+
+func (s *fakeResultStream) Next() (result.Row, error) {
+	if s.rowErr != nil && s.i == len(s.rows) {
+		return nil, s.rowErr
+	}
+	if s.i >= len(s.rows) {
+		return nil, io.EOF
+	}
+	row := s.rows[s.i]
+	s.i++
+	return row, nil
+}
+
+func (s *fakeResultStream) Close() error {
 	s.closed = true
 	return nil
 }
@@ -465,7 +518,7 @@ func TestPipeline_RejectPlan(t *testing.T) {
 	require.NoError(t, err)
 
 	err = p.Handle(context.Background(), newRuntime(), query("SELECT 1"))
-	var rej *plan.RejectError
+	var rej *errs.MySQL
 	require.ErrorAs(t, err, &rej)
 	require.Equal(t, 0, tr.opens())
 }
@@ -671,7 +724,8 @@ func TestPipeline_PrepareLifecycle(t *testing.T) {
 		Payload: append([]byte{mysql.ComStmtPrepare}, []byte("SELECT amount FROM orders WHERE user_id = ?")...),
 	}
 	require.NoError(t, p.Handle(context.Background(), rt, prep))
-	require.True(t, rt.State.Reserved())
+	require.True(t, rt.State.NeedsSticky())
+	require.False(t, rt.State.Reserved(), "the stmt pin must not look like a reserved SQL class")
 	require.Len(t, rt.leases, 1, "prepare must pin the backend connection")
 
 	entry, ok := rt.State.Stmts().Get(1)
@@ -694,6 +748,9 @@ func TestPipeline_PrepareLifecycle(t *testing.T) {
 	}
 	require.NoError(t, p.Handle(context.Background(), rt, closeStmt))
 	require.Zero(t, rt.State.Stmts().Len())
+	require.False(t, rt.State.NeedsSticky(), "closing the last stmt releases the pin")
+	require.Empty(t, rt.leases, "closing the last stmt releases the backend lease")
+	require.Equal(t, 1, tr.last(t).resets)
 }
 
 func TestPipeline_UsesTargetSQL(t *testing.T) {
@@ -707,19 +764,20 @@ func TestPipeline_UsesTargetSQL(t *testing.T) {
 	require.Equal(t, append([]byte{mysql.ComQuery}, []byte("SELECT 2")...), got)
 }
 
-func TestPipeline_MultiTargetNotImplemented(t *testing.T) {
+func TestPipeline_MultiTargetRequiresFrontend(t *testing.T) {
 	tr := &tracker{}
 	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, nil))),
 		plan.Builder{Router: source.AllMaster{}})
 	require.NoError(t, err)
 
 	_, err = p.executePlan(context.Background(), newRuntime(), query("SELECT 1"), &plan.Plan{
+		Kind: plan.MultiShard,
 		Targets: []route.Target{
 			{Slice: "s0", Role: constant.RoleMaster},
 			{Slice: "s1", Role: constant.RoleMaster},
 		},
 	})
-	require.ErrorContains(t, err, "not implemented")
+	require.ErrorContains(t, err, "requires a frontend")
 }
 
 func TestExplainRows(t *testing.T) {
@@ -739,12 +797,12 @@ func TestExplainRows(t *testing.T) {
 	require.Equal(t, "SELECT 2", rows[0][4])
 
 	_, rows = explainRows(stmt, &plan.Plan{
-		Kind: plan.Reject, Reject: &plan.RejectError{Message: "no key"},
+		Kind: plan.Reject, Reject: &errs.MySQL{Message: "no key"},
 	}, nil)
 	require.Equal(t, "Reject", rows[0][0])
 	require.Equal(t, "no key", rows[0][5])
 
-	_, rows = explainRows(stmt, nil, &plan.RejectError{Message: "bad route"})
+	_, rows = explainRows(stmt, nil, &errs.MySQL{Message: "bad route"})
 	require.Equal(t, "Reject", rows[0][0])
 	require.Equal(t, "bad route", rows[0][5])
 

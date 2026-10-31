@@ -11,6 +11,7 @@ type State struct {
 	inTx       bool
 	autocommit bool
 	reserved   bool
+	stmtPinned bool
 	charset    string
 
 	// Connection-scoped information functions. They are answered by the proxy
@@ -59,6 +60,14 @@ func (s *State) MarkReserved() {
 	s.reserved = true
 }
 
+// MarkStmtPinned pins the backend connection because the session holds
+// prepared statements on it. Unlike reserved, the pin is released when the
+// last statement closes (COM_STMT_CLOSE).
+func (s *State) MarkStmtPinned() { s.stmtPinned = true }
+
+// UnmarkStmtPinned releases the prepared-statement pin.
+func (s *State) UnmarkStmtPinned() { s.stmtPinned = false }
+
 func (s *State) Charset() string { return s.charset }
 func (s *State) SetCharset(cs string) {
 	s.charset = cs
@@ -105,6 +114,7 @@ func (s *State) Reset() {
 	s.inTx = false
 	s.autocommit = true
 	s.reserved = false
+	s.stmtPinned = false
 	s.charset = ""
 	s.lastInsertID = 0
 	s.rowCount = -1
@@ -113,9 +123,10 @@ func (s *State) Reset() {
 }
 
 // NeedsSticky reports whether the session must keep the same backend connection.
-// Includes !autocommit (design §5.9 / kingshard isInTransaction).
+// Includes !autocommit (design §5.9 / kingshard isInTransaction) and the
+// prepared-statement pin.
 func (s *State) NeedsSticky() bool {
-	return s.IsInTransaction() || s.reserved
+	return s.IsInTransaction() || s.reserved || s.stmtPinned
 }
 
 // DetectReservedSQL heuristically flags statements that pin a backend connection

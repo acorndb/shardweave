@@ -151,7 +151,8 @@
 
 - 选源是字符串启发式（`pkg/route/source/classify.go`），没有 AST/真正的 tokenizer。
 - 没有从库延迟、健康分、权重、最小连接数/延迟 LB（`pkg/backend/slice.go` 只有 round_robin/random）。
-- 没有 read-after-write / 事务粘性之外的读一致性策略。
+- 没有从库健康/延迟探测与坏从库屏蔽（`Slice.Acquire` 只在 acquire 失败时回落）；
+  明确不做 read-after-write。
 - 从库查询失败不会自动换库重试；只在 acquire 失败时回落 master。
 - 没有用户级/查询规则级路由、`/*slave*/` 等扩展。
 - `SELECT ... INTO OUTFILE` 等有副作用的 SELECT 可能被误判为只读。

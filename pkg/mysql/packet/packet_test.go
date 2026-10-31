@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/mysql/packet"
 	"github.com/stretchr/testify/require"
 )
@@ -107,7 +108,7 @@ func TestConn_MaxAllowedPacketWrite(t *testing.T) {
 	buf := make([]byte, 4+5)
 	copy(buf[4:], []byte("12345"))
 	err := w.WritePacket(buf)
-	require.ErrorIs(t, err, packet.ErrPacketTooLarge)
+	require.ErrorIs(t, err, errs.ErrPacketTooLarge)
 }
 
 func TestConn_MaxAllowedPacketRead(t *testing.T) {
@@ -124,7 +125,7 @@ func TestConn_MaxAllowedPacketRead(t *testing.T) {
 		errCh <- w.WritePacket(buf)
 	}()
 	_, err := r.ReadPacket()
-	require.ErrorIs(t, err, packet.ErrPacketTooLarge)
+	require.ErrorIs(t, err, errs.ErrPacketTooLarge)
 }
 
 func TestConn_MaxAllowedPacketBoundary(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/mysql"
 	"github.com/acorndb/shardweave/pkg/mysql/auth"
 	"github.com/acorndb/shardweave/pkg/mysql/packet"
@@ -98,20 +99,20 @@ func NewConnWithOptions(raw net.Conn, users UserProvider, opts Options) (*Conn, 
 	}
 	resp, err := auth.ParseHandshakeResponse41(respData, hs.Capability)
 	if err != nil {
-		_ = writeERR(pc, 1043, "08S01", "Bad handshake: "+err.Error())
+		_ = mysql.WriteERR(pc, errs.BadHandshake(err))
 		_ = pc.Close()
 		return nil, err
 	}
 
 	pass, ok := users.Password(resp.Username)
 	if !ok {
-		_ = writeERR(pc, 1045, "28000", fmt.Sprintf("Access denied for user '%s'", resp.Username))
+		_ = mysql.WriteERR(pc, errs.AccessDenied(resp.Username))
 		_ = pc.Close()
 		return nil, fmt.Errorf("access denied for user %q", resp.Username)
 	}
 	expect := auth.NativePassword(pass, scramble)
 	if subtle.ConstantTimeCompare(expect, resp.AuthResponse) != 1 {
-		_ = writeERR(pc, 1045, "28000", fmt.Sprintf("Access denied for user '%s'", resp.Username))
+		_ = mysql.WriteERR(pc, errs.AccessDenied(resp.Username))
 		_ = pc.Close()
 		return nil, fmt.Errorf("access denied for user %q", resp.Username)
 	}
@@ -125,11 +126,4 @@ func NewConnWithOptions(raw net.Conn, users UserProvider, opts Options) (*Conn, 
 	}
 
 	return &Conn{pc: pc, user: resp.Username, database: resp.Database, scramble: scramble}, nil
-}
-
-func writeERR(pc *packet.Conn, errno uint16, state, msg string) error {
-	p := mysql.EncodeERR(errno, state, msg)
-	buf := make([]byte, 4+len(p))
-	copy(buf[4:], p)
-	return pc.WritePacket(buf)
 }

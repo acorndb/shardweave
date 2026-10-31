@@ -3,6 +3,8 @@ package mysql
 import (
 	"testing"
 
+	"github.com/acorndb/shardweave/pkg/errs"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -66,7 +68,7 @@ func TestDecodeTextRow(t *testing.T) {
 
 func TestDecodeServerError(t *testing.T) {
 	err := DecodeServerError(EncodeERR(1146, "42S02", "Table 'x' doesn't exist"))
-	var se *ServerError
+	var se *errs.MySQL
 	require.ErrorAs(t, err, &se)
 	require.Equal(t, uint16(1146), se.Number)
 	require.Equal(t, "42S02", se.SQLState)

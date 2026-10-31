@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/route"
 	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/acorndb/shardweave/pkg/sql"
@@ -99,27 +100,13 @@ type MergeSpec struct {
 	Output     []int
 }
 
-// RejectError is a stable, documented rejection. P3 defines the final codes.
-type RejectError struct {
-	Code    uint16
-	State   string
-	Message string
-}
-
-func (e *RejectError) Error() string {
-	if e == nil {
-		return ""
-	}
-	return fmt.Sprintf("plan reject: %s", e.Message)
-}
-
 // Plan is immutable after Build.
 type Plan struct {
 	Kind    Kind
 	Targets []route.Target
 	Merge   MergeSpec
 	Tx      TxPolicy
-	Reject  *RejectError
+	Reject  *errs.MySQL
 }
 
 // Builder composes a Router (and later a Rewriter) into a Plan.
@@ -130,8 +117,9 @@ type Builder struct {
 	Sharding bool
 }
 
-// Build produces a one-target Passthrough plan for single/rwsplit.
-// MultiShard arrives in P4; until then more than one target is rejected.
+// Build produces a one-target Passthrough plan for single/rwsplit. In sharding
+// mode one target becomes SingleShard + TxSingleShard and several targets
+// become MultiShard + TxNone (concat merge, P0 query path).
 func (b Builder) Build(ctx context.Context, st *session.State, stmt *sql.Statement) (*Plan, error) {
 	if b.Router == nil {
 		return nil, fmt.Errorf("plan: nil router")
@@ -141,12 +129,8 @@ func (b Builder) Build(ctx context.Context, st *session.State, stmt *sql.Stateme
 	}
 	if reason := sql.UnsupportedReason(stmt.Raw); reason != "" {
 		return &Plan{
-			Kind: Reject,
-			Reject: &RejectError{
-				Code:    1235, // ER_NOT_SUPPORTED_YET
-				State:   "42000",
-				Message: reason,
-			},
+			Kind:   Reject,
+			Reject: errs.New(errs.ErNotSupportedYet, errs.StateSyntax, reason),
 		}, nil
 	}
 	targets, err := b.Router.Route(ctx, st, stmt)
@@ -163,13 +147,33 @@ func (b Builder) Build(ctx context.Context, st *session.State, stmt *sql.Stateme
 		}
 		return &Plan{Kind: kind, Targets: targets, Tx: tx}, nil
 	default:
-		return &Plan{
-			Kind: Reject,
-			Reject: &RejectError{
-				Code:    1105,
-				State:   "HY000",
-				Message: "multi-target plan not implemented",
-			},
-		}, nil
+		if !b.Sharding {
+			return &Plan{
+				Kind:   Reject,
+				Reject: errs.Unknown("multi-target plan not implemented"),
+			}, nil
+		}
+		if reason := multiShardRejectReason(st); reason != "" {
+			return &Plan{
+				Kind:   Reject,
+				Reject: errs.Unsupported("%s", reason),
+			}, nil
+		}
+		return &Plan{Kind: MultiShard, Targets: targets, Tx: TxNone}, nil
 	}
+}
+
+// multiShardRejectReason lists session states where routing one statement to
+// several backends would silently break transaction/connection semantics.
+func multiShardRejectReason(st *session.State) string {
+	if st == nil {
+		return ""
+	}
+	if !st.Autocommit() {
+		return "multi-shard statements are not supported with autocommit=0"
+	}
+	if st.NeedsSticky() {
+		return "multi-shard statements are not supported in a transaction or pinned session"
+	}
+	return ""
 }

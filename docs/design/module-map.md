@@ -61,16 +61,17 @@
 
 | 模块 | 职责 | 拥有 | 绝不能做 | 允许 import |
 |---|---|---|---|---|
-| `pkg/mysql` | 帧读写、握手/auth、OK/ERR/结果集编码、命令常量 | `packet.Conn`、`auth`、`server.Conn`、`client.Conn`、`EncodeOK/ERR` | SQL 语义、路由、会话、池 | stdlib |
+| `pkg/mysql` | 帧读写、握手/auth、OK/ERR/结果集编码、命令常量 | `packet.Conn`、`auth`、`server.Conn`、`client.Conn`、`EncodeOK/ERR` | SQL 语义、路由、会话、池 | stdlib、`errs` |
+| `pkg/errs` | 跨层错误值：MySQL ERR（errno/SQLSTATE/message）、哨兵错误 | `MySQL`、`Er*`、`State*`、`ErrPoolExhausted` 等 | 依赖任何 shardweave 包 | stdlib |
 | `pkg/config` | YAML schema、严格校验、默认值、快照/热更门禁 | `Config`、`BackendConfig`、`Runtime` | 建池、import 运行时模块 | `constant`、yaml |
 | `pkg/backend` | 后端资源层：连接、池、Slice、Cluster | `Conn`、`Pool`、`Slice`、`Cluster`、`PoolConfig` | 解析 SQL、认识分片规则、持有 session | `mysql`、`result`、`constant` |
 | `pkg/session` | 前端会话意图与 prepared statement 表 | `State`、`StmtTable`、`Stmt` | 持有连接/lease、路由、执行 | `constant` |
 | `pkg/sql` | 语句理解：parser 包装、`Statement`、分类、rewrite | `Statement`、`Kind`、`Parse`、`rewrite` | 认识拓扑/规则/连接 | tidb parser |
-| `pkg/route` | 纯路由：目标集合 | `Target`、`Router`、`source`、`shard` | acquire、执行、持有池、改写结果 | `sql`、`session`、`constant` |
-| `pkg/plan` | 计划：三态 + 每目标 SQL + 归并提示 | `Plan`、`Kind`、`Builder`、`MergeSpec`、`Explain` | 执行、持有池 | `sql`、`sql/rewrite`、`route`、`session` |
+| `pkg/route` | 纯路由：目标集合 | `Target`、`Router`、`source`、`shard` | acquire、执行、持有池、改写结果 | `sql`、`session`、`constant`、`errs` |
+| `pkg/plan` | 计划：三态 + 每目标 SQL + 归并提示 | `Plan`、`Kind`、`Builder`、`MergeSpec`、`Explain` | 执行、持有池 | `sql`、`sql/rewrite`、`route`、`session`、`errs` |
 | `pkg/result` | 逻辑结果：字段/行/流 | `Field`、`Row`、`Stream` | 认识协议、路由、连接 | stdlib |
 | `pkg/merge` | 结果归并 | `Merger`、identity/order/aggregate | acquire、执行 | `result`、`plan`（MergeSpec） |
-| `pkg/execute` | 执行引擎：dispatch、lease、写回 | `Runtime`、`Executor`、`lease` | 解析 SQL、决定路由、按 mode 分支 | `plan`、`backend`、`session`、`merge`、`result`、`mysql` |
+| `pkg/execute` | 执行引擎：dispatch、lease、写回 | `Runtime`、`Executor`、`lease` | 解析 SQL、决定路由、按 mode 分支 | `plan`、`backend`、`session`、`merge`、`result`、`mysql`、`errs` |
 | `pkg/proxy` | 前端 COM 循环与会话字段 | `Serve`、`SessionConfig` | USE/SET 语义、路由、acquire | `mysql/server`、`mysql`、`sql`、`session`、`execute` |
 | `pkg/server` | 监听、Accept、唯一装配点 | `Server`、`New`、mode→Cluster/Router/Executor | 参与单条 SQL 执行 | 全部（装配例外） |
 | `cmd/shardweave` | 入口、flag、信号、优雅退出 | `main` | 业务逻辑 | `server`、`config`、`log` |
@@ -135,7 +136,8 @@
 - **D7 物理库在 `Target.DB`。** `session` 存逻辑库；`route` 产出每个目标的物理库；
   `execute` 用 `Target.DB` 对齐后端。
 - **D8 下层不 import 上层。** `mysql`、`result`、`sql`、`session` 不依赖运行时上层；
-  `backend` 不依赖 route/plan/execute。
+  `backend` 不依赖 route/plan/execute。`errs` 是最底层值包，只允许 stdlib，
+  任何包都可以 import 它。
 - **D9 config 只产 spec。** `config` 不建池、不 import `backend`/`route`/`execute`；
   `server` 负责把 spec 转成运行时对象。
 - **D10 单目标不经过 merge。** `execute` 对 `len(Targets)==1` 直接写回；只有
@@ -239,7 +241,7 @@ type Plan struct {
     Kind    Kind
     Targets []route.Target
     Merge   MergeSpec
-    Reject  *RejectError
+    Reject  *errs.MySQL // 固定 MySQL ERR（errno/SQLSTATE/message）
 }
 
 type Builder interface {
@@ -454,7 +456,7 @@ backend:
     rules:
       - table: orders
         key: user_id
-        algorithm: hash_mod   # hash_mod | range
+        algorithm: hash_mod   # hash_mod（整数）| hash_mod_str（字符串）
         slices: [s0, s1]
 
 pool:

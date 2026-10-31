@@ -108,12 +108,20 @@ func (tp *ShardedTopology) ProxyConfig() *config.Config {
 			Mode:        constant.ModeSharding,
 			LoadBalance: constant.LoadBalanceRoundRobin,
 			Slices:      slices,
-			Sharding: &config.ShardingConfig{Rules: []config.ShardRule{{
-				Table:     "orders",
-				Key:       "user_id",
-				Algorithm: constant.ShardingHashMod,
-				Slices:    names,
-			}}},
+			Sharding: &config.ShardingConfig{Rules: []config.ShardRule{
+				{
+					Table:     "orders",
+					Key:       "user_id",
+					Algorithm: constant.ShardingHashMod,
+					Slices:    names,
+				},
+				{
+					Table:     "profiles",
+					Key:       "name",
+					Algorithm: constant.ShardingHashModStr,
+					Slices:    names,
+				},
+			}},
 		},
 		Pool: config.Pool{
 			Capacity:       0,

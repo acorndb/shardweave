@@ -248,8 +248,9 @@ func validateSharding(b *BackendConfig) error {
 		if r.Algorithm == "" {
 			return fmt.Errorf("config: %s.algorithm is required", prefix)
 		}
-		if r.Algorithm != constant.ShardingHashMod {
-			return fmt.Errorf("config: %s.algorithm %q unsupported (want %s)", prefix, r.Algorithm, constant.ShardingHashMod)
+		if r.Algorithm != constant.ShardingHashMod && r.Algorithm != constant.ShardingHashModStr {
+			return fmt.Errorf("config: %s.algorithm %q unsupported (want %s or %s)",
+				prefix, r.Algorithm, constant.ShardingHashMod, constant.ShardingHashModStr)
 		}
 		if len(r.Slices) == 0 {
 			return fmt.Errorf("config: %s.slices is required", prefix)

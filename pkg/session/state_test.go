@@ -43,6 +43,22 @@ func TestState_NeedsSticky(t *testing.T) {
 	require.True(t, s.NeedsSticky())
 }
 
+func TestState_StmtPinned(t *testing.T) {
+	s := session.NewState()
+	require.False(t, s.NeedsSticky())
+
+	s.MarkStmtPinned()
+	require.True(t, s.NeedsSticky())
+	require.False(t, s.Reserved(), "a prepared statement pin is not a reserved SQL class")
+
+	s.UnmarkStmtPinned()
+	require.False(t, s.NeedsSticky())
+
+	s.MarkStmtPinned()
+	s.Reset()
+	require.False(t, s.NeedsSticky(), "reset drops the statement pin with the stmt table")
+}
+
 // A5/A6/A7: kingshard/Gaea isInTransaction = IN_TRANS || !autocommit
 func TestState_AutocommitForcesTransactionSemantics(t *testing.T) {
 	s := session.NewState()

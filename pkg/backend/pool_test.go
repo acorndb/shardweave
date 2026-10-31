@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/acorndb/shardweave/pkg/backend"
+	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/result"
 	"github.com/stretchr/testify/require"
 )
@@ -119,7 +120,7 @@ func TestPool_MaxCapacity(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = p.Acquire(ctx)
-	require.ErrorIs(t, err, backend.ErrPoolExhausted, "full pool must fail fast by default")
+	require.ErrorIs(t, err, errs.ErrPoolExhausted, "full pool must fail fast by default")
 
 	require.NoError(t, p.Release(b1))
 	b2, err := p.Acquire(ctx)
@@ -164,7 +165,7 @@ func TestPool_AcquireTimeoutExpires(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = p.Acquire(context.Background())
-	require.ErrorIs(t, err, backend.ErrPoolExhausted)
+	require.ErrorIs(t, err, errs.ErrPoolExhausted)
 	require.NoError(t, p.Release(b1))
 }
 

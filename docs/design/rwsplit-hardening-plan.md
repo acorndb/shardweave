@@ -10,8 +10,16 @@
 ## 0. 一句话
 
 先把 rwsplit 从“字符串启发式选主从”升级为**语句类别 + 会话状态驱动**：
-连接级状态/管理语句默认钉 master，读一致性可配置，最后才做 `LAST_INSERT_ID`
-之类的本地改写优化；每一阶段都用双 MySQL 的 rwsplit 测试矩阵验收。
+连接级状态/管理语句默认钉 master，从库健康/延迟由连接池探测并屏蔽，最后才做
+`LAST_INSERT_ID` 之类的本地改写优化；每一阶段都用双 MySQL 的 rwsplit 测试矩阵验收。
+
+### 0.1 决策更新（2026-10-31）
+
+- **不做会话级 read-after-write**，也不做 per-request GTID 等待；
+- 读一致性改为**从库健康/延迟探测**：`backend.Slice` 定期探测，选源时跳过
+  不可用/延迟超阈值的从库，全部不可用时回落 master；
+- 异步复制下接受最终一致；需要读己之写的客户端使用 `/*master*/` 或后续显式策略；
+- 探测按 slice 独立，不能因为一个坏从库影响其他 slice。
 
 ## 1. 目标与非目标
 
@@ -20,7 +28,7 @@
 - **语义安全**：任何依赖连接级状态、写副作用、复制管理面的语句，要么落到正确的
   后端（master/已 pin 后端），要么明确拒绝；不允许静默返回错误结果。
 - **可测试**：路由分类是纯函数；rwsplit 有双后端集成矩阵；`-short` 不依赖 Docker。
-- **可配置**：read-after-write、从库健康/延迟策略可配置，默认不改变现有行为。
+- **可配置**：从库探测间隔、最大延迟、失败回落策略可配置，默认不改变现有行为。
 - **可演进**：为后续 `LAST_INSERT_ID` 本地改写、session tracking、分片路由留接口。
 
 ### 1.2 非目标
@@ -95,7 +103,6 @@ type State struct {
     lastInsertID uint64
     rowCount     int64
     warningCount uint16
-    masterUntil  time.Time          // read-after-write
     vars         map[string]string  // 白名单系统变量
     stmtCount    int                // 打开的 prepared stmt 数
 }
@@ -123,10 +130,12 @@ type State struct {
 - **USE / COM_INIT_DB**：默认 master（schema of record），Align 到当前库；
   不再默认 slave，避免从库 schema 差异。
 - **SHOW 策略**：Admin 类走 master；普通 `SHOW TABLES/COLUMNS` 可 slave。
-- **read-after-write**：写成功后设置 `masterUntil = now + window`；
-  窗口内读走 master。配置 `rwsplit.read_after_write`，默认 `0s`（关闭，保持现状）。
-- **从库选择**：先保持 round_robin/random + acquire 失败回落；
-  后续加 health/lag/weights，延迟超阈值排除。
+- **从库健康/延迟**：`backend.Slice` 定期探测每个从库（`SHOW REPLICA STATUS` /
+  `performance_schema.replication_applier_status`），记录可用性与延迟；
+  `Slice.Acquire` 跳过不健康/超 `max_replica_lag` 的从库，全部不可用回落 master。
+  不做 per-request GTID，也不做会话级 read-after-write。
+- **从库选择**：保持 round_robin/random + acquire 失败回落；健康探测作为过滤层，
+  后续可加 weights/local_preference。
 - **失败重试**：幂等读在从库失败时换下一个从库/master；写不重试。
 - **Prepared**：`COM_STMT_*` 继续 master + sticky；`COM_STMT_CLOSE` 计数归零时
   释放 reserved。
@@ -173,7 +182,7 @@ type State struct {
 | **R0 分类骨架** | `StatementClass` + `RouteDecision`；TiDB AST 解析用于 COM_QUERY；token fallback；单元矩阵 | 分类用例全绿；无行为变化（仅日志） |
 | **R1 正确性 pin** | ConnectionState/Admin/写 → master；`INTO OUTFILE`；SQL `PREPARE`/`HANDLER`；USE/INIT_DB master；`session.vars` 跟踪/对齐 | P0 矩阵集成全绿；无静默错结果 |
 | **R2 测试基建** | `test/rwsplit` 双 MySQL（容器）；写主读从、事务、prepared、admin 用例；差分 vs direct master | 矩阵可一键跑；`-short` Skip |
-| **R3 一致性** | `read_after_write` 窗口；从库失败换库；延迟/健康策略 | 写后读、延迟、杀从库用例通过 |
+| **R3 从库健康** | 连接池探测从库健康/延迟；选源屏蔽坏从库；失败回落 master | `STOP REPLICA`/杀从库/延迟用例通过；恢复后重新纳入 |
 | **R4 会话函数** | 已实现 `LAST_INSERT_ID()`/`ROW_COUNT()`：OK 元数据 + 精确 SELECT 改写；`FOUND_ROWS()`/`SQL_CALC_FOUND_ROWS` 与非精确形式显式 1235 | 真实拓扑用例通过 |
 | **R5 命令/观测** | SEND_LONG_DATA/FIELD_LIST/SET_OPTION/CHANGE_USER/LOCAL INFILE；路由 metrics/log | 驱动兼容冒烟；指标可见 |
 
@@ -189,7 +198,7 @@ R0/R1 先做，R2 与 R1 并行（测试先行）；R3 之后才考虑 R4 改写
 | `PickRole`：事务、sticky、读/写/连接级 | Role 正确 |
 | `ParseSessionEffect`：TRUE/FALSE、`:=`、COLLATE、多变量 | Effect 正确 |
 | `SessionState.Reset` | lastInsertID/vars/stmt 清零，DB 保留 |
-| `read_after_write` 窗口（fake clock） | 窗口内 master，窗口外可 slave |
+| 从库健康状态机（fake prober） | 坏从库跳过；恢复后重新纳入；全部坏回落 master |
 | `ForwardResponseResult` OK 解析 | last_insert_id/affected_rows/warnings |
 | `StatementClass` fuzz | 不 panic |
 
@@ -210,7 +219,7 @@ R0/R1 先做，R2 与 R1 并行（测试先行）；R3 之后才考虑 R4 改写
 | `SHOW MASTER STATUS`/`BINARY LOGS`/`SLAVE STATUS`/`PROCESSLIST` | 不落错实例 |
 | `SELECT ... INTO OUTFILE` | 不在从库写/明确拒绝 |
 | 事务中读 | master，sticky |
-| 写后立即读（read_after_write 开启/关闭） | 分别命中 master/slave |
+| `STOP REPLICA` / 杀从库 / 延迟从库 | 读请求不落坏从库，回落 master；恢复后重新纳入 |
 | 杀从库 / 延迟从库 | 排除/回落/重试策略 |
 | `COM_STMT_SEND_LONG_DATA` | 正确执行 |
 | 并发混合读写 | 无错结果、无泄漏 |
@@ -231,12 +240,14 @@ backend:
       master: { ... }
       slaves: [ ... ]
   load_balance: round_robin
-  rwsplit:
-    read_after_write: 0s   # 0 = 关闭；建议 1s
-    max_replica_lag: 0s    # 0 = 不按延迟过滤
+  replica:
+    probe_interval: 5s   # 0 = 关闭探测
+    max_lag: 10s         # 0 = 不按延迟过滤
 ```
 
-- 默认全部保持现有行为（read_after_write=0，lag 不过滤）。
+- 默认不改变现有行为（探测关闭或仅 acquire 失败回落）。
+- 探测需要后端账号具备 `REPLICATION CLIENT`（或使用只读副本状态视图）；
+  权限不足时退化为 acquire 失败回落，并记录日志。
 - 后续可加 weights/local_preference。
 
 ## 6.5 实现时对分片友好（轻量）
@@ -254,13 +265,14 @@ backend:
 
 - **AST 开销**：COM_QUERY 才解析；简单语句可 token 快路径；注意不要二次 parse。
 - **会话变量爆炸**：只做白名单；未覆盖的 SET 保守 master。
-- **一致性默认**：read_after_write 默认关闭，避免改变现有性能特征。
+- **一致性语义**：不做 read-after-write；异步复制下接受最终一致，文档明确告知。
+- **探测成本**：按 slice 单飞、带 jitter；不要把 `SHOW REPLICA STATUS` 放进每条请求。
 - **测试环境**：真复制测试重；优先用双独立 MySQL + fake lag/clock，真复制作为 nightly。
 - **Prepared**：读 prep 仍不拆分；先保证正确性。
 - **分类误判**：不确定时 master；每条规则都有表驱动用例和开源 ref。
 
 ## 8. 优先级
 
-**P0**：R0 分类、R1 pin、R2 基础矩阵、read-after-write。
-**P1**：会话变量完整白名单、从库健康/延迟/重试、prepared 生命周期、命令覆盖。
+**P0**：R0 分类、R1 pin、R2 基础矩阵、R3 从库健康探测。
+**P1**：会话变量完整白名单、延迟/权重/重试、prepared 生命周期、命令覆盖。
 **P2**：`LAST_INSERT_ID`/`FOUND_ROWS` 本地改写、权重/本地优先、查询规则。

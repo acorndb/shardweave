@@ -311,6 +311,7 @@ execute.dispatch(targets) → []result.Stream
 | 阶段 | 归并能力 | 说明 |
 |---|---|---|
 | P0 单分片 | identity（不进入 merge） | raw 直通 |
+| P0.5 多分片 concat | 仅逐片顺序拼接 | 已落地但内联在 `execute.dispatch`：先校验列元数据，再流式写行；无 ORDER/LIMIT/聚合/去重，router 先行 Reject 这些 shape。抽成 `pkg/merge` 与并发 dispatch 列入 D6/D7 |
 | P1 多分片只读 v1 | concat、ordered、limit、COUNT/SUM/MIN/MAX/AVG | ORDER BY 仅数值/时间/二进制字符串 |
 | P1.5 | GROUP BY、DISTINCT、UNION 去重 | 加内存上限 |
 | P2 | 字符串 collation、bufferSort、spill、GROUP_CONCAT、窗口/跨片 JOIN | 单独设计 |

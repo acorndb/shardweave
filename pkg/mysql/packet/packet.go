@@ -1,11 +1,12 @@
 package packet
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"time"
+
+	"github.com/acorndb/shardweave/pkg/errs"
 )
 
 // MaxPayloadLen is the maximum payload size of a single MySQL protocol frame.
@@ -13,9 +14,6 @@ const MaxPayloadLen = 1<<24 - 1 // 0xFFFFFF
 
 // DefaultMaxAllowedPacket is the default logical packet limit (64 MiB, MySQL 8 default).
 const DefaultMaxAllowedPacket = 64 << 20
-
-// ErrPacketTooLarge is returned when a logical packet exceeds max_allowed_packet.
-var ErrPacketTooLarge = errors.New("packet: payload exceeds max_allowed_packet")
 
 // Conn handles MySQL packet framing. Shape mirrors go-mysql-org/go-mysql/packet.Conn
 // for the uncompressed path: embed net.Conn, exported Sequence, WritePacket expects
@@ -80,7 +78,7 @@ func (c *Conn) ReadPacket() ([]byte, error) {
 		if length > 0 {
 			total := len(out) + length
 			if c.maxAllowedPacket > 0 && total > c.maxAllowedPacket {
-				return nil, fmt.Errorf("%w: %d > %d", ErrPacketTooLarge, total, c.maxAllowedPacket)
+				return nil, fmt.Errorf("%w: %d > %d", errs.ErrPacketTooLarge, total, c.maxAllowedPacket)
 			}
 			start := len(out)
 			out = append(out, make([]byte, length)...)
@@ -105,7 +103,7 @@ func (c *Conn) WritePacket(data []byte) error {
 	}
 	length := len(data) - 4
 	if c.maxAllowedPacket > 0 && length > c.maxAllowedPacket {
-		return fmt.Errorf("%w: %d > %d", ErrPacketTooLarge, length, c.maxAllowedPacket)
+		return fmt.Errorf("%w: %d > %d", errs.ErrPacketTooLarge, length, c.maxAllowedPacket)
 	}
 
 	for length >= MaxPayloadLen {

@@ -231,12 +231,13 @@ LOCK TABLES、5 类错误码、utf8mb4 中文、二进制 blob、以及 16MiB+1 
 - 利用后端 `CLIENT_SESSION_TRACK` 的 OK/EOF 信息更新，而不是纯解析。
 - 扩展 `ParseSessionEffect` 的 `autocommit` 语法（TRUE/FALSE/`:=`）。
 
-### 4.3 read-after-write
+### 4.3 读一致性策略（2026-10-31 修订）
 
-- 写语句成功后，在可配置窗口（如 1–5s）内把会话 pin 到 master；或直到显式
-  `COMMIT`/`ROLLBACK`/`/*slave*/`。
-- 窗口结束再允许读从库。
-- 事务内始终 master（已是现状）。
+- **不做**会话级 read-after-write，也不做 per-request GTID 等待；
+- 异步复制下接受最终一致；
+- 从库健康/延迟由连接池定期探测，选源时跳过不可用/超阈值的从库，
+  全部不可用回落 master；
+- 需要读己之写的客户端使用 `/*master*/` 或后续显式策略。
 
 ### 4.4 SHOW / ADMIN 策略
 

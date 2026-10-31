@@ -17,7 +17,12 @@ const (
 
 // sharding.algorithm
 const (
+	// ShardingHashMod hashes integer shard keys: uint64(value) % len(slices).
+	// String literals are accepted only when they are valid decimal integers.
 	ShardingHashMod = "hash_mod"
+	// ShardingHashModStr hashes string shard keys: FNV-1a 64 % len(slices).
+	// Non-string literals are rejected so that quoted/typed forms cannot drift.
+	ShardingHashModStr = "hash_mod_str"
 )
 
 // Role is the backend role selected for one target.

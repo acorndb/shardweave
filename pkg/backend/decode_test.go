@@ -5,6 +5,7 @@ import (
 	"net"
 	"testing"
 
+	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/mysql"
 	"github.com/acorndb/shardweave/pkg/mysql/packet"
 	"github.com/acorndb/shardweave/pkg/result"
@@ -97,7 +98,7 @@ func TestDecodedStream_NoResultSet(t *testing.T) {
 	werr := writeBackendPackets(t, srv, [][]byte{mysql.EncodeOK(0, 0, mysql.ServerStatusAutocommit, 0)})
 
 	_, err := newDecodedStream(cli, true)
-	require.ErrorIs(t, err, ErrNoResultSet)
+	require.ErrorIs(t, err, errs.ErrNoResultSet)
 	require.NoError(t, <-werr)
 }
 
@@ -106,7 +107,7 @@ func TestDecodedStream_ServerError(t *testing.T) {
 	werr := writeBackendPackets(t, srv, [][]byte{mysql.EncodeERR(1146, "42S02", "no table")})
 
 	_, err := newDecodedStream(cli, true)
-	var se *mysql.ServerError
+	var se *errs.MySQL
 	require.ErrorAs(t, err, &se)
 	require.Equal(t, uint16(1146), se.Number)
 	require.NoError(t, <-werr)

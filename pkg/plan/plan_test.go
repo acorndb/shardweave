@@ -88,8 +88,8 @@ func TestBuilder_UnsupportedRejected(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, plan.Reject, p.Kind)
 			require.NotNil(t, p.Reject)
-			require.Equal(t, uint16(1235), p.Reject.Code)
-			require.Equal(t, "42000", p.Reject.State)
+			require.Equal(t, uint16(1235), p.Reject.Number)
+			require.Equal(t, "42000", p.Reject.SQLState)
 			require.NotEmpty(t, p.Reject.Message)
 		})
 	}
@@ -103,8 +103,42 @@ func TestBuilder_MultiTargetRejected(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, plan.Reject, p.Kind)
 	require.NotNil(t, p.Reject)
-	require.Equal(t, uint16(1105), p.Reject.Code)
+	require.Equal(t, uint16(1105), p.Reject.Number)
 	require.Contains(t, p.Reject.Error(), "multi-target")
+}
+
+func TestBuilder_MultiShard(t *testing.T) {
+	targets := []route.Target{
+		{Slice: "s0", Role: constant.RoleSlave},
+		{Slice: "s1", Role: constant.RoleSlave},
+	}
+	b := plan.Builder{Router: fakeRouter{targets: targets}, Sharding: true}
+
+	p, err := b.Build(context.Background(), session.NewState(), stmt("SELECT * FROM orders"))
+	require.NoError(t, err)
+	require.Equal(t, plan.MultiShard, p.Kind)
+	require.Equal(t, plan.TxNone, p.Tx)
+	require.Equal(t, targets, p.Targets)
+
+	t.Run("sticky_rejected", func(t *testing.T) {
+		st := session.NewState()
+		st.SetInTx(true)
+		p, err := b.Build(context.Background(), st, stmt("SELECT * FROM orders"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Equal(t, uint16(1235), p.Reject.Number)
+		require.Contains(t, p.Reject.Message, "transaction")
+	})
+
+	t.Run("autocommit_off_rejected", func(t *testing.T) {
+		st := session.NewState()
+		st.SetAutocommit(false)
+		p, err := b.Build(context.Background(), st, stmt("SELECT * FROM orders"))
+		require.NoError(t, err)
+		require.Equal(t, plan.Reject, p.Kind)
+		require.Equal(t, uint16(1235), p.Reject.Number)
+		require.Contains(t, p.Reject.Message, "autocommit")
+	})
 }
 
 func TestBuilder_Errors(t *testing.T) {

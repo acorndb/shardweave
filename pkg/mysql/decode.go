@@ -3,21 +3,9 @@ package mysql
 import (
 	"encoding/binary"
 	"fmt"
+
+	"github.com/acorndb/shardweave/pkg/errs"
 )
-
-// ServerError is an ERR packet decoded into its MySQL fields.
-type ServerError struct {
-	Number   uint16
-	SQLState string
-	Message  string
-}
-
-func (e *ServerError) Error() string {
-	if e == nil {
-		return ""
-	}
-	return fmt.Sprintf("Error %d (%s): %s", e.Number, e.SQLState, e.Message)
-}
 
 // DecodeLenEncInt exposes the length-encoded integer decoder for higher layers.
 func DecodeLenEncInt(data []byte) (uint64, int, error) {
@@ -127,7 +115,7 @@ func DecodeServerError(data []byte) error {
 	if len(data) < 3 || data[0] != ErrHeader {
 		return fmt.Errorf("mysql: not an ERR packet")
 	}
-	e := &ServerError{
+	e := &errs.MySQL{
 		Number:   binary.LittleEndian.Uint16(data[1:3]),
 		SQLState: "HY000",
 	}

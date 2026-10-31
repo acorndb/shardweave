@@ -2,6 +2,10 @@ package mysql
 
 import (
 	"encoding/binary"
+	"fmt"
+
+	"github.com/acorndb/shardweave/pkg/errs"
+	"github.com/acorndb/shardweave/pkg/mysql/packet"
 )
 
 // EncodeOK builds a minimal OK_Packet payload (no packet header).
@@ -35,6 +39,21 @@ func EncodeERR(errno uint16, sqlState, message string) []byte {
 	data = append(data, sqlState...)
 	data = append(data, message...)
 	return data
+}
+
+// WriteERR writes one complete ERR packet to front. It owns the 4-byte header
+// framing so proxy/server do not each duplicate the packet construction.
+func WriteERR(front *packet.Conn, e *errs.MySQL) error {
+	if front == nil {
+		return fmt.Errorf("mysql: nil frontend for WriteERR")
+	}
+	if e == nil {
+		e = errs.Unknown("unknown error")
+	}
+	payload := EncodeERR(e.Number, e.SQLState, e.Message)
+	buf := make([]byte, 4+len(payload))
+	copy(buf[4:], payload)
+	return front.WritePacket(buf)
 }
 
 // Column is one protocol-level ColumnDefinition41.

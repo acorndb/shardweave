@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/acorndb/shardweave/pkg/backend"
+	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/mysql"
 	"github.com/acorndb/shardweave/pkg/mysql/packet"
 	"github.com/acorndb/shardweave/pkg/plan"
@@ -16,10 +17,6 @@ import (
 	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/acorndb/shardweave/pkg/sql"
 )
-
-// ErrPoolExhausted is returned when the backend pool is at capacity and
-// acquire_timeout is zero (fail-fast).
-var ErrPoolExhausted = backend.ErrPoolExhausted
 
 // Runtime is per frontend-connection mutable state.
 type Runtime struct {
@@ -132,8 +129,12 @@ func (p *Pipeline) Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement)
 	return err
 }
 
+// frontendDeprecateEOF matches CLIENT_DEPRECATE_EOF advertised by the frontend
+// handshake. Keep this in sync if capability negotiation becomes per-session.
+const frontendDeprecateEOF = true
+
 // executePlan dispatches one plan. N=1 keeps the raw fast path; N>1 is the
-// sharding seam and currently returns a stable not-implemented error.
+// sharding scatter path (concat merge).
 func (p *Pipeline) executePlan(ctx context.Context, rt *Runtime, stmt *sql.Statement, pl *plan.Plan) (bool, error) {
 	switch len(pl.Targets) {
 	case 1:
@@ -141,10 +142,6 @@ func (p *Pipeline) executePlan(ctx context.Context, rt *Runtime, stmt *sql.State
 	default:
 		return p.dispatch(ctx, rt, stmt, pl)
 	}
-}
-
-func (p *Pipeline) dispatch(context.Context, *Runtime, *sql.Statement, *plan.Plan) (bool, error) {
-	return false, fmt.Errorf("execute: multi-target not implemented")
 }
 
 // runOne executes one target, acquires/reuses its lease and forwards the raw
@@ -224,7 +221,7 @@ func (p *Pipeline) runOne(ctx context.Context, rt *Runtime, stmt *sql.Statement,
 		if err := rt.State.Stmts().Add(entry); err != nil {
 			return false, err
 		}
-		rt.State.MarkReserved() // keep the backend connection holding the stmt
+		rt.State.MarkStmtPinned() // keep the backend connection holding the stmt
 		return true, nil
 	}
 
@@ -246,6 +243,9 @@ func (p *Pipeline) runOne(ctx context.Context, rt *Runtime, stmt *sql.Statement,
 	applyResponseState(rt.State, stmt, info)
 	if p.sharding && stmt.Cmd == mysql.ComStmtClose {
 		rt.State.Stmts().Delete(stmt.StmtID)
+		if rt.State.Stmts().Len() == 0 {
+			rt.State.UnmarkStmtPinned()
+		}
 	}
 	return true, nil
 }
@@ -302,7 +302,7 @@ func (p *Pipeline) explainRoute(ctx context.Context, rt *Runtime, stmt *sql.Stat
 func explainRows(stmt *sql.Statement, pl *plan.Plan, buildErr error) ([]string, [][]string) {
 	cols := []string{"kind", "slice", "role", "db", "sql", "reason"}
 	if buildErr != nil {
-		var rej *plan.RejectError
+		var rej *errs.MySQL
 		if errors.As(buildErr, &rej) {
 			return cols, [][]string{{"Reject", "", "", "", "", rej.Message}}
 		}
@@ -357,7 +357,7 @@ func writeTextResult(front *packet.Conn, cols []string, rows [][]string) error {
 	}
 	// The frontend handshake advertises CLIENT_DEPRECATE_EOF; keep this in sync
 	// if capability negotiation becomes per-session.
-	return writeFrontPayload(front, mysql.EncodeEOF(true, mysql.ServerStatusAutocommit, 0))
+	return writeFrontPayload(front, mysql.EncodeEOF(frontendDeprecateEOF, mysql.ServerStatusAutocommit, 0))
 }
 
 func writeFrontPayload(front *packet.Conn, payload []byte) error {

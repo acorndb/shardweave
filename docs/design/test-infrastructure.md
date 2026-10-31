@@ -266,7 +266,7 @@ go test -race -count=1 -timeout 10m -v ./test/rwsplit/
 
 需要 Docker；`-short` 自动 Skip；CI 的 `make test-integration` 已包含。
 后续可对从库 `STOP REPLICA` / `START REPLICA` 制造确定性延迟，验证
-`read_after_write` 窗口与从库故障切换，不需要 fake clock。
+从库健康探测、坏从库屏蔽与故障回落，不需要 fake clock。不做 read-after-write 窗口。
 
 随机差分（`test/randgen` + `test/rwsplit/random_test.go`）：
 

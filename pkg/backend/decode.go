@@ -1,17 +1,14 @@
 package backend
 
 import (
-	"errors"
 	"fmt"
 	"io"
 
+	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/mysql"
 	"github.com/acorndb/shardweave/pkg/mysql/packet"
 	"github.com/acorndb/shardweave/pkg/result"
 )
-
-// ErrNoResultSet means the backend returned an OK/DDL response, not a result set.
-var ErrNoResultSet = errors.New("backend: response is not a result set")
 
 type decodedStream struct {
 	pc           *packet.Conn
@@ -40,7 +37,7 @@ func newDecodedStream(pc *packet.Conn, deprecateEOF bool) (*decodedStream, error
 	}
 	switch data[0] {
 	case mysql.OKHeader:
-		return nil, ErrNoResultSet
+		return nil, errs.ErrNoResultSet
 	case mysql.ErrHeader:
 		return nil, mysql.DecodeServerError(data)
 	}

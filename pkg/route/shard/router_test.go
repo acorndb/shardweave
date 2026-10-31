@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/acorndb/shardweave/pkg/constant"
+	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/mysql"
-	"github.com/acorndb/shardweave/pkg/plan"
 	"github.com/acorndb/shardweave/pkg/route/shard"
 	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/acorndb/shardweave/pkg/sql"
@@ -16,10 +16,15 @@ import (
 
 func newRouter(t *testing.T) *shard.Router {
 	t.Helper()
+	return routerWith(t, constant.ShardingHashMod)
+}
+
+func routerWith(t *testing.T, algorithm string) *shard.Router {
+	t.Helper()
 	r, err := shard.New([]shard.Rule{{
 		Table:     "orders",
 		Key:       "user_id",
-		Algorithm: constant.ShardingHashMod,
+		Algorithm: algorithm,
 		Slices:    []string{"s0", "s1"},
 	}})
 	require.NoError(t, err)
@@ -77,16 +82,146 @@ func TestRouter_SingleShard(t *testing.T) {
 	}
 }
 
+func TestRouter_MultiShardSelect(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{"scatter_all", "SELECT id, amount FROM orders", []string{"s0", "s1"}},
+		{"scatter_range", "SELECT * FROM orders WHERE user_id > 1", []string{"s0", "s1"}},
+		{"scatter_partial_or", "SELECT * FROM orders WHERE user_id = 1 OR amount > 10", []string{"s0", "s1"}},
+		{"in_cross_shard", "SELECT * FROM orders WHERE user_id IN (1, 2)", []string{"s0", "s1"}},
+		{"in_rule_order", "SELECT * FROM orders WHERE user_id IN (2, 1)", []string{"s0", "s1"}},
+		{"in_same_slice", "SELECT * FROM orders WHERE user_id IN (1, 3)", []string{"s1"}},
+		{"keyed_single", "SELECT * FROM orders WHERE user_id = 2", []string{"s0"}},
+		{"keyed_single_order_by", "SELECT * FROM orders WHERE user_id = 2 ORDER BY id", []string{"s0"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			targets, err := newRouter(t).Route(context.Background(), session.NewState(), statement(t, tc.raw, mysql.ComQuery))
+			require.NoError(t, err)
+			slices := make([]string, 0, len(targets))
+			for _, target := range targets {
+				require.Equal(t, constant.RoleSlave, target.Role)
+				require.Empty(t, target.SQL, "scatter sends the original SQL")
+				slices = append(slices, target.Slice)
+			}
+			require.Equal(t, tc.want, slices)
+		})
+	}
+}
+
+func TestRouter_KeyTypes(t *testing.T) {
+	t.Run("hash_mod_integer", func(t *testing.T) {
+		cases := []struct {
+			name string
+			raw  string
+			want string
+		}{
+			{"int_literal", "SELECT * FROM orders WHERE user_id = 1", "s1"},
+			{"numeric_string", "SELECT * FROM orders WHERE user_id = '1'", "s1"},
+			{"leading_zero", "SELECT * FROM orders WHERE user_id = '01'", "s1"},
+			{"plus_sign", "SELECT * FROM orders WHERE user_id = '+1'", "s1"},
+			{"negative", "SELECT * FROM orders WHERE user_id = -1", "s1"},
+			{"negative_string", "SELECT * FROM orders WHERE user_id = '-1'", "s1"},
+			{"in_mixed_literal_forms", "SELECT * FROM orders WHERE user_id IN (1, '3')", "s1"},
+			{"insert_numeric_string", "INSERT INTO orders (id, user_id) VALUES (1, '1')", "s1"},
+		}
+		r := routerWith(t, constant.ShardingHashMod)
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				targets, err := r.Route(context.Background(), session.NewState(), statement(t, tc.raw, mysql.ComQuery))
+				require.NoError(t, err)
+				require.Len(t, targets, 1)
+				require.Equal(t, tc.want, targets[0].Slice)
+			})
+		}
+	})
+
+	t.Run("hash_mod_rejects_non_integer", func(t *testing.T) {
+		r := routerWith(t, constant.ShardingHashMod)
+		for _, raw := range []string{
+			"SELECT * FROM orders WHERE user_id = 'abc'",
+			"SELECT * FROM orders WHERE user_id = '1.0'",
+			"SELECT * FROM orders WHERE user_id = 1.0",
+			"SELECT * FROM orders WHERE user_id = 0x7b",
+			"SELECT * FROM orders WHERE user_id IN (1, 'x')",
+			"INSERT INTO orders (id, user_id) VALUES (1, 'x')",
+			"UPDATE orders SET amount = 1 WHERE user_id = 'x'",
+		} {
+			t.Run(raw, func(t *testing.T) {
+				_, err := r.Route(context.Background(), session.NewState(), statement(t, raw, mysql.ComQuery))
+				var rej *errs.MySQL
+				require.ErrorAs(t, err, &rej)
+				require.Equal(t, uint16(1235), rej.Number)
+			})
+		}
+	})
+
+	t.Run("hash_mod_str_strings", func(t *testing.T) {
+		r := routerWith(t, constant.ShardingHashModStr)
+		cases := []struct {
+			name string
+			raw  string
+			want []string
+		}{
+			{"alice", "SELECT * FROM orders WHERE user_id = 'alice'", []string{"s1"}},
+			{"bob", "SELECT * FROM orders WHERE user_id = 'bob'", []string{"s0"}},
+			{"in", "SELECT * FROM orders WHERE user_id IN ('alice', 'bob')", []string{"s0", "s1"}},
+			{"insert", "INSERT INTO orders (id, user_id) VALUES (1, 'alice')", []string{"s1"}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				targets, err := r.Route(context.Background(), session.NewState(), statement(t, tc.raw, mysql.ComQuery))
+				require.NoError(t, err)
+				slices := make([]string, 0, len(targets))
+				for _, target := range targets {
+					slices = append(slices, target.Slice)
+				}
+				require.Equal(t, tc.want, slices)
+			})
+		}
+	})
+
+	t.Run("hash_mod_str_rejects_non_string", func(t *testing.T) {
+		r := routerWith(t, constant.ShardingHashModStr)
+		for _, raw := range []string{
+			"SELECT * FROM orders WHERE user_id = 1",
+			"SELECT * FROM orders WHERE user_id = 1.0",
+			"SELECT * FROM orders WHERE user_id = 0x7b",
+			"SELECT * FROM orders WHERE user_id IN ('a', 1)",
+			"INSERT INTO orders (id, user_id) VALUES (1, 1)",
+			"UPDATE orders SET amount = 1 WHERE user_id = 1",
+		} {
+			t.Run(raw, func(t *testing.T) {
+				_, err := r.Route(context.Background(), session.NewState(), statement(t, raw, mysql.ComQuery))
+				var rej *errs.MySQL
+				require.ErrorAs(t, err, &rej)
+				require.Equal(t, uint16(1235), rej.Number)
+			})
+		}
+	})
+}
+
 func TestRouter_Rejects(t *testing.T) {
 	cases := []struct {
 		name string
 		raw  string
 		cmd  byte
 	}{
-		{"no_where", "SELECT * FROM orders", mysql.ComQuery},
-		{"range", "SELECT * FROM orders WHERE user_id > 1", mysql.ComQuery},
-		{"in_cross_shard", "SELECT * FROM orders WHERE user_id IN (1, 2)", mysql.ComQuery},
 		{"unsharded_table", "SELECT * FROM users WHERE id = 1", mysql.ComQuery},
+		{"cross_shard_aggregate", "SELECT COUNT(*) FROM orders", mysql.ComQuery},
+		{"cross_shard_group_by", "SELECT user_id, SUM(amount) FROM orders GROUP BY user_id", mysql.ComQuery},
+		{"cross_shard_distinct", "SELECT DISTINCT user_id FROM orders", mysql.ComQuery},
+		{"cross_shard_order_by", "SELECT * FROM orders ORDER BY id", mysql.ComQuery},
+		{"cross_shard_limit", "SELECT * FROM orders LIMIT 1", mysql.ComQuery},
+		{"cross_shard_window", "SELECT ROW_NUMBER() OVER (ORDER BY id) FROM orders", mysql.ComQuery},
+		{"cross_shard_calc_found_rows", "SELECT SQL_CALC_FOUND_ROWS * FROM orders", mysql.ComQuery},
+		{"cross_shard_for_update", "SELECT * FROM orders FOR UPDATE", mysql.ComQuery},
+		{"cross_shard_into_outfile", "SELECT * FROM orders INTO OUTFILE '/tmp/orders.txt'", mysql.ComQuery},
+		{"cross_shard_in_order_by", "SELECT * FROM orders WHERE user_id IN (1, 2) ORDER BY id", mysql.ComQuery},
+		{"cross_shard_in_aggregate", "SELECT COUNT(*) FROM orders WHERE user_id IN (1, 2)", mysql.ComQuery},
 		{"join", "SELECT * FROM orders o JOIN users u ON u.id = o.user_id WHERE o.user_id = 1", mysql.ComQuery},
 		{"schema_qualified", "SELECT * FROM app.orders WHERE user_id = 1", mysql.ComQuery},
 		{"update_key", "UPDATE orders SET user_id = 3 WHERE user_id = 2", mysql.ComQuery},
@@ -104,9 +239,9 @@ func TestRouter_Rejects(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := newRouter(t).Route(context.Background(), session.NewState(), statement(t, tc.raw, tc.cmd))
-			var rej *plan.RejectError
+			var rej *errs.MySQL
 			require.ErrorAs(t, err, &rej)
-			require.Equal(t, uint16(1235), rej.Code)
+			require.Equal(t, uint16(1235), rej.Number)
 		})
 	}
 }
@@ -132,7 +267,7 @@ func TestRouter_Prepared(t *testing.T) {
 	}
 
 	_, err = r.Route(context.Background(), st, &sql.Statement{Cmd: mysql.ComStmtExecute, StmtID: 99})
-	var rej *plan.RejectError
+	var rej *errs.MySQL
 	require.ErrorAs(t, err, &rej)
 
 	_, err = r.Route(context.Background(), st, &sql.Statement{Cmd: mysql.ComStmtPrepare})
@@ -160,6 +295,8 @@ func TestNew_RejectsInvalidRules(t *testing.T) {
 		{"empty_key", []shard.Rule{{Table: "t", Algorithm: constant.ShardingHashMod, Slices: []string{"s0"}}}},
 		{"bad_algorithm", []shard.Rule{{Table: "t", Key: "id", Algorithm: "range", Slices: []string{"s0"}}}},
 		{"no_slices", []shard.Rule{{Table: "t", Key: "id", Algorithm: constant.ShardingHashMod}}},
+		{"empty_slice_name", []shard.Rule{{Table: "t", Key: "id", Algorithm: constant.ShardingHashMod, Slices: []string{""}}}},
+		{"duplicate_slice", []shard.Rule{{Table: "t", Key: "id", Algorithm: constant.ShardingHashMod, Slices: []string{"s0", "s0"}}}},
 		{"duplicate_table", []shard.Rule{
 			{Table: "t", Key: "id", Algorithm: constant.ShardingHashMod, Slices: []string{"s0"}},
 			{Table: "T", Key: "id", Algorithm: constant.ShardingHashMod, Slices: []string{"s0"}},

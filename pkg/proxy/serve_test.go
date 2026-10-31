@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/execute"
 	"github.com/acorndb/shardweave/pkg/mysql"
 	"github.com/acorndb/shardweave/pkg/mysql/client"
 	"github.com/acorndb/shardweave/pkg/mysql/packet"
-	"github.com/acorndb/shardweave/pkg/plan"
 	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/acorndb/shardweave/pkg/sql"
 	"github.com/stretchr/testify/require"
@@ -298,7 +298,7 @@ func TestServe_HandleErrorClosesAndDiscards(t *testing.T) {
 
 func TestServe_PoolExhaustedWrites1040(t *testing.T) {
 	exec := newFakeExec()
-	exec.handleErr = execute.ErrPoolExhausted
+	exec.handleErr = errs.ErrPoolExhausted
 	pc, serveErr := newProxySession(t, exec)
 
 	writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("SELECT 1")...))
@@ -309,7 +309,7 @@ func TestServe_PoolExhaustedWrites1040(t *testing.T) {
 
 	select {
 	case err := <-serveErr:
-		require.ErrorIs(t, err, execute.ErrPoolExhausted)
+		require.ErrorIs(t, err, errs.ErrPoolExhausted)
 	case <-time.After(2 * time.Second):
 		t.Fatal("Serve did not exit after pool exhaustion")
 	}
@@ -317,10 +317,10 @@ func TestServe_PoolExhaustedWrites1040(t *testing.T) {
 
 func TestServe_RejectErrorWrites1235AndContinues(t *testing.T) {
 	exec := newFakeExec()
-	exec.handleErr = &plan.RejectError{
-		Code:    1235,
-		State:   "42000",
-		Message: "SHOW WARNINGS is not supported",
+	exec.handleErr = &errs.MySQL{
+		Number:   1235,
+		SQLState: "42000",
+		Message:  "SHOW WARNINGS is not supported",
 	}
 	pc, serveErr := newProxySession(t, exec)
 

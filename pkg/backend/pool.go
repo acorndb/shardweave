@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/acorndb/shardweave/pkg/errs"
 )
 
 // OpenFunc creates a new backend connection.
 type OpenFunc func(ctx context.Context) (Conn, error)
-
-// ErrPoolExhausted is returned when the pool is at MaxCapacity and the
-// configured AcquireTimeout is zero (fail-fast).
-var ErrPoolExhausted = errors.New("pool: exhausted")
 
 // PoolConfig controls pool sizing, health checks and recycling.
 type PoolConfig struct {
@@ -219,10 +217,10 @@ func (p *Pool) Acquire(ctx context.Context) (Conn, error) {
 		p.mu.Unlock()
 
 		if p.cfg.AcquireTimeout <= 0 {
-			return nil, fmt.Errorf("%w (max_capacity=%d)", ErrPoolExhausted, p.cfg.MaxCapacity)
+			return nil, fmt.Errorf("%w (max_capacity=%d)", errs.ErrPoolExhausted, p.cfg.MaxCapacity)
 		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("%w after %s", ErrPoolExhausted, p.cfg.AcquireTimeout)
+			return nil, fmt.Errorf("%w after %s", errs.ErrPoolExhausted, p.cfg.AcquireTimeout)
 		}
 		select {
 		case <-ctx.Done():

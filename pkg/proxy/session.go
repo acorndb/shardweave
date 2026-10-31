@@ -8,11 +8,11 @@ import (
 	"net"
 	"time"
 
+	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/execute"
 	"github.com/acorndb/shardweave/pkg/mysql"
 	"github.com/acorndb/shardweave/pkg/mysql/packet"
 	"github.com/acorndb/shardweave/pkg/mysql/server"
-	"github.com/acorndb/shardweave/pkg/plan"
 	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/acorndb/shardweave/pkg/sql"
 	sqlparser "github.com/acorndb/shardweave/pkg/sql/parser"
@@ -67,8 +67,8 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 		front.ResetSequence()
 		data, err := front.ReadPacket()
 		if err != nil {
-			if errors.Is(err, packet.ErrPacketTooLarge) {
-				_ = writeERR(front, 1153, "08S01", "Got a packet bigger than 'max_allowed_packet' bytes")
+			if errors.Is(err, errs.ErrPacketTooLarge) {
+				_ = mysql.WriteERR(front, errs.PacketTooLarge())
 			}
 			return err
 		}
@@ -158,7 +158,7 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 				return err
 			}
 		default:
-			_ = writeERR(front, 1047, "08S01", fmt.Sprintf("command %d not supported yet", data[0]))
+			_ = mysql.WriteERR(front, errs.UnknownCommand(data[0]))
 		}
 	}
 }
@@ -175,28 +175,21 @@ func parseStatementAST(stmt *sql.Statement, raw string) {
 }
 
 func handleExecError(front *packet.Conn, err error) error {
-	var rej *plan.RejectError
-	if errors.As(err, &rej) {
-		if werr := writeERR(front, rej.Code, rej.State, rej.Message); werr != nil {
+	var me *errs.MySQL
+	if errors.As(err, &me) {
+		if werr := mysql.WriteERR(front, me); werr != nil {
 			return werr
 		}
 		return nil // rejected statement must not kill the session
 	}
-	if errors.Is(err, execute.ErrPoolExhausted) {
-		_ = writeERR(front, 1040, "08004", "Too many connections")
+	if errors.Is(err, errs.ErrPoolExhausted) {
+		_ = mysql.WriteERR(front, errs.TooManyConnections())
 	}
 	return err
 }
 
 func writeOK(front *packet.Conn) error {
 	p := mysql.EncodeOK(0, 0, mysql.ServerStatusAutocommit, 0)
-	buf := make([]byte, 4+len(p))
-	copy(buf[4:], p)
-	return front.WritePacket(buf)
-}
-
-func writeERR(front *packet.Conn, errno uint16, state, msg string) error {
-	p := mysql.EncodeERR(errno, state, msg)
 	buf := make([]byte, 4+len(p))
 	copy(buf[4:], p)
 	return front.WritePacket(buf)

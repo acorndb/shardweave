@@ -471,6 +471,12 @@ func TestValidateSharding(t *testing.T) {
 		require.NoError(t, Validate(validSharding()))
 	})
 
+	t.Run("hash_mod_str", func(t *testing.T) {
+		cfg := validSharding()
+		cfg.Backend.Sharding.Rules[0].Algorithm = constant.ShardingHashModStr
+		require.NoError(t, Validate(cfg))
+	})
+
 	cases := []struct {
 		name   string
 		mutate func(*Config)

@@ -1,8 +1,11 @@
 package mysql
 
 import (
+	"net"
 	"testing"
 
+	"github.com/acorndb/shardweave/pkg/errs"
+	"github.com/acorndb/shardweave/pkg/mysql/packet"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,6 +20,41 @@ func TestEncodeERR(t *testing.T) {
 	require.Equal(t, byte(ErrHeader), p[0])
 	require.Contains(t, string(p), "Access denied")
 	require.Contains(t, string(p), "#28000")
+}
+
+func TestWriteERR(t *testing.T) {
+	srv, cli := net.Pipe()
+	defer func() { _ = srv.Close() }()
+	defer func() { _ = cli.Close() }()
+
+	front := packet.NewConn(srv)
+	rd := packet.NewConn(cli)
+	wrote := make(chan error, 1)
+	go func() {
+		wrote <- WriteERR(front, errs.Unsupported("nope"))
+	}()
+
+	data, err := rd.ReadPacket()
+	require.NoError(t, err)
+	require.Equal(t, EncodeERR(errs.ErNotSupportedYet, errs.StateSyntax, "nope"), data)
+	require.NoError(t, <-wrote)
+}
+
+func TestWriteERR_NilArgs(t *testing.T) {
+	require.Error(t, WriteERR(nil, errs.Unsupported("x")))
+
+	srv, cli := net.Pipe()
+	defer func() { _ = srv.Close() }()
+	defer func() { _ = cli.Close() }()
+	front := packet.NewConn(srv)
+	rd := packet.NewConn(cli)
+	wrote := make(chan error, 1)
+	go func() { wrote <- WriteERR(front, nil) }()
+
+	data, err := rd.ReadPacket()
+	require.NoError(t, err)
+	require.Equal(t, EncodeERR(errs.ErUnknownError, errs.StateGeneral, "unknown error"), data)
+	require.NoError(t, <-wrote)
 }
 
 func TestEncodeColumnCount(t *testing.T) {

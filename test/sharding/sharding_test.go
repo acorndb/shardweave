@@ -36,6 +36,11 @@ func TestSingleShardRouting(t *testing.T) {
 			amount INT NOT NULL
 		)`)
 		require.NoError(t, err)
+		_, err = s.DB.ExecContext(ctx, `CREATE TABLE profiles (
+			name VARCHAR(32) NOT NULL PRIMARY KEY,
+			score INT NOT NULL
+		)`)
+		require.NoError(t, err)
 	}
 
 	proxy, err := harness.StartProxy(tp.ProxyConfig())
@@ -89,7 +94,9 @@ func TestSingleShardRouting(t *testing.T) {
 	assertRoute(t, ctx, conn, "EXPLAIN ROUTE SELECT amount FROM orders WHERE user_id = 2",
 		"SingleShard", "s0", "slave", "")
 	assertRoute(t, ctx, conn, "EXPLAIN ROUTE SELECT * FROM orders",
-		"Reject", "", "", "WHERE")
+		"MultiShard", "s0", "slave", "")
+	requireRouteSlices(t, ctx, conn, "EXPLAIN ROUTE SELECT * FROM orders WHERE user_id IN (1, 2)",
+		[]string{"s0", "s1"})
 
 	// Prepared SELECT: the shard key must be a literal at prepare time; other
 	// parameters are supported by the backend protocol.
@@ -116,9 +123,65 @@ func TestSingleShardRouting(t *testing.T) {
 
 	require.Equal(t, 1, connScalar(t, ctx, conn, "SELECT 1"))
 
+	// Multi-shard SELECT scatters to every owning slice and concatenates the
+	// per-shard result sets. Rows are currently returned in slice order, not
+	// sorted, so order-insensitive assertions are used.
+	_, err = conn.ExecContext(ctx, "INSERT INTO orders (user_id, amount) VALUES (1, 50)")
+	require.NoError(t, err)
+	require.Equal(t, 1, shardCount(t, ctx, tp.Slices[1], "SELECT COUNT(*) FROM orders WHERE user_id = 1"))
+
+	requireShardRows(t, ctx, conn,
+		"SELECT user_id, amount FROM orders WHERE user_id IN (1, 2)",
+		map[int]int{1: 50, 2: 200})
+	requireShardRows(t, ctx, conn,
+		"SELECT user_id, amount FROM orders",
+		map[int]int{1: 50, 2: 200})
+	requireColumns(t, ctx, conn, "SELECT id, user_id, amount FROM orders",
+		[]string{"id", "user_id", "amount"})
+
+	// hash_mod accepts quoted numeric literals as the same integer key.
+	var quotedAmount int
+	require.NoError(t, conn.QueryRowContext(ctx,
+		"SELECT amount FROM orders WHERE user_id = '2'").Scan(&quotedAmount))
+	require.Equal(t, 200, quotedAmount)
+
+	// hash_mod_str: string keys use FNV, and numeric literals are rejected
+	// instead of being coerced into a different hash domain.
+	_, err = conn.ExecContext(ctx, "INSERT INTO profiles (name, score) VALUES ('alice', 1)")
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, "INSERT INTO profiles (name, score) VALUES ('bob', 2)")
+	require.NoError(t, err)
+	require.Equal(t, 1, shardCount(t, ctx, tp.Slices[1], "SELECT COUNT(*) FROM profiles WHERE name = 'alice'"))
+	require.Equal(t, 1, shardCount(t, ctx, tp.Slices[0], "SELECT COUNT(*) FROM profiles WHERE name = 'bob'"))
+	require.Equal(t, 1, connScalar(t, ctx, conn, "SELECT score FROM profiles WHERE name = 'alice'"))
+	requireProfiles(t, ctx, conn, "SELECT name, score FROM profiles",
+		map[string]int{"alice": 1, "bob": 2})
+	assertRoute(t, ctx, conn, "EXPLAIN ROUTE SELECT score FROM profiles WHERE name = 'alice'",
+		"SingleShard", "s1", "slave", "")
+	requireRouteSlices(t, ctx, conn, "EXPLAIN ROUTE SELECT name, score FROM profiles",
+		[]string{"s0", "s1"})
+	assertReject(t, ctx, conn, "SELECT score FROM profiles WHERE name = 1")
+	assertReject(t, ctx, conn, "INSERT INTO profiles (name, score) VALUES (1, 3)")
+
+	// A live prepared statement pins its slice. Multi-shard statements are
+	// rejected until the last statement closes and releases the pin.
+	pinned, err := conn.PrepareContext(ctx, "SELECT amount FROM orders WHERE user_id = 2 AND amount > ?")
+	require.NoError(t, err)
+	_, err = conn.QueryContext(ctx, "SELECT user_id, amount FROM orders")
+	var pinnedErr *drivermysql.MySQLError
+	require.ErrorAs(t, err, &pinnedErr)
+	require.Equal(t, uint16(1235), pinnedErr.Number)
+	require.NoError(t, pinned.Close())
+	requireShardRows(t, ctx, conn, "SELECT user_id, amount FROM orders",
+		map[int]int{1: 50, 2: 200})
+
+	// Merge clauses and aggregates are explicit 1235 until D5/D6 land.
+	assertReject(t, ctx, conn, "SELECT * FROM orders ORDER BY id")
+	assertReject(t, ctx, conn, "SELECT * FROM orders LIMIT 1")
+	assertReject(t, ctx, conn, "SELECT COUNT(*) FROM orders")
+	assertReject(t, ctx, conn, "SELECT DISTINCT user_id FROM orders")
+
 	// Unsupported shapes are explicit 1235, not silent wrong results.
-	assertReject(t, ctx, conn, "SELECT * FROM orders WHERE user_id IN (1, 2)")
-	assertReject(t, ctx, conn, "SELECT * FROM orders")
 	assertReject(t, ctx, conn, "SELECT * FROM users WHERE id = 1")
 	assertReject(t, ctx, conn, "CREATE TABLE t (id INT)")
 	assertReject(t, ctx, conn, "BEGIN")
@@ -205,4 +268,73 @@ func connScalarString(t *testing.T, ctx context.Context, conn *sql.Conn, query s
 	var s string
 	require.NoErrorf(t, conn.QueryRowContext(ctx, query).Scan(&s), "查询失败: %s", query)
 	return s
+}
+
+// requireShardRows asserts an order-insensitive (user_id, amount) result set
+// and that no row is duplicated or missing.
+func requireShardRows(t *testing.T, ctx context.Context, conn *sql.Conn, query string, want map[int]int) {
+	t.Helper()
+	rows, err := conn.QueryContext(ctx, query)
+	require.NoErrorf(t, err, "查询失败: %s", query)
+	defer rows.Close()
+
+	got := make(map[int]int, len(want))
+	n := 0
+	for rows.Next() {
+		var userID, amount int
+		require.NoError(t, rows.Scan(&userID, &amount))
+		got[userID] = amount
+		n++
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, len(want), n, "行数不一致: %s", query)
+	require.Equal(t, want, got, query)
+}
+
+func requireProfiles(t *testing.T, ctx context.Context, conn *sql.Conn, query string, want map[string]int) {
+	t.Helper()
+	rows, err := conn.QueryContext(ctx, query)
+	require.NoErrorf(t, err, "查询失败: %s", query)
+	defer rows.Close()
+
+	got := make(map[string]int, len(want))
+	n := 0
+	for rows.Next() {
+		var name string
+		var score int
+		require.NoError(t, rows.Scan(&name, &score))
+		got[name] = score
+		n++
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, len(want), n, "行数不一致: %s", query)
+	require.Equal(t, want, got, query)
+}
+
+func requireColumns(t *testing.T, ctx context.Context, conn *sql.Conn, query string, want []string) {
+	t.Helper()
+	rows, err := conn.QueryContext(ctx, query)
+	require.NoErrorf(t, err, "查询失败: %s", query)
+	defer rows.Close()
+	cols, err := rows.Columns()
+	require.NoError(t, err)
+	require.Equal(t, want, cols)
+	require.True(t, rows.Next(), "期望至少一行: %s", query)
+	require.NoError(t, rows.Err())
+}
+
+func requireRouteSlices(t *testing.T, ctx context.Context, conn *sql.Conn, query string, want []string) {
+	t.Helper()
+	rows, err := conn.QueryContext(ctx, query)
+	require.NoErrorf(t, err, "查询失败: %s", query)
+	defer rows.Close()
+	var slices []string
+	for rows.Next() {
+		var kind, slice, role, db, sqlText, reason string
+		require.NoError(t, rows.Scan(&kind, &slice, &role, &db, &sqlText, &reason))
+		require.Equal(t, "MultiShard", kind)
+		slices = append(slices, slice)
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, want, slices)
 }

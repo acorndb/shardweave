@@ -74,7 +74,7 @@
 | 能力 | P0 | 说明 |
 |---|---|---|
 | 逻辑表 → 分片键、算法、Slice 列表 | 是 | 静态 YAML；规则变更需重启 |
-| 分片键列类型/列名校验 | 是 | 启动时 fail-fast，避免运行时猜 |
+| 分片键列名/值域 | 部分 | Key 必须配置；值域由算法定义（`hash_mod` 整数 / `hash_mod_str` 字符串），不做 schema 反射 |
 | 全局/广播表 | 否 | P1；DDL/DML 广播、读任选一片 |
 | 默认片 / 未配置表策略 | 否 | P0 直接 Reject，避免猜错 |
 | 物理库/表命名 | 是 | P0 推荐同库同名，`Target.DB` 预留物理库 |
@@ -254,7 +254,7 @@ type Plan struct {
     Targets []route.Target // Target.SQL is the rewritten SQL
     Merge   MergeSpec
     Tx      TxPolicy
-    Reject  *RejectError
+    Reject  *errs.MySQL // 固定 MySQL ERR（errno/SQLSTATE/message）
 }
 ```
 
@@ -360,6 +360,23 @@ route → []Target
   [merge-engine-design.md](merge-engine-design.md)；
 - `LIMIT/OFFSET` 下推：每片 `LIMIT offset+count`，归并后重新截断。
 
+**当前已落地（P0.5，2026-10-31）**：只做 concat，且仍内联在
+`execute.dispatch`，尚未抽成 `pkg/merge`：
+
+- 触发条件：分片表 SELECT 没有可证明的单片键约束（无 WHERE、范围、
+  非键列 OR、跨片 `IN` 等），或键值映射到多个 slice；
+- 只允许“逐行拼接后语义不变”的 SELECT：无 `ORDER BY / LIMIT / GROUP BY /
+  HAVING / DISTINCT / 窗口函数 / 聚合 / INTO / 锁定读 / SQL_CALC_FOUND_ROWS`；
+  其余 1235；
+- 每个 target 顺序执行（D7 再并发）；先解码全部列元数据并校验一致，再写
+  列头，最后按 target 顺序流式拼接行；
+- 事务 / `autocommit=0` / reserved / prepared pin 的会话中的多分片语句
+  1235（多片连接无法共享事务语义）；
+- 结束符的 `warnings` 固定 0（各分片 warning 不汇总）；任何分片在写列头前
+  返回 ERR 时，原样回传 ERR、不产生部分结果集；写行后某片失败会关闭会话
+  （与后端断连一致），D6/D7 再细化；
+- 结果行顺序为 target 顺序，不保证与单库 `ORDER BY` 或无排序时一致。
+
 ### 6.3 多分片写（P1/P2）
 
 - P0：多分片 `INSERT/UPDATE/DELETE` 一律 Reject；
@@ -429,8 +446,8 @@ route → []Target
 
 已落地（B1.0）：
 
-- `route/shard` + `hash_mod`：单分片 `SELECT/INSERT/UPDATE/DELETE` 的
-  等值 / `<=>` / 同片 `IN`；多行 INSERT 必须同片；
+- `route/shard` + `hash_mod`（整数）/ `hash_mod_str`（字符串）：单分片
+  `SELECT/INSERT/UPDATE/DELETE` 的等值 / `<=>` / 同片 `IN`；多行 INSERT 必须同片；
 - 无键、跨片、JOIN、多表、schema 限定、DDL、SHOW、事务、prepared 均显式
   1235；
 - `plan.SingleShard + TxSingleShard`；server 装配多 Slice + shard Router；
@@ -445,10 +462,39 @@ route → []Target
 - `SHOW TABLES/COLUMNS/CREATE/INDEX/VARIABLES`、`USE`、`COM_INIT_DB`、
   `SET NAMES` 路由默认片，连接初始化不再被打断。
 
+已落地（B1.2，多分片 concat，2026-10-31）：
+
+- 分片表 SELECT 在无法证明单片时 scatter 到规则的全部 slice；跨片 `IN`
+  只访问键值命中的 slice（按规则顺序去重）；
+- `MultiShard + TxNone`：`execute.dispatch` 逐片解码列头、校验列元数据一致、
+  按 target 顺序流式拼接行；成功/失败都释放 lease，失败路径丢弃未读完的
+  后端连接；
+- 只支持“拼接后语义不变”的 SELECT；`ORDER BY / LIMIT / GROUP BY / HAVING /
+  DISTINCT / 窗口 / 聚合 / INTO / 锁定读 / SQL_CALC_FOUND_ROWS` 以及
+  事务、`autocommit=0`、reserved、prepared pin 会话中的多分片语句均 1235；
+- prepared statement 的 pin 从 `reserved` 拆成 `stmtPinned`：最后一个
+  `COM_STMT_CLOSE` 会释放 pin 与 lease，会话可继续执行多分片查询；
+- 2 Slice 真拓扑 e2e：无键/跨片 `IN` 查询、列名、行集合、`EXPLAIN ROUTE`
+  多 target，以及 merge 类语句/事务的显式拒绝。
+
+已落地（B1.3，键类型严格化，2026-10-31）：
+
+- `hash_mod` 只接受整数键：`int/int64/uint64`，以及可精确解析为十进制整数的
+  字符串（`'1'`、`'01'`、`'+1'`、`'-1'`）；十进制、hex/bit、非数字字符串 1235；
+- `hash_mod_str` 只接受字符串/字节串键，按 FNV-1a 取模；数值字面量 1235，
+  避免 VARCHAR 与数字比较的非单射语义（`'01'`/`'1.0'` 不能靠单值哈希收窄）；
+- 支持一元正负号（`key = -1`）；`= / <=> / IN / AND / OR / 括号` 的键提取
+  对两种算法共用；
+- 修复同一逻辑键因加引号而路由到不同分片的问题：整数规则下 `1` 与 `'1'`
+  现在同片；此前 UPDATE/DELETE 会静默打到错分片并影响 0 行；
+- 表驱动单测覆盖两种算法的接受/拒绝域；2 Slice e2e 增加字符串键表
+  （`profiles.name` + `hash_mod_str`）与引号数字键回归。
+
 未落地（B1.2）：
 
 - 结构化路由决策日志/metrics；
-- 分片读一致性：read-after-write / 从库延迟；
+- 从库健康/延迟探测：连接池定期探测，选源时屏蔽不可用从库并回落主库
+  （不做 per-request GTID，也不做会话级 read-after-write）；
 - 单分片写事务与 prepared 写。
 
 DML/DDL 后置：
@@ -462,7 +508,9 @@ DML/DDL 后置：
 | **D1** | `EXPLAIN ROUTE` + 路由决策日志 | 路由/计划单测；真实拓扑可读 |
 | **D2** | 单分片 prepared SELECT + `StmtTable` | 驱动 prepare/execute/close 往返 |
 | **D3** | `SHOW TABLES/COLUMNS/CREATE`、`USE`、`SET NAMES` | mysql cli/驱动连接初始化不被打断 |
-| **D4** | 分片读一致性：read-after-write、从库延迟 | 写后读命中主片；延迟用例 |
+| **D4.0** | 多分片 SELECT scatter + concat（`MultiShard`、`execute.dispatch`、列元数据校验、stmt pin 释放） | 2 片 e2e；无键/跨片 IN 行集合正确；merge 类语句 1235 |
+| **D4.2** | 分片键值域严格化：`hash_mod` 整数 / `hash_mod_str` 字符串；引号数字、负数、混合 IN | 表驱动单测；字符串键 e2e；类型不匹配 1235 |
+| **D4.1** | 从库健康/延迟探测：池内定期探测，选源屏蔽不可用从库，回落主库（**延后**，单机与分片共用） | `STOP REPLICA`/杀从库后读请求不落坏从库；恢复后重新纳入 |
 | **D5** | 多分片 SELECT rewrite 下推（ORDER BY/LIMIT/聚合/隐藏列） | 分片 vs 单库一致 |
 | **D6** | 流式 merge operator（concat/order/limit/aggregate/group/distinct） | 单测 + metamorphic |
 | **D7** | execute 并发 dispatch + 结果写回 | N 片 e2e；失败取消 |
@@ -485,15 +533,36 @@ B1.1（已落地，DQL 兼容）：
 - `EXPLAIN ROUTE`：输出 Kind、Targets、Reject 原因；
 - 单分片 prepared SELECT（`StmtTable` 接线；分片键必须字面量）；
 - `SHOW TABLES/COLUMNS/CREATE/INDEX/VARIABLES`、`USE`、`SET NAMES`；
-- 分片读一致性（read-after-write / 从库延迟）仍未实现。
+- 从库健康/延迟探测（连接池内，选源时屏蔽坏从库）仍未实现；
+- 不做会话级 read-after-write / per-request GTID；异步复制下接受最终一致。
+
+B1.2（已落地，多分片 concat）：
+
+- 简单 SELECT 的 scatter（无键/范围/非键列 OR）与跨片 `IN`；
+- `MultiShard` 逐片列头校验 + 按 target 顺序拼接行；
+- `ORDER BY/LIMIT/GROUP BY/HAVING/DISTINCT/窗口/聚合/INTO/锁定读/
+  SQL_CALC_FOUND_ROWS` 仍 1235；
+- 事务、`autocommit=0`、reserved、prepared pin 中的多分片语句 1235；
+- 多分片结束符 warnings 不汇总，固定 0。
+
+B1.3（已落地，键类型严格化）：
+
+- `hash_mod`（整数键）：整数与严格十进制整数字符串；非整数 1235；
+- `hash_mod_str`（字符串键）：字符串/字节串；数值字面量 1235；
+- 支持一元正负号；引号数字键与裸数字键同片。
 
 DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代理始终显式 Reject。
 
 ### 8.2 Reject（当前）
 
-- 无分片键 / 非等值 / 多分片写；
+- 多分片写（INSERT/UPDATE/DELETE）；跨片 `IN` 的写语句；
+- 分片键字面量类型与算法值域不匹配（如 `hash_mod` 下的 `'abc'`、
+  `hash_mod_str` 下的 `1`）；
+- 分片表上需要归并的 SELECT（ORDER BY/LIMIT/GROUP BY/HAVING/DISTINCT/
+  窗口/聚合/INTO/锁定读/SQL_CALC_FOUND_ROWS）；
+- 事务 / `autocommit=0` / reserved / prepared pin 会话中的多分片语句；
 - 跨片/多表 JOIN、schema 限定表；
-- prepared 参数化分片键、prepared DML；
+- prepared 参数化分片键、prepared DML、prepared 多分片；
 - SHOW STATUS/MASTER 等非安全 SHOW；`SET sql_mode` 等非 `SET NAMES`；
 - DDL 永久 Reject（外部迁移工具按片变更，见 §6.4）；SHOW/事务控制/prepared 写当前 1235；
 - 多分片 `LAST_INSERT_ID` / `ROW_COUNT`；
@@ -513,8 +582,8 @@ DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代�
 
 | 层 | 内容 | Docker |
 |---|---|---|
-| 规则单测 | `hash_mod/range` 边界、Slice 引用、重复规则 | 否 |
-| 路由单测 | AST 键提取：`=`/`IN`/`BETWEEN`/无键/多表 | 否 |
+| 规则单测 | `hash_mod`/`hash_mod_str` 值域、Slice 引用、重复规则 | 否 |
+| 路由单测 | AST 键提取：`=`/`IN`/`BETWEEN`/无键/多表；整数/字符串键类型 | 否 |
 | 计划单测 | `SingleShard/MultiShard/Reject`、`EXPLAIN ROUTE` | 否 |
 | 执行单测 | fake Conn + 2 个 target：lease 按片、N=1 raw、N=2 dispatch | 否 |
 | 归并单测 | 脚本化 Stream：count/sum/min/max/avg/order/limit | 否 |
@@ -533,9 +602,9 @@ DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代�
 | # | 决策 | 推荐 | 备选 |
 |---|---|---|---|
 | 1 | 分片粒度/命名 | 同库同名，`Target.DB` 预留 | 物理表后缀（P2） |
-| 2 | P0 算法 | `hash_mod`（单列整数/字符串）+ 等值/同片 IN | range/date（P1） |
+| 2 | P0 算法 | `hash_mod`（整数键）+ `hash_mod_str`（字符串键）+ 等值/同片 IN | range/date（P1） |
 | 3 | ID 生成 | P0 单分片用本地 auto_increment；多分片 INSERT 要求显式 ID 或 Reject | Snowflake/segment（P2） |
-| 4 | P0 是否含多分片读 | 否；S2 单独做 | 直接在 P0 做全缓冲归并 |
+| 4 | P0 是否含多分片读 | 是（仅 concat：无 ORDER/LIMIT/聚合/去重） | 全缓冲归并（不推荐） |
 | 5 | prepared | P0 单分片；多分片 Reject | 广播 prepare（S2） |
 | 6 | DDL 策略 | 代理不广播，sharding 模式 Reject；外部迁移工具按片变更 | 代理内在线 DDL（单独立项） |
 | 7 | 未配置表 | Reject | `default_slice`（P2） |

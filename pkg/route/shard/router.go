@@ -5,14 +5,15 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"strconv"
 	"strings"
 
 	"github.com/pingcap/tidb/pkg/parser/ast"
 	"github.com/pingcap/tidb/pkg/parser/opcode"
 
 	"github.com/acorndb/shardweave/pkg/constant"
+	"github.com/acorndb/shardweave/pkg/errs"
 	"github.com/acorndb/shardweave/pkg/mysql"
-	"github.com/acorndb/shardweave/pkg/plan"
 	"github.com/acorndb/shardweave/pkg/route"
 	"github.com/acorndb/shardweave/pkg/route/source"
 	"github.com/acorndb/shardweave/pkg/session"
@@ -47,11 +48,21 @@ func New(rules []Rule) (*Router, error) {
 		if r.Key == "" {
 			return nil, fmt.Errorf("shard: rule %q key is required", r.Table)
 		}
-		if r.Algorithm != constant.ShardingHashMod {
+		if r.Algorithm != constant.ShardingHashMod && r.Algorithm != constant.ShardingHashModStr {
 			return nil, fmt.Errorf("shard: rule %q algorithm %q unsupported", r.Table, r.Algorithm)
 		}
 		if len(r.Slices) == 0 {
 			return nil, fmt.Errorf("shard: rule %q requires slices", r.Table)
+		}
+		seenSlices := make(map[string]bool, len(r.Slices))
+		for j, s := range r.Slices {
+			if s == "" {
+				return nil, fmt.Errorf("shard: rule %q slices[%d] is empty", r.Table, j)
+			}
+			if seenSlices[s] {
+				return nil, fmt.Errorf("shard: rule %q slices[%d] %q is duplicated", r.Table, j, s)
+			}
+			seenSlices[s] = true
 		}
 		name := strings.ToLower(r.Table)
 		if _, ok := m[name]; ok {
@@ -138,9 +149,25 @@ func (r *Router) Route(_ context.Context, st *session.State, stmt *sql.Statement
 		if err == nil {
 			rule, err = r.lookupRule(tn)
 		}
-		if err == nil {
-			values, err = shardKeyValues(s.Where, rule.Key)
+		if err != nil {
+			return nil, err
 		}
+		values, complete := keyValues(s.Where, rule.Key)
+		slices := rule.Slices
+		if complete && len(values) > 0 {
+			slices, err = slicesForValues(rule, values)
+			if err != nil {
+				return nil, err
+			}
+		}
+		// A keyed query can still span shards (cross-slice IN); merge clauses
+		// are only safe when the whole statement stays on one shard.
+		if len(slices) > 1 {
+			if err := checkScatterSelect(s); err != nil {
+				return nil, err
+			}
+		}
+		return targetsForSlices(slices, source.PickRole(st, stmt.Cmd, stmt.Raw)), nil
 	case *ast.UpdateStmt:
 		if s.MultipleTable {
 			return nil, reject("multi-table UPDATE is not supported")
@@ -200,6 +227,82 @@ func (r *Router) lookupRule(tn *ast.TableName) (Rule, error) {
 
 func (r *Router) defaultTargets(role constant.Role) []route.Target {
 	return []route.Target{{Slice: r.defaultSlice, Role: role}}
+}
+
+func targetsForSlices(slices []string, role constant.Role) []route.Target {
+	out := make([]route.Target, 0, len(slices))
+	for _, s := range slices {
+		out = append(out, route.Target{Slice: s, Role: role})
+	}
+	return out
+}
+
+// slicesForValues maps key literals to their shards, de-duplicated in rule
+// order so the scatter plan is deterministic.
+func slicesForValues(rule Rule, values []any) ([]string, error) {
+	seen := make(map[string]bool, len(rule.Slices))
+	for _, v := range values {
+		idx, err := shardIndex(rule, v)
+		if err != nil {
+			return nil, err
+		}
+		seen[rule.Slices[idx]] = true
+	}
+	out := make([]string, 0, len(seen))
+	for _, s := range rule.Slices {
+		if seen[s] {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil, reject("no shard key value")
+	}
+	return out, nil
+}
+
+// checkScatterSelect bounds the P0 multi-shard path to result concatenation.
+// ORDER BY/LIMIT/aggregates/DISTINCT need the merge engine (D5/D6), so they are
+// rejected instead of silently returning per-shard partial semantics.
+func checkScatterSelect(s *ast.SelectStmt) error {
+	switch {
+	case s.Distinct:
+		return reject("multi-shard SELECT with DISTINCT is not supported")
+	case s.GroupBy != nil || s.Having != nil:
+		return reject("multi-shard SELECT with GROUP BY/HAVING is not supported")
+	case s.OrderBy != nil:
+		return reject("multi-shard SELECT with ORDER BY is not supported")
+	case s.Limit != nil:
+		return reject("multi-shard SELECT with LIMIT is not supported")
+	case len(s.WindowSpecs) > 0:
+		return reject("multi-shard SELECT with window functions is not supported")
+	case s.SelectIntoOpt != nil:
+		return reject("multi-shard SELECT INTO is not supported")
+	case s.LockInfo != nil:
+		return reject("multi-shard locking reads are not supported")
+	case s.SelectStmtOpts != nil && s.SelectStmtOpts.CalcFoundRows:
+		return reject("SQL_CALC_FOUND_ROWS is not supported in sharding mode")
+	case selectNeedsMerge(s):
+		return reject("multi-shard aggregate/window function is not supported")
+	}
+	return nil
+}
+
+type mergeExprFinder struct{ found bool }
+
+func (v *mergeExprFinder) Enter(n ast.Node) bool {
+	switch n.(type) {
+	case *ast.AggregateFuncExpr, *ast.WindowFuncExpr:
+		v.found = true
+	}
+	return v.found
+}
+
+func (v *mergeExprFinder) Leave(ast.Node) bool { return !v.found }
+
+func selectNeedsMerge(s *ast.SelectStmt) bool {
+	v := &mergeExprFinder{}
+	ast.Walk(s, v)
+	return v.found
 }
 
 func isSetNames(raw string) bool {
@@ -392,12 +495,28 @@ func isKeyColumn(expr ast.ExprNode, key string) bool {
 }
 
 func literalValue(expr ast.ExprNode) (any, bool) {
-	v, ok := expr.(ast.ValueExpr)
-	if !ok {
-		return nil, false
+	switch e := expr.(type) {
+	case ast.ValueExpr:
+		val := e.GetValue()
+		return val, val != nil
+	case *ast.UnaryOperationExpr:
+		switch e.Op {
+		case opcode.Plus:
+			return literalValue(e.V)
+		case opcode.Minus:
+			v, ok := literalValue(e.V)
+			if !ok {
+				return nil, false
+			}
+			switch n := v.(type) {
+			case int:
+				return -n, true
+			case int64:
+				return -n, true
+			}
+		}
 	}
-	val := v.GetValue()
-	return val, val != nil
+	return nil, false
 }
 
 func pickSlice(rule Rule, values []any) (string, error) {
@@ -406,7 +525,7 @@ func pickSlice(rule Rule, values []any) (string, error) {
 	}
 	var chosen string
 	for _, v := range values {
-		idx, err := shardIndex(v, len(rule.Slices))
+		idx, err := shardIndex(rule, v)
 		if err != nil {
 			return "", err
 		}
@@ -422,34 +541,65 @@ func pickSlice(rule Rule, values []any) (string, error) {
 	return chosen, nil
 }
 
-func shardIndex(value any, n int) (int, error) {
+// shardIndex canonicalizes the key according to the rule's algorithm. The
+// algorithm, not the SQL literal type, decides the routing domain:
+// hash_mod is integer-only and hash_mod_str is string-only. Mixed literal
+// forms ('1' vs 1) therefore cannot silently land on different slices.
+func shardIndex(rule Rule, value any) (int, error) {
+	n := len(rule.Slices)
 	if n <= 0 {
 		return 0, reject("sharding rule has no slices")
 	}
-	switch v := value.(type) {
-	case int:
-		return int(uint64(v) % uint64(n)), nil
-	case int64:
-		return int(uint64(v) % uint64(n)), nil
-	case uint64:
+	switch rule.Algorithm {
+	case constant.ShardingHashMod:
+		v, ok := integerKey(value)
+		if !ok {
+			return 0, reject("shard key %v is not an integer literal for %s", value, rule.Algorithm)
+		}
 		return int(v % uint64(n)), nil
-	case string:
-		h := fnv.New64a()
-		_, _ = h.Write([]byte(v))
-		return int(h.Sum64() % uint64(n)), nil
-	case []byte:
-		h := fnv.New64a()
-		_, _ = h.Write(v)
-		return int(h.Sum64() % uint64(n)), nil
+	case constant.ShardingHashModStr:
+		switch v := value.(type) {
+		case string:
+			return int(fnvSum([]byte(v)) % uint64(n)), nil
+		case []byte:
+			return int(fnvSum(v) % uint64(n)), nil
+		default:
+			return 0, reject("shard key %v is not a string literal for %s", value, rule.Algorithm)
+		}
 	default:
-		return 0, reject("unsupported shard key type %T", value)
+		return 0, reject("sharding algorithm %q is not supported", rule.Algorithm)
 	}
 }
 
-func reject(format string, args ...any) error {
-	return &plan.RejectError{
-		Code:    1235,
-		State:   "42000",
-		Message: fmt.Sprintf(format, args...),
+// integerKey accepts integer literals and strings that parse as exact base-10
+// integers, matching MySQL's numeric coercion for quoted numbers. Decimal,
+// hex, bit and non-numeric strings are rejected so they cannot fall back to a
+// different hash domain.
+func integerKey(value any) (uint64, bool) {
+	switch v := value.(type) {
+	case int:
+		return uint64(v), true
+	case int64:
+		return uint64(v), true
+	case uint64:
+		return v, true
+	case string:
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return uint64(n), true
+		}
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
+			return n, true
+		}
 	}
+	return 0, false
+}
+
+func fnvSum(b []byte) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write(b)
+	return h.Sum64()
+}
+
+func reject(format string, args ...any) error {
+	return errs.Unsupported(format, args...)
 }
