@@ -27,6 +27,10 @@ backend:
 pool:
   capacity: 2
   max_capacity: 8
+  max_idle: 6
+  idle_timeout: 5m
+  max_lifetime: 1h
+  health_check_interval: 30s
   get_timeout: 3s
 log:
   level: info
@@ -46,6 +50,10 @@ func TestLoadFile_OK_Single(t *testing.T) {
 	require.Equal(t, "appdb", cfg.Backend.Slices[0].Master.Database)
 	require.Equal(t, 2, cfg.Pool.Capacity)
 	require.Equal(t, 8, cfg.Pool.MaxCapacity)
+	require.Equal(t, 6, cfg.Pool.MaxIdle)
+	require.Equal(t, 5*time.Minute, cfg.Pool.IdleTimeout)
+	require.Equal(t, time.Hour, cfg.Pool.MaxLifetime)
+	require.Equal(t, 30*time.Second, cfg.Pool.HealthCheckInterval)
 	require.Equal(t, 3*time.Second, cfg.Pool.GetTimeout)
 	require.Equal(t, "info", cfg.Log.Level)
 	require.Equal(t, 2*time.Second, cfg.TerminationDrain)

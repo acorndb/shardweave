@@ -34,6 +34,10 @@ backend:
 pool:
   capacity: 4
   max_capacity: 16
+  max_idle: 16
+  idle_timeout: 5m
+  max_lifetime: 1h
+  health_check_interval: 30s
   get_timeout: 2s
 
 log:

@@ -66,10 +66,13 @@ type ShardRule struct {
 
 // Pool maps to backend.PoolConfig fields.
 type Pool struct {
-	Capacity    int           `yaml:"capacity"`
-	MaxCapacity int           `yaml:"max_capacity"`
-	IdleTimeout time.Duration `yaml:"idle_timeout"`
-	GetTimeout  time.Duration `yaml:"get_timeout"`
+	Capacity            int           `yaml:"capacity"`
+	MaxCapacity         int           `yaml:"max_capacity"`
+	MaxIdle             int           `yaml:"max_idle"`
+	IdleTimeout         time.Duration `yaml:"idle_timeout"`
+	MaxLifetime         time.Duration `yaml:"max_lifetime"`
+	HealthCheckInterval time.Duration `yaml:"health_check_interval"`
+	GetTimeout          time.Duration `yaml:"get_timeout"`
 }
 
 // Log holds process logging settings.

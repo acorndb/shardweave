@@ -27,6 +27,7 @@ type ExecRequest struct {
 
 // Conn is a pooled MySQL backend connection.
 type Conn interface {
+	Ping(ctx context.Context) error
 	Exec(ctx context.Context, req ExecRequest) (result.Stream, error)
 	Align(ctx context.Context, s AlignSettings) error
 	Reset(ctx context.Context) error
@@ -65,6 +66,12 @@ func (b *MySQLConn) Database() string { return b.database }
 
 // Charset returns the last known charset (SET NAMES) on this backend.
 func (b *MySQLConn) Charset() string { return b.charset }
+
+// Ping sends COM_PING and expects OK.
+func (b *MySQLConn) Ping(ctx context.Context) error {
+	_ = ctx
+	return b.execCommand([]byte{mysql.ComPing})
+}
 
 // Exec sends one command packet and returns its response stream.
 func (b *MySQLConn) Exec(ctx context.Context, req ExecRequest) (result.Stream, error) {

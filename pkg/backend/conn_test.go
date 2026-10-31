@@ -168,3 +168,23 @@ func TestMySQLConn_Exec_EmptyPayload(t *testing.T) {
 	_, err := b.Exec(context.Background(), ExecRequest{})
 	require.Error(t, err)
 }
+
+func TestMySQLConn_Ping(t *testing.T) {
+	server, client := net.Pipe()
+	t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+	srv := packet.NewConn(server)
+
+	b := &MySQLConn{pc: packet.NewConn(client)}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- b.Ping(context.Background())
+	}()
+
+	srv.ResetSequence()
+	data, err := srv.ReadPacket()
+	require.NoError(t, err)
+	require.Equal(t, []byte{mysql.ComPing}, data)
+	writeOK(t, srv)
+
+	require.NoError(t, <-errCh)
+}

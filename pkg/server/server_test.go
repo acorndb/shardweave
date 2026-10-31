@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acorndb/prism/pkg/backend"
 	"github.com/acorndb/prism/pkg/config"
 	"github.com/acorndb/prism/pkg/constant"
 	"github.com/stretchr/testify/require"
@@ -83,6 +84,27 @@ func TestNewExecutor_RWSplit(t *testing.T) {
 	exec, err := newExecutor(nil, cfg)
 	require.NoError(t, err)
 	require.NoError(t, exec.Close())
+}
+
+func TestToPoolConfig(t *testing.T) {
+	got := toPoolConfig(config.Pool{
+		Capacity:            1,
+		MaxCapacity:         2,
+		MaxIdle:             1,
+		IdleTimeout:         time.Minute,
+		MaxLifetime:         time.Hour,
+		HealthCheckInterval: 30 * time.Second,
+		GetTimeout:          2 * time.Second,
+	})
+	require.Equal(t, backend.PoolConfig{
+		Capacity:            1,
+		MaxCapacity:         2,
+		MaxIdle:             1,
+		IdleTimeout:         time.Minute,
+		MaxLifetime:         time.Hour,
+		HealthCheckInterval: 30 * time.Second,
+		GetTimeout:          2 * time.Second,
+	}, got)
 }
 
 func minimalConfig() *config.Config {

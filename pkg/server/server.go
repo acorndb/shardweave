@@ -196,9 +196,12 @@ func (s *Server) Close() {
 
 func toPoolConfig(c config.Pool) backend.PoolConfig {
 	return backend.PoolConfig{
-		Capacity:    c.Capacity,
-		MaxCapacity: c.MaxCapacity,
-		IdleTimeout: c.IdleTimeout,
-		GetTimeout:  c.GetTimeout,
+		Capacity:            c.Capacity,
+		MaxCapacity:         c.MaxCapacity,
+		MaxIdle:             c.MaxIdle,
+		IdleTimeout:         c.IdleTimeout,
+		MaxLifetime:         c.MaxLifetime,
+		HealthCheckInterval: c.HealthCheckInterval,
+		GetTimeout:          c.GetTimeout,
 	}
 }

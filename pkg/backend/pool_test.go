@@ -16,8 +16,15 @@ type stubConn struct {
 	id         int
 	resetCalls atomic.Int32
 	closeCalls atomic.Int32
+	pingCalls  atomic.Int32
 	resetErr   error
+	pingErr    error
 	closed     atomic.Bool
+}
+
+func (s *stubConn) Ping(context.Context) error {
+	s.pingCalls.Add(1)
+	return s.pingErr
 }
 
 func (s *stubConn) Reset(context.Context) error {
@@ -39,7 +46,7 @@ func (s *stubConn) Close() error {
 
 func TestPool_AcquireReleaseReuse(t *testing.T) {
 	var n atomic.Int32
-	p := backend.NewPool(backend.PoolConfig{Capacity: 1, MaxCapacity: 2, GetTimeout: time.Second}, func(ctx context.Context) (backend.Conn, error) {
+	p := backend.NewPool(backend.PoolConfig{Capacity: 0, MaxCapacity: 2, GetTimeout: time.Second}, func(ctx context.Context) (backend.Conn, error) {
 		id := int(n.Add(1))
 		return &stubConn{id: id}, nil
 	})
@@ -62,7 +69,7 @@ func TestPool_AcquireReleaseReuse(t *testing.T) {
 
 func TestPool_ReleaseResetFailureDiscards(t *testing.T) {
 	var n atomic.Int32
-	p := backend.NewPool(backend.PoolConfig{Capacity: 1, MaxCapacity: 2, GetTimeout: time.Second}, func(ctx context.Context) (backend.Conn, error) {
+	p := backend.NewPool(backend.PoolConfig{Capacity: 0, MaxCapacity: 2, GetTimeout: time.Second}, func(ctx context.Context) (backend.Conn, error) {
 		id := int(n.Add(1))
 		return &stubConn{id: id, resetErr: errors.New("reset failed")}, nil
 	})
@@ -83,7 +90,7 @@ func TestPool_ReleaseResetFailureDiscards(t *testing.T) {
 
 func TestPool_DiscardFreesCapacity(t *testing.T) {
 	var n atomic.Int32
-	p := backend.NewPool(backend.PoolConfig{Capacity: 0, MaxCapacity: 1, GetTimeout: 50 * time.Millisecond}, func(ctx context.Context) (backend.Conn, error) {
+	p := backend.NewPool(backend.PoolConfig{Capacity: 0, MaxCapacity: 0, GetTimeout: 50 * time.Millisecond}, func(ctx context.Context) (backend.Conn, error) {
 		return &stubConn{id: int(n.Add(1))}, nil
 	})
 	t.Cleanup(func() { _ = p.Close() })
@@ -118,4 +125,169 @@ func TestPool_MaxCapacity(t *testing.T) {
 	b2, err := p.Acquire(ctx)
 	require.NoError(t, err)
 	require.Same(t, b1, b2)
+}
+
+func TestPool_Warmup(t *testing.T) {
+	var n atomic.Int32
+	p := backend.NewPool(backend.PoolConfig{
+		Capacity: 2, MaxCapacity: 4, GetTimeout: time.Second,
+	}, func(context.Context) (backend.Conn, error) {
+		return &stubConn{id: int(n.Add(1))}, nil
+	})
+	t.Cleanup(func() { _ = p.Close() })
+
+	require.Eventually(t, func() bool { return n.Load() == 2 }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return p.Stats().Idle == 2 }, time.Second, time.Millisecond)
+
+	b1, err := p.Acquire(context.Background())
+	require.NoError(t, err)
+	b2, err := p.Acquire(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int32(2), n.Load(), "warmup connections should be reused")
+	require.NoError(t, p.Release(b1))
+	require.NoError(t, p.Release(b2))
+}
+
+func TestPool_HealthCheckDiscardsDeadIdle(t *testing.T) {
+	var n atomic.Int32
+	p := backend.NewPool(backend.PoolConfig{
+		MaxCapacity:         2,
+		HealthCheckInterval: 5 * time.Millisecond,
+		GetTimeout:          time.Second,
+	}, func(context.Context) (backend.Conn, error) {
+		return &stubConn{id: int(n.Add(1))}, nil
+	})
+	t.Cleanup(func() { _ = p.Close() })
+
+	b1, err := p.Acquire(context.Background())
+	require.NoError(t, err)
+	s1 := b1.(*stubConn)
+	require.NoError(t, p.Release(b1))
+	time.Sleep(10 * time.Millisecond)
+	s1.pingErr = errors.New("dead")
+
+	b2, err := p.Acquire(context.Background())
+	require.NoError(t, err)
+	require.NotSame(t, b1, b2)
+	require.Equal(t, int32(1), s1.pingCalls.Load())
+	require.Equal(t, int32(1), s1.closeCalls.Load())
+	require.Equal(t, int32(2), n.Load())
+	require.NoError(t, p.Release(b2))
+}
+
+func TestPool_HealthCheckReusesLiveIdle(t *testing.T) {
+	var n atomic.Int32
+	p := backend.NewPool(backend.PoolConfig{
+		MaxCapacity:         2,
+		HealthCheckInterval: 5 * time.Millisecond,
+		GetTimeout:          time.Second,
+	}, func(context.Context) (backend.Conn, error) {
+		return &stubConn{id: int(n.Add(1))}, nil
+	})
+	t.Cleanup(func() { _ = p.Close() })
+
+	b1, err := p.Acquire(context.Background())
+	require.NoError(t, err)
+	s1 := b1.(*stubConn)
+	require.NoError(t, p.Release(b1))
+	time.Sleep(10 * time.Millisecond)
+
+	b2, err := p.Acquire(context.Background())
+	require.NoError(t, err)
+	require.Same(t, b1, b2)
+	require.Equal(t, int32(1), s1.pingCalls.Load())
+	require.Equal(t, int32(1), n.Load())
+	require.NoError(t, p.Release(b2))
+}
+
+func TestPool_IdleReap(t *testing.T) {
+	var n atomic.Int32
+	p := backend.NewPool(backend.PoolConfig{
+		MaxCapacity: 2,
+		IdleTimeout: 10 * time.Millisecond,
+		GetTimeout:  time.Second,
+	}, func(context.Context) (backend.Conn, error) {
+		return &stubConn{id: int(n.Add(1))}, nil
+	})
+	t.Cleanup(func() { _ = p.Close() })
+
+	b1, err := p.Acquire(context.Background())
+	require.NoError(t, err)
+	s1 := b1.(*stubConn)
+	require.NoError(t, p.Release(b1))
+	require.Eventually(t, func() bool { return s1.closeCalls.Load() == 1 }, time.Second, time.Millisecond)
+
+	b2, err := p.Acquire(context.Background())
+	require.NoError(t, err)
+	require.NotSame(t, b1, b2)
+	require.Equal(t, int32(2), n.Load())
+	require.NoError(t, p.Release(b2))
+}
+
+func TestPool_MaxIdle(t *testing.T) {
+	var n atomic.Int32
+	p := backend.NewPool(backend.PoolConfig{
+		MaxCapacity: 4,
+		MaxIdle:     1,
+		GetTimeout:  time.Second,
+	}, func(context.Context) (backend.Conn, error) {
+		return &stubConn{id: int(n.Add(1))}, nil
+	})
+	t.Cleanup(func() { _ = p.Close() })
+
+	b1, err := p.Acquire(context.Background())
+	require.NoError(t, err)
+	b2, err := p.Acquire(context.Background())
+	require.NoError(t, err)
+	s1, s2 := b1.(*stubConn), b2.(*stubConn)
+
+	require.NoError(t, p.Release(b1))
+	require.NoError(t, p.Release(b2))
+	require.False(t, s1.closed.Load(), "first idle conn is kept")
+	require.True(t, s2.closed.Load(), "second idle conn exceeds MaxIdle")
+
+	b3, err := p.Acquire(context.Background())
+	require.NoError(t, err)
+	require.Same(t, b1, b3)
+	require.NoError(t, p.Release(b3))
+}
+
+func TestPool_Stats(t *testing.T) {
+	var n atomic.Int32
+	p := backend.NewPool(backend.PoolConfig{MaxCapacity: 2, GetTimeout: time.Second}, func(context.Context) (backend.Conn, error) {
+		return &stubConn{id: int(n.Add(1))}, nil
+	})
+	t.Cleanup(func() { _ = p.Close() })
+
+	require.Equal(t, backend.Stats{Max: 2}, p.Stats())
+	b, err := p.Acquire(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, backend.Stats{Active: 1, Max: 2}, p.Stats())
+	require.NoError(t, p.Release(b))
+	require.Equal(t, backend.Stats{Idle: 1, Max: 2}, p.Stats())
+}
+
+func TestPool_MaxLifetime(t *testing.T) {
+	var n atomic.Int32
+	p := backend.NewPool(backend.PoolConfig{
+		MaxCapacity: 2,
+		MaxLifetime: 10 * time.Millisecond,
+		GetTimeout:  time.Second,
+	}, func(context.Context) (backend.Conn, error) {
+		return &stubConn{id: int(n.Add(1))}, nil
+	})
+	t.Cleanup(func() { _ = p.Close() })
+
+	b1, err := p.Acquire(context.Background())
+	require.NoError(t, err)
+	s1 := b1.(*stubConn)
+	require.NoError(t, p.Release(b1))
+	time.Sleep(15 * time.Millisecond)
+
+	b2, err := p.Acquire(context.Background())
+	require.NoError(t, err)
+	require.NotSame(t, b1, b2)
+	require.True(t, s1.closed.Load())
+	require.Equal(t, int32(2), n.Load())
+	require.NoError(t, p.Release(b2))
 }

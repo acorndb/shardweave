@@ -17,7 +17,7 @@ M1 透传进行中。P0–P2 已可用：协议握手、后端池、`COM_QUERY` 
 - `pkg/mysql/auth` + `server`/`client`：HandshakeV10 / native-password 内存闭环
 - `pkg/sql`：`Statement`（Cmd/Payload/Raw/Kind/Effect）统一命令形态；USE/SET effect 成功后由 `execute` 应用
 - `pkg/constant`：mode / load_balance / role / log level 等全局常量
-- `pkg/backend` + `pkg/session`：后端连接、连接池、主从 Slice、`Conn.Exec/Align`、`Cluster`
+- `pkg/backend` + `pkg/session`：后端连接、连接池（健康检查 / idle 回收 / MaxIdle / MaxLifetime / 预热）、主从 Slice、`Conn.Exec/Align`、`Cluster`
 - `pkg/route/source`：主从选源规则（Pick / ClassifyWantSlave），支持指定 slice
 - `pkg/plan`：N=1 `Passthrough` Plan 骨架（Plan/Kind/Builder）
 - `pkg/result`：Field/Row/Stream（raw packet 与逻辑行两种形态）

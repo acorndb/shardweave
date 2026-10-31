@@ -37,6 +37,12 @@ type fakeConn struct {
 	lastAlign backend.AlignSettings
 }
 
+func (c *fakeConn) Ping(context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return nil
+}
+
 func (c *fakeConn) Exec(_ context.Context, req backend.ExecRequest) (result.Stream, error) {
 	c.mu.Lock()
 	c.execCalls++
@@ -118,7 +124,7 @@ func (t *tracker) last(tb testing.TB) *fakeConn {
 
 func newPool(t *testing.T, tag string, tr *tracker, configure func(*fakeConn)) *backend.Pool {
 	t.Helper()
-	p := backend.NewPool(backend.PoolConfig{Capacity: 1, MaxCapacity: 4, GetTimeout: time.Second},
+	p := backend.NewPool(backend.PoolConfig{Capacity: 0, MaxCapacity: 4, GetTimeout: time.Second},
 		func(context.Context) (backend.Conn, error) {
 			c := &fakeConn{tag: tag, status: mysql.ServerStatusAutocommit}
 			if configure != nil {

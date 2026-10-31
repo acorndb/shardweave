@@ -25,7 +25,7 @@
 | `pkg/proxy` | 73.3%（R4 后；解析测试迁到 `pkg/sql`） |
 | `pkg/config` | 93.8%（R5 后） |
 | `pkg/mysql` | 69.0% |
-| `pkg/backend` | 73.1% |
+| `pkg/backend` | 74.2% |
 | `pkg/server` | 64.1% |
 
 ### 0.2 缺口
