@@ -3,6 +3,7 @@ package metamorphic_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"math/big"
 	"sort"
 	"strconv"
@@ -48,7 +49,9 @@ func TestShardedAggregateOracle(t *testing.T) {
 	const ddl = `CREATE TABLE orders (
 		id INT NOT NULL PRIMARY KEY,
 		user_id INT NOT NULL,
-		amount INT NULL
+		amount INT NULL,
+		price DECIMAL(10,2) NULL,
+		qty BIGINT UNSIGNED NULL
 	)`
 	for _, s := range tp.Slices {
 		_, err := s.DB.ExecContext(ctx, ddl)
@@ -60,6 +63,8 @@ func TestShardedAggregateOracle(t *testing.T) {
 	type row struct {
 		id, userID int
 		amount     *int
+		price      any
+		qty        any
 	}
 	var rows []row
 	for i := 1; i <= 24; i++ {
@@ -69,16 +74,23 @@ func TestShardedAggregateOracle(t *testing.T) {
 			v := i*3 - 15
 			amount = &v
 		}
-		rows = append(rows, row{id: i, userID: userID, amount: amount})
+		var price any
+		if i%5 != 0 {
+			price = fmt.Sprintf("%d.%02d", (i%13)-6, (i*7)%100)
+		}
+		var qty any
+		if i%4 != 0 {
+			qty = uint64(i) * 1_000_000_007
+		}
+		rows = append(rows, row{id: i, userID: userID, amount: amount, price: price, qty: qty})
 	}
 
 	for _, r := range rows {
-		_, err := oracle.DB.ExecContext(ctx,
-			"INSERT INTO orders (id, user_id, amount) VALUES (?, ?, ?)", r.id, r.userID, r.amount)
+		const insert = "INSERT INTO orders (id, user_id, amount, price, qty) VALUES (?, ?, ?, ?, ?)"
+		_, err := oracle.DB.ExecContext(ctx, insert, r.id, r.userID, r.amount, r.price, r.qty)
 		require.NoError(t, err)
 		slice := r.userID % 2 // hash_mod over [s0, s1]
-		_, err = tp.Slices[slice].DB.ExecContext(ctx,
-			"INSERT INTO orders (id, user_id, amount) VALUES (?, ?, ?)", r.id, r.userID, r.amount)
+		_, err = tp.Slices[slice].DB.ExecContext(ctx, insert, r.id, r.userID, r.amount, r.price, r.qty)
 		require.NoError(t, err)
 	}
 
@@ -124,6 +136,15 @@ func TestShardedAggregateOracle(t *testing.T) {
 		{query: "SELECT amount, COUNT(*) AS c FROM orders GROUP BY amount ORDER BY c DESC, amount", unordered: false},
 		{query: "SELECT DISTINCT amount FROM orders ORDER BY amount DESC LIMIT 4", unordered: false},
 		{query: "SELECT DISTINCT user_id, amount FROM orders ORDER BY user_id DESC, amount DESC LIMIT 4", unordered: false},
+		{query: "SELECT SUM(price), MIN(price), MAX(price), AVG(price) FROM orders"},
+		{query: "SELECT SUM(qty), MIN(qty), MAX(qty), AVG(qty) FROM orders"},
+		{query: "SELECT user_id, SUM(price), MIN(price), MAX(price), AVG(price) FROM orders GROUP BY user_id ORDER BY user_id"},
+		{query: "SELECT user_id, price, COUNT(*) FROM orders GROUP BY user_id, price ORDER BY user_id, price"},
+		{query: "SELECT price, COUNT(*), SUM(amount) FROM orders GROUP BY price ORDER BY price"},
+		{query: "SELECT DISTINCT price FROM orders ORDER BY price DESC"},
+		{query: "SELECT COUNT(*), SUM(amount), AVG(amount) FROM orders WHERE user_id IN (99, 100)"},
+		{query: "SELECT COUNT(*), SUM(price) FROM orders WHERE amount > 0"},
+		{query: "SELECT user_id, COUNT(*), SUM(price) FROM orders WHERE amount IS NOT NULL GROUP BY user_id ORDER BY user_id"},
 	}
 	for _, tc := range queries {
 		t.Run(tc.query, func(t *testing.T) {
