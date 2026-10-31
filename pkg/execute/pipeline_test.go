@@ -815,3 +815,19 @@ func TestExplainRows(t *testing.T) {
 	require.Equal(t, "Error", rows[0][0])
 	require.Contains(t, rows[0][5], "boom")
 }
+
+func TestPipeline_ExplainRouteWritesResult(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, nil))),
+		plan.Builder{Router: multiRouter{targets: multiTargets()}, Sharding: true})
+	require.NoError(t, err)
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	stmt := query("SELECT * FROM orders")
+	stmt.Kind = sql.KindExplainRoute
+	require.NoError(t, p.Handle(context.Background(), rt, stmt))
+	require.NotEmpty(t, collect())
+	require.Equal(t, int64(-1), rt.State.RowCount())
+}

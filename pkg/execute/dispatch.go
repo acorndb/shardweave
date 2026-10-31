@@ -167,26 +167,6 @@ func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statemen
 	return true, nil
 }
 
-// openDecoded acquires/reuses the slice lease, aligns it, executes the payload
-// and reads the result header. Rows stay unread for the caller to stream.
-func (p *Pipeline) openDecoded(ctx context.Context, rt *Runtime, stmt *sql.Statement, target route.Target) (result.Stream, error) {
-	stream, err := p.execTarget(ctx, rt, stmt, target)
-	if err != nil {
-		return nil, err
-	}
-	d, ok := stream.(decodedStreamer)
-	if !ok {
-		_ = stream.Close()
-		return nil, fmt.Errorf("execute: stream %T cannot decode result rows", stream)
-	}
-	decoded, err := d.Decode()
-	if err != nil {
-		_ = stream.Close()
-		return nil, err
-	}
-	return decoded, nil
-}
-
 func (p *Pipeline) openLeaseDecoded(
 	ctx context.Context,
 	rt *Runtime,

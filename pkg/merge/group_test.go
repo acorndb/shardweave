@@ -120,3 +120,51 @@ func TestMerge_GroupFactory(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, [][]string{{"1", "2", "15", "5", "10", "7.5000"}}, collectValues(t, s))
 }
+
+func TestGroup_FloatAndNulls(t *testing.T) {
+	fields := []result.Field{
+		{Name: "user_id", OrgName: "user_id", Type: result.TypeLong},
+		{Name: "SUM(v)", OrgName: "SUM(v)", Type: result.TypeDouble},
+		{Name: "AVG(v)", OrgName: "AVG(v)", Type: result.TypeDouble},
+		{Name: "__sw_avg_count_0", OrgName: "COUNT(v)", Type: result.TypeLongLong},
+	}
+	streams := []result.Stream{
+		&scriptStream{fields: fields, rows: []result.Row{
+			{[]byte("1"), nil, nil, []byte("0")},
+			{[]byte("1"), []byte("1.5"), []byte("1.5"), []byte("1")},
+		}},
+		&scriptStream{fields: fields, rows: []result.Row{
+			{[]byte("2"), []byte("2.5"), []byte("2.5"), []byte("1")},
+		}},
+	}
+	s, err := merge.Group(streams, fields, []int{0}, []plan.AggregateSpec{
+		{Func: plan.AggSum, Column: 1, Output: 1},
+		{Func: plan.AggAvg, Column: 2, CountColumn: 3, Output: 2},
+	}, []int{0, 1, 2})
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"1", "1.5", "1.5"}, {"2", "2.5", "2.5"}}, collectValues(t, s))
+}
+
+func TestGroup_ValidationErrors(t *testing.T) {
+	fields := groupFields()
+	var me *errs.MySQL
+	cases := []struct {
+		groupBy []int
+		specs   []plan.AggregateSpec
+		output  []int
+	}{
+		{nil, nil, []int{0}},
+		{[]int{0}, nil, nil},
+		{[]int{9}, nil, []int{0}},
+		{[]int{0}, nil, []int{0, 9}},
+		{[]int{0}, []plan.AggregateSpec{{Func: plan.AggCount, Column: 0, Output: 9}}, []int{0}},
+		{[]int{0}, []plan.AggregateSpec{{Func: plan.AggCount, Column: 0, Output: 0, Distinct: true}}, []int{0}},
+		{[]int{0}, []plan.AggregateSpec{{Func: plan.AggregateFunc(99), Column: 0, Output: 0}}, []int{0}},
+		{[]int{0}, []plan.AggregateSpec{{Func: plan.AggAvg, Column: 1, CountColumn: 9, Output: 0}}, []int{0}},
+	}
+	for _, tc := range cases {
+		_, err := merge.Group(nil, fields, tc.groupBy, tc.specs, tc.output)
+		require.ErrorAs(t, err, &me)
+		require.Equal(t, uint16(1235), me.Number)
+	}
+}

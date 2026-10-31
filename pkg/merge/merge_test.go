@@ -242,3 +242,14 @@ func TestMerge_Projection(t *testing.T) {
 	require.ErrorAs(t, err, &me)
 	require.Equal(t, uint16(1235), me.Number)
 }
+
+func TestProject_Close(t *testing.T) {
+	fields := []result.Field{{Name: "a", OrgName: "a", Type: result.TypeLong}}
+	a := &scriptStream{fields: fields, rows: []result.Row{{[]byte("1")}}}
+	b := &scriptStream{fields: fields, rows: []result.Row{{[]byte("2")}}}
+	s, err := merge.Merge([]result.Stream{a, b}, fields, plan.MergeSpec{Output: []int{0}})
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+	require.Equal(t, 1, a.closes)
+	require.Equal(t, 1, b.closes)
+}
