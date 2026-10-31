@@ -30,6 +30,15 @@ func TestBuilder_AllMaster(t *testing.T) {
 	require.Equal(t, constant.RoleMaster, p.Targets[0].Role)
 }
 
+func TestBuilder_ShardingSingle(t *testing.T) {
+	p, err := (plan.Builder{Router: source.AllMaster{}, Sharding: true}).Build(
+		context.Background(), session.NewState(), stmt("SELECT 1"))
+	require.NoError(t, err)
+	require.Equal(t, plan.SingleShard, p.Kind)
+	require.Equal(t, plan.TxSingleShard, p.Tx)
+	require.Len(t, p.Targets, 1)
+}
+
 func TestBuilder_Pick(t *testing.T) {
 	cases := []struct {
 		name   string

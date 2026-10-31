@@ -27,6 +27,9 @@ type SessionConfig struct {
 	// ParseAST enables one TiDB-parser pass per COM_QUERY. It is off for
 	// single/rwsplit and on for sharding (routing/rewrite need the AST).
 	ParseAST bool
+	// Sharding disables legacy sticky behaviors that do not apply when
+	// prepared statements are rejected by the shard router.
+	Sharding bool
 }
 
 // Serve runs one frontend connection: handshake then command loop.
@@ -122,7 +125,9 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 				continue
 			}
 		case mysql.ComStmtPrepare:
-			st.MarkReserved()
+			if !cfg.Sharding {
+				st.MarkReserved()
+			}
 			if err := cfg.Exec.Handle(ctx, ec, stmt); err != nil {
 				if herr := handleExecError(front, err); herr != nil {
 					return herr

@@ -466,8 +466,8 @@ func validSharding() *Config {
 }
 
 func TestValidateSharding(t *testing.T) {
-	t.Run("valid_but_not_enabled", func(t *testing.T) {
-		require.ErrorContains(t, Validate(validSharding()), "not implemented")
+	t.Run("valid_config", func(t *testing.T) {
+		require.NoError(t, Validate(validSharding()))
 	})
 
 	cases := []struct {

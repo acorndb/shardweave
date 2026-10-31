@@ -19,6 +19,7 @@ import (
 	"github.com/acorndb/shardweave/pkg/execute"
 	"github.com/acorndb/shardweave/pkg/plan"
 	"github.com/acorndb/shardweave/pkg/proxy"
+	"github.com/acorndb/shardweave/pkg/route/shard"
 	"github.com/acorndb/shardweave/pkg/route/source"
 )
 
@@ -33,6 +34,7 @@ type Server struct {
 	maxAllowedPacket int
 	maxConns         int
 	parseAST         bool
+	sharding         bool
 	activeConns      atomic.Int64
 
 	listener net.Listener
@@ -79,6 +81,7 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 		maxAllowedPacket: cfg.Server.MaxAllowedPacket,
 		maxConns:         cfg.Server.MaxConnections,
 		parseAST:         mode == constant.ModeSharding,
+		sharding:         mode == constant.ModeSharding,
 		listener:         ln,
 		ctx:              ctx,
 		cancel:           cancel,
@@ -127,7 +130,30 @@ func newExecutor(rt *config.Runtime, cfg *config.Config) (execute.Executor, erro
 		}
 		return exec, nil
 	case constant.ModeSharding:
-		return nil, fmt.Errorf("server: sharding not implemented")
+		cluster, err := buildCluster(bs, pcfg)
+		if err != nil {
+			return nil, err
+		}
+		rules := make([]shard.Rule, 0, len(bs.Sharding.Rules))
+		for _, r := range bs.Sharding.Rules {
+			rules = append(rules, shard.Rule{
+				Table:     r.Table,
+				Key:       r.Key,
+				Algorithm: r.Algorithm,
+				Slices:    r.Slices,
+			})
+		}
+		router, err := shard.New(rules)
+		if err != nil {
+			_ = cluster.Close()
+			return nil, err
+		}
+		exec, err := execute.New(cluster, plan.Builder{Router: router, Sharding: true})
+		if err != nil {
+			_ = cluster.Close()
+			return nil, err
+		}
+		return exec, nil
 	default:
 		return nil, fmt.Errorf("server: unsupported backend.mode %q", mode)
 	}
@@ -260,6 +286,7 @@ func (s *Server) onConn(c net.Conn) {
 		WriteTimeout:     s.writeTimeout,
 		MaxAllowedPacket: s.maxAllowedPacket,
 		ParseAST:         s.parseAST,
+		Sharding:         s.sharding,
 	})
 }
 

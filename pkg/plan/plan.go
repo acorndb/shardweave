@@ -125,6 +125,9 @@ type Plan struct {
 // Builder composes a Router (and later a Rewriter) into a Plan.
 type Builder struct {
 	Router route.Router
+	// Sharding marks the plan as a sharding plan. It is set only by the
+	// assembly layer; one target becomes SingleShard + TxSingleShard.
+	Sharding bool
 }
 
 // Build produces a one-target Passthrough plan for single/rwsplit.
@@ -154,7 +157,11 @@ func (b Builder) Build(ctx context.Context, st *session.State, stmt *sql.Stateme
 	case 0:
 		return nil, fmt.Errorf("plan: router returned no targets")
 	case 1:
-		return &Plan{Kind: Passthrough, Targets: targets}, nil
+		kind, tx := Passthrough, TxNone
+		if b.Sharding {
+			kind, tx = SingleShard, TxSingleShard
+		}
+		return &Plan{Kind: kind, Targets: targets, Tx: tx}, nil
 	default:
 		return &Plan{
 			Kind: Reject,

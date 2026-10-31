@@ -408,8 +408,8 @@ route → []Target
 - **连接池不需要重写**：`backend.Pool` 是 endpoint 级的，`Slice` 已是
   "master + slaves + LB"，`Cluster` 已是 map。真正要做的是**装配**和
   （可选的）per-slice pool 覆盖，不是改池实现。
-- `mode=sharding` 先保持拒绝，避免"配置能写、运行时不能用"的半成品；
-  B1 完成后再打开。
+- `mode=sharding` 在 A1–A5 保持拒绝，避免"配置能写、运行时不能用"的半成品；
+  B1.0 完成路由与装配后已打开。
 
 主流程顺序不能反：
 
@@ -418,23 +418,48 @@ route → []Target
 3. 先有 AST/Plan（A5），才谈得上分片键与改写；
 4. 最后才是 `route/shard`（B1）和 merge（B2）。
 
+### 7.2 B1 当前实现状态（2026-10-31）
+
+已落地（B1.0）：
+
+- `route/shard` + `hash_mod`：单分片 `SELECT/INSERT/UPDATE/DELETE` 的
+  等值 / `<=>` / 同片 `IN`；多行 INSERT 必须同片；
+- 无键、跨片、JOIN、多表、schema 限定、DDL、SHOW、事务、prepared 均显式
+  1235；
+- `plan.SingleShard + TxSingleShard`；server 装配多 Slice + shard Router；
+- 无 FROM 的 SELECT（常量、`LAST_INSERT_ID()`/`ROW_COUNT()` 改写）路由默认片；
+- 2 Slice 真拓扑 e2e：CRUD、数据落片、跨片拒绝、`LAST_INSERT_ID`/`ROW_COUNT`。
+
+未落地（B1.1，按优先级）：
+
+- DDL 广播；
+- 单分片事务（BEGIN/COMMIT/ROLLBACK/SAVEPOINT）与 pin；
+- 单分片 prepared 与 `StmtTable` 接线；
+- `EXPLAIN ROUTE`；
+- `SHOW`/`USE`/`SET` 的 sharding 策略。
+
 ## 8. P0 明确范围
 
 ### 8.1 支持
 
+B1.0：
+
 - 单分片 `SELECT/UPDATE/DELETE`：分片键 `=`、`<=>`、同片 `IN`；
 - 单分片 `INSERT`：分片键存在且所有行落同一片；
+- 无 FROM 的常量 SELECT / 会话函数改写。
+
+B1.1（尚未实现）：
+
 - 单分片事务：`BEGIN/COMMIT/ROLLBACK/SAVEPOINT`，期间所有语句同片；
 - 单分片 prepared：prepare/execute/close 映射到同片；
 - DDL：广播到规则涉及的所有 Slice；
 - `EXPLAIN ROUTE`：输出 Kind、Targets、Reject 原因。
 
-### 8.2 Reject（P0）
+### 8.2 Reject（当前）
 
 - 无分片键 / 非等值 / 多分片写；
-- 跨分片事务；
-- 跨片/多表 JOIN；
-- 多分片 prepared；
+- 跨片/多表 JOIN、schema 限定表；
+- DDL、SHOW、事务控制、prepared（B1.0 显式 1235）；
 - 多分片 `LAST_INSERT_ID` / `ROW_COUNT`；
 - 未配置规则的普通表（P0 无默认片）；
 - `FOUND_ROWS()` / `SQL_CALC_FOUND_ROWS`（沿用单机决策）；

@@ -208,3 +208,22 @@ func TestBuildCluster_DefaultLoadBalance(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, constant.LoadBalanceRoundRobin, s0.LoadBalance)
 }
+
+func TestNewExecutor_Sharding(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Backend = config.BackendConfig{
+		Mode: constant.ModeSharding,
+		Slices: []config.SliceConfig{
+			{Name: "s0", Master: config.BackendEndpoint{Address: "127.0.0.1:3306", User: "app", Password: "p1"}},
+			{Name: "s1", Master: config.BackendEndpoint{Address: "127.0.0.1:3307", User: "app", Password: "p1"}},
+		},
+		Sharding: &config.ShardingConfig{Rules: []config.ShardRule{{
+			Table: "orders", Key: "user_id", Algorithm: constant.ShardingHashMod, Slices: []string{"s0", "s1"},
+		}}},
+	}
+	require.NoError(t, config.Validate(cfg))
+
+	exec, err := newExecutor(nil, cfg)
+	require.NoError(t, err)
+	require.NoError(t, exec.Close())
+}

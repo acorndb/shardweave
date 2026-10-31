@@ -204,7 +204,7 @@ func validateBackend(b *BackendConfig) error {
 		default:
 			return fmt.Errorf("config: backend.load_balance %q unsupported", b.LoadBalance)
 		}
-		return fmt.Errorf("config: backend.mode=sharding is not implemented")
+		return nil
 	default:
 		return fmt.Errorf("config: backend.mode %q unsupported (want single|rwsplit|sharding)", mode)
 	}
