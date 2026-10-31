@@ -1,6 +1,6 @@
 # 测试基建设计（test-infrastructure）
 
-> 状态：讨论稿 v0.1
+> 状态：当前测试基建说明（2026-10-31）
 > 日期：2026-10-31
 > 上位：[architecture.md](../architecture.md)、[module-map.md](module-map.md)
 > 范围：测试分层、MTR / RQG 评估、目录与 CI、落地顺序。

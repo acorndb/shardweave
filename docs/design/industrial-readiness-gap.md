@@ -1,6 +1,6 @@
 # 单机代理工业级差距评估
 
-> 状态：评估报告（2026-10-31）
+> 状态：单机剩余差距评估（2026-10-31 复核）
 > 范围：**单机 MySQL 代理**（single / rwsplit），不含分片功能。
 > 依据：当前 `main`（R1–R6 重构完成）源码逐模块检查 + 现有测试。
 > 提交提示：`docs/design/` 被 `.gitignore` 忽略；入仓需 `git add -f`。
@@ -259,7 +259,7 @@
 ## 9. 参考
 
 - 现有设计：`docs/architecture.md`、`docs/design/module-map.md`、
-  `docs/design/refactor-seam-plan.md`、`docs/design/test-infrastructure.md`
+  `docs/design/test-infrastructure.md`
 - 开源对照：ProxySQL、Gaea、kingshard、Vitess、ShardingSphere 的能力面
 - MySQL 协议：HandshakeV10 / HandshakeResponse41、COM_*、CLIENT_* 能力位、
   `caching_sha2_password`、TLS、session tracking

@@ -262,8 +262,8 @@ P3 的路由只接受能证明单分片的谓词（分片键等值、同片 `IN`
 | **M3 跨分片** | MultiShard、dispatch、identity/order/aggregate/limit、变形 harness | 分片 vs 单库一致 |
 | **M4 生产化** | 健康检查、故障回落、限流/指标、容量与性能门禁 | 故障注入 + 性能门禁 |
 
-M1.5/M2 的 PR 级拆分、文件动作与测试迁移见
-[design/refactor-seam-plan.md](design/refactor-seam-plan.md)。
+M1.5/M2 已按模块 seam 落地，当前模块边界与依赖以
+[design/module-map.md](design/module-map.md) 为准。
 
 ## 11. 决策记录
 

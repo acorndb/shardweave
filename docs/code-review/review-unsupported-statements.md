@@ -24,7 +24,7 @@ handleExecError(...)`，于是 `Serve` 退出、连接关闭，客户端无法�
 - file: pkg/sql/unsupported.go
 
 `SET time_zone` / `transaction_isolation` 等仍未跟踪也未拒绝，会被路由到后端后
-丢失。产品尚未决策，已在 `rwsplit-compatibility-gap.md` §3.10 记录；R1 统一按
+丢失。产品尚未决策，已在单机差距评估中记录；R1 统一按
 ConnectionState pin 策略处理，届时扩展 `unsupported.go` 或替换为 StatementClass。
 
 ## Nit

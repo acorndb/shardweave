@@ -1,11 +1,9 @@
 # 分片能力评估与 P0 设计（sharding-p0-design）
 
-> 状态：评估/设计稿（2026-10-31）
-> 范围：为 `backend.mode=sharding` 做能力盘点、方案对比、模块拆分与分阶段落地；
-> **本文不含实现代码**。
+> 状态：当前分片设计与实现状态（2026-10-31）
+> 范围：`backend.mode=sharding` 的能力盘点、模块拆分、分阶段落地与已实现边界。
 > 关联：[architecture.md](../architecture.md)、[module-map.md](module-map.md)、
-> [rwsplit-compatibility-gap.md](rwsplit-compatibility-gap.md)、
-> [test-infrastructure.md](test-infrastructure.md)
+> [merge-engine-design.md](merge-engine-design.md)、[test-infrastructure.md](test-infrastructure.md)
 > 提交提示：`docs/design/` 被 `.gitignore` 忽略；入仓需 `git add -f`。
 
 ## 0. 结论

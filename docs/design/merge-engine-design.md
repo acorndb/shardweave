@@ -1,6 +1,6 @@
 # 归并引擎设计（merge-engine-design）
 
-> 状态：设计稿（2026-10-31）
+> 状态：设计稿 + P0.5–P0.7 实现状态（2026-10-31）
 > 范围：分片多目标结果的流式归并；单分片仍走 raw 快路径。
 > 关联：[sharding-p0-design.md](sharding-p0-design.md)、[module-map.md](module-map.md)
 > 提交提示：`docs/design/` 被 `.gitignore` 忽略；入仓需 `git add -f`。

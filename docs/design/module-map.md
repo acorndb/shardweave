@@ -1,13 +1,10 @@
 # 模块地图与依赖（module-map）
 
-> 状态：讨论稿 v0.1
-> 日期：2026-10-31
+> 状态：当前模块地图（2026-10-31）
 > 上位：[docs/architecture.md](../architecture.md)
-> 范围：目标模块形态、边界、依赖、核心接口、配置与落地顺序。**本文不含代码实现。**
+> 范围：模块形态、边界、依赖、核心接口、配置与落地顺序；接口以实现为准。
 >
-> 提交提示：`docs/design/` 当前被 `.gitignore` 忽略；本文件需
-> `git add -f docs/design/module-map.md`。建议后续把 ignore 规则收窄到过程产物
-> （如 `p0-implementation-plan.md`），让设计文档默认入仓。
+> 提交提示：`docs/design/` 仍被 `.gitignore` 忽略；入仓需 `git add -f`。
 
 ## 0. 一句话
 
@@ -549,9 +546,7 @@ R5 已落地统一 `slices`：`single`/`rwsplit` 都是"1 个 Slice"的预设，
 > [sharding-p0-design.md](sharding-p0-design.md)。P3 ≈ S1，P4 拆为 S2/S3。
 
 P1 是纯重构，必须保持现有差分全绿；P2 才开始 breaking 配置；P3 才打开 `mode=sharding`。
-
-PR 级拆分、文件动作、测试迁移与回滚方式见
-[refactor-seam-plan.md](refactor-seam-plan.md)。
+历史 PR 级拆分已完成，见 git history。
 
 ## 9. 测试策略
 
