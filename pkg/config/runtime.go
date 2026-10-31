@@ -32,12 +32,20 @@ func (rt *Runtime) ReloadFile(path string) error {
 }
 
 // Apply swaps in next after validating reload constraints.
-// listen and backend topology changes are rejected (require restart).
+// listen, backend.mode and backend topology changes are rejected (require restart).
 func (rt *Runtime) Apply(next *Config) error {
+	if next == nil {
+		return fmt.Errorf("config: nil")
+	}
+	cur := rt.cur.Load()
+	curMode := normalizeMode(cur.Backend.Mode)
+	nextMode := normalizeMode(next.Backend.Mode)
+	if curMode != nextMode && isKnownMode(curMode) && isKnownMode(nextMode) {
+		return fmt.Errorf("config: backend.mode change requires restart (%q -> %q)", curMode, nextMode)
+	}
 	if err := Validate(next); err != nil {
 		return err
 	}
-	cur := rt.cur.Load()
 	if next.Listen != cur.Listen {
 		return fmt.Errorf("config: listen change requires restart (%q -> %q)", cur.Listen, next.Listen)
 	}

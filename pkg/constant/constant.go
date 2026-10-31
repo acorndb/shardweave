@@ -15,6 +15,11 @@ const (
 	LoadBalanceRandom     = "random"
 )
 
+// sharding.algorithm
+const (
+	ShardingHashMod = "hash_mod"
+)
+
 // Role is the backend role selected for one target.
 type Role string
 

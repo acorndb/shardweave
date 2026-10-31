@@ -170,3 +170,41 @@ func writeConfig(t *testing.T, cfg *config.Config) string {
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 	return path
 }
+func testEndpoint(addr string) config.BackendEndpoint {
+	return config.BackendEndpoint{Address: addr, User: "app", Password: "p1"}
+}
+
+func TestBuildCluster_MultiSlice(t *testing.T) {
+	bs := config.BackendConfig{
+		LoadBalance: constant.LoadBalanceRandom,
+		Slices: []config.SliceConfig{
+			{Name: "s0", Master: testEndpoint("127.0.0.1:3306"), Slaves: []config.BackendEndpoint{testEndpoint("127.0.0.1:3406")}},
+			{Name: "s1", Master: testEndpoint("127.0.0.1:3307")},
+			{Name: "s2", Master: testEndpoint("127.0.0.1:3308")},
+		},
+	}
+	pcfg := backend.PoolConfig{Capacity: 0, MaxCapacity: 1, AcquireTimeout: time.Second}
+
+	cluster, err := buildCluster(bs, pcfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cluster.Close() })
+
+	require.Equal(t, []string{"s0", "s1", "s2"}, cluster.Names())
+	s0, err := cluster.Get("s0")
+	require.NoError(t, err)
+	require.Equal(t, constant.LoadBalanceRandom, s0.LoadBalance)
+	require.Len(t, s0.Slaves, 1)
+}
+
+func TestBuildCluster_DefaultLoadBalance(t *testing.T) {
+	bs := config.BackendConfig{Slices: []config.SliceConfig{
+		{Name: "s0", Master: testEndpoint("127.0.0.1:3306")},
+	}}
+	cluster, err := buildCluster(bs, backend.PoolConfig{Capacity: 0, MaxCapacity: 1})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cluster.Close() })
+
+	s0, err := cluster.Get("s0")
+	require.NoError(t, err)
+	require.Equal(t, constant.LoadBalanceRoundRobin, s0.LoadBalance)
+}

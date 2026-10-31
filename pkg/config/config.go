@@ -194,10 +194,81 @@ func validateBackend(b *BackendConfig) error {
 		}
 		return nil
 	case constant.ModeSharding:
+		if err := validateSharding(b); err != nil {
+			return err
+		}
+		switch b.LoadBalance {
+		case "":
+			b.LoadBalance = constant.LoadBalanceRoundRobin
+		case constant.LoadBalanceRoundRobin, constant.LoadBalanceRandom:
+		default:
+			return fmt.Errorf("config: backend.load_balance %q unsupported", b.LoadBalance)
+		}
 		return fmt.Errorf("config: backend.mode=sharding is not implemented")
 	default:
 		return fmt.Errorf("config: backend.mode %q unsupported (want single|rwsplit|sharding)", mode)
 	}
+}
+
+// validateSharding checks sharding topology/rules without enabling the mode.
+// It runs before the "not implemented" gate so bad configs fail fast and the
+// rule model can be unit-tested before router/executor support lands.
+func validateSharding(b *BackendConfig) error {
+	if len(b.Slices) == 0 {
+		return fmt.Errorf("config: backend.mode=sharding requires at least 1 slice")
+	}
+	sliceNames := make(map[string]bool, len(b.Slices))
+	for i := range b.Slices {
+		if err := validateSlice(fmt.Sprintf("backend.slices[%d]", i), &b.Slices[i]); err != nil {
+			return err
+		}
+		sliceNames[b.Slices[i].Name] = true
+	}
+	if b.Sharding == nil {
+		return fmt.Errorf("config: backend.mode=sharding requires sharding")
+	}
+	if len(b.Sharding.Rules) == 0 {
+		return fmt.Errorf("config: backend.mode=sharding requires at least 1 sharding rule")
+	}
+
+	seenTables := make(map[string]bool, len(b.Sharding.Rules))
+	for i := range b.Sharding.Rules {
+		r := &b.Sharding.Rules[i]
+		prefix := fmt.Sprintf("backend.sharding.rules[%d]", i)
+		if r.Table == "" {
+			return fmt.Errorf("config: %s.table is required", prefix)
+		}
+		if seenTables[r.Table] {
+			return fmt.Errorf("config: %s.table %q is duplicated", prefix, r.Table)
+		}
+		seenTables[r.Table] = true
+		if r.Key == "" {
+			return fmt.Errorf("config: %s.key is required", prefix)
+		}
+		if r.Algorithm == "" {
+			return fmt.Errorf("config: %s.algorithm is required", prefix)
+		}
+		if r.Algorithm != constant.ShardingHashMod {
+			return fmt.Errorf("config: %s.algorithm %q unsupported (want %s)", prefix, r.Algorithm, constant.ShardingHashMod)
+		}
+		if len(r.Slices) == 0 {
+			return fmt.Errorf("config: %s.slices is required", prefix)
+		}
+		usedSlices := make(map[string]bool, len(r.Slices))
+		for j, name := range r.Slices {
+			if name == "" {
+				return fmt.Errorf("config: %s.slices[%d] is required", prefix, j)
+			}
+			if usedSlices[name] {
+				return fmt.Errorf("config: %s.slices[%d] %q is duplicated", prefix, j, name)
+			}
+			usedSlices[name] = true
+			if !sliceNames[name] {
+				return fmt.Errorf("config: %s.slices[%d] %q not found in backend.slices", prefix, j, name)
+			}
+		}
+	}
+	return nil
 }
 
 func validateSlice(prefix string, s *SliceConfig) error {
@@ -230,6 +301,15 @@ func normalizeMode(mode string) string {
 		return constant.ModeSingle
 	}
 	return mode
+}
+
+func isKnownMode(mode string) bool {
+	switch mode {
+	case constant.ModeSingle, constant.ModeRWSplit, constant.ModeSharding:
+		return true
+	default:
+		return false
+	}
 }
 
 // SameTopology reports whether mode/slices/rules/LB are unchanged (reload gate).

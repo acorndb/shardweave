@@ -158,7 +158,7 @@ func TestLoadFile_RejectUnknownField(t *testing.T) {
 func TestValidate_RejectShardingAndUnknownMode(t *testing.T) {
 	cfg := validSingle()
 	cfg.Backend.Mode = constant.ModeSharding
-	require.ErrorContains(t, Validate(cfg), "not implemented")
+	require.ErrorContains(t, Validate(cfg), "requires sharding")
 
 	cfg = validSingle()
 	cfg.Backend.Mode = "weird"
@@ -445,4 +445,60 @@ func writeYAML(t *testing.T, body string) string {
 	path := filepath.Join(dir, "shardweave.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 	return path
+}
+func validSharding() *Config {
+	cfg := validSingle()
+	cfg.Backend = BackendConfig{
+		Mode:        constant.ModeSharding,
+		LoadBalance: constant.LoadBalanceRoundRobin,
+		Slices: []SliceConfig{
+			{Name: "s0", Master: BackendEndpoint{Address: "127.0.0.1:3306", User: "app", Password: "secret"}},
+			{Name: "s1", Master: BackendEndpoint{Address: "127.0.0.1:3307", User: "app", Password: "secret"}},
+		},
+		Sharding: &ShardingConfig{Rules: []ShardRule{{
+			Table:     "orders",
+			Key:       "user_id",
+			Algorithm: constant.ShardingHashMod,
+			Slices:    []string{"s0", "s1"},
+		}}},
+	}
+	return cfg
+}
+
+func TestValidateSharding(t *testing.T) {
+	t.Run("valid_but_not_enabled", func(t *testing.T) {
+		require.ErrorContains(t, Validate(validSharding()), "not implemented")
+	})
+
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{"no_slices", func(c *Config) { c.Backend.Slices = nil }, "at least 1 slice"},
+		{"missing_config", func(c *Config) { c.Backend.Sharding = nil }, "requires sharding"},
+		{"no_rules", func(c *Config) { c.Backend.Sharding.Rules = nil }, "at least 1 sharding rule"},
+		{"empty_table", func(c *Config) { c.Backend.Sharding.Rules[0].Table = "" }, "table is required"},
+		{"empty_key", func(c *Config) { c.Backend.Sharding.Rules[0].Key = "" }, "key is required"},
+		{"empty_algorithm", func(c *Config) { c.Backend.Sharding.Rules[0].Algorithm = "" }, "algorithm is required"},
+		{"unknown_algorithm", func(c *Config) { c.Backend.Sharding.Rules[0].Algorithm = "range" }, "algorithm"},
+		{"no_rule_slices", func(c *Config) { c.Backend.Sharding.Rules[0].Slices = nil }, "slices is required"},
+		{"duplicate_rule_slice", func(c *Config) {
+			c.Backend.Sharding.Rules[0].Slices = []string{"s0", "s0"}
+		}, "duplicated"},
+		{"unknown_slice", func(c *Config) {
+			c.Backend.Sharding.Rules[0].Slices = []string{"s0", "missing"}
+		}, "not found"},
+		{"duplicate_table", func(c *Config) {
+			c.Backend.Sharding.Rules = append(c.Backend.Sharding.Rules, c.Backend.Sharding.Rules[0])
+		}, "duplicated"},
+		{"bad_load_balance", func(c *Config) { c.Backend.LoadBalance = "weird" }, "load_balance"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validSharding()
+			tc.mutate(cfg)
+			require.ErrorContains(t, Validate(cfg), tc.want)
+		})
+	}
 }

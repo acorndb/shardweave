@@ -349,7 +349,8 @@ type StmtTable struct { /* map[uint32]*Stmt */ }
 ```
 
 `session` 不持有连接/lease；`NeedsSticky()` 只表达意图，由 `execute` 决定 lease 生命周期。
-`StmtTable` 在 P3 与 sharding prepare 一起落地；R4 不引入未使用类型。
+`StmtTable` 在 P3 单分片 prepared 时落地；多分片 prepared 暂 Reject（见
+`sharding-p0-design.md`）。
 
 ### 5.7 Executor / Runtime（pkg/execute，locked）
 
@@ -538,8 +539,11 @@ R5 已落地统一 `slices`：`single`/`rwsplit` 都是"1 个 Slice"的预设，
 | **P0 文档** | 本文 + architecture v0.2；决策记录；P3 范围 | 不变 | 评审通过 |
 | **P1 seam 重构** | `backend_server → backend`；`router.Group → backend.Slice`；`Pick/Classify → route/source`；新增 `plan`/`result`/`execute` 骨架；删 `shardingExecutor`；single/rwsplit 走 Plan（N=1） | 不变 | 差分校准全绿；行为不变 |
 | **P2 会话与配置** | `Session` 状态；USE/SET 从 proxy 移出；`backend` + `slices` 配置；`Conn` 接口补 `Exec/Align`，去掉向下转型 | breaking：`backend_server → backend`，`slices` | rwsplit 冒烟 + 单测；单分片模式未开 |
-| **P3 单分片 sharding** | `route/shard`（等值/同片 IN/单区间）；`Plan.SingleShard/Reject`；`EXPLAIN ROUTE`；`StmtTable`/prepare 广播；事务钉单分片；跨片写拒绝 | 增加 `sharding.rules` | 路由表驱动单测 + 单分片 e2e；无静默错结果 |
-| **P4 跨分片** | `Plan.MultiShard`；dispatch；identity/order/aggregate/limit；变形 harness；表名改写 | 可能增加规则字段 | 分片 vs 单库结果一致；故障注入 |
+| **P3 单分片 sharding** | `route/shard`（等值/同片 IN/单区间）；`Plan.SingleShard/Reject`；`EXPLAIN ROUTE`；`StmtTable`（单分片 prepared；多分片 Reject）；事务钉单分片；跨片写拒绝 | 增加 `sharding.rules` | 路由表驱动单测 + 单分片 e2e；无静默错结果 |
+| **P4 跨分片** | `Plan.MultiShard`；dispatch；identity/order/aggregate/limit；变形 harness；表名改写；多分片 prepared/全局表/序列另立设计 | 可能增加规则字段 | 分片 vs 单库结果一致；故障注入 |
+
+> 分片能力盘点、S0–S3 分阶段、P0 支持/Reject 清单见
+> [sharding-p0-design.md](sharding-p0-design.md)。P3 ≈ S1，P4 拆为 S2/S3。
 
 P1 是纯重构，必须保持现有差分全绿；P2 才开始 breaking 配置；P3 才打开 `mode=sharding`。
 
@@ -583,7 +587,7 @@ PR 级拆分、文件动作、测试迁移与回滚方式见
 | A8 | P3 只做单分片可证明 + Reject | locked | 正确性优先；避免假分片 |
 | A9 | N=1 走 raw packet，不 Decode | locked | 协议保真与性能 |
 | A10 | 物理库放 `Target.DB` | locked | 分片下 schema 可能不同 |
-| A11 | sharding prepare 先广播到所有 Slice | proposed | 执行时才知道目标片；广播最稳 |
+| A11 | sharding prepare：P0 只支持单分片；多分片 Reject，广播到所有 Slice 作为 P4 备选 | proposed | 单分片先保证正确；广播的 N 倍开销与 stmt id 表后置 |
 | A12 | P3 先做库级路由，表名改写 P4 | proposed | 与"分片库"方向一致；降低 P3 复杂度 |
 | A13 | 未配置规则的普通表在 sharding 模式下 Reject | proposed | 无默认片时不能猜；避免错结果 |
 | A14 | 多租户 namespace 非目标 | locked | P0–P4 不做 |
@@ -595,8 +599,8 @@ PR 级拆分、文件动作、测试迁移与回滚方式见
 2. **P3 是否支持表名改写**：推荐只做库级路由（物理表名不变），表级改写放 P4。
 3. **`rwsplit` 是否允许 0 个 slave**：推荐要求 ≥1；若运维需要"临时摘光从库"，
    可允许 0 但打 warning。
-4. **sharding prepare**：推荐广播 prepare 到所有 Slice，execute 只打目标片，
-   close 广播；代价是 stmt id 表和 N 倍 prepare 开销。
+4. **sharding prepare**：P0 推荐只支持单分片，多分片 Reject；广播 prepare 到所有
+   Slice 作为 P4 备选（见 `sharding-p0-design.md`）。
 5. **`pool` 是否收进 `backend`**：当前保持顶层；P2 配置重构时再定。
 6. **`MergeSpec` 的归属**：现放 `plan`；若 `merge` 逆向依赖变重，可下沉到 `result`。
 7. **Plan 是否需要 Primitive 树**：P3/P4 先用扁平 `Targets`；出现跨片 JOIN/

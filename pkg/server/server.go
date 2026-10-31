@@ -89,7 +89,48 @@ func newExecutor(rt *config.Runtime, cfg *config.Config) (execute.Executor, erro
 	if mode == "" {
 		mode = constant.ModeSingle
 	}
+	_ = rt // pools dial from cfg snapshot at open; address reload still rejected
 
+	switch mode {
+	case constant.ModeSingle:
+		if len(bs.Slices) != 1 {
+			return nil, fmt.Errorf("server: single requires exactly 1 slice")
+		}
+		cluster, err := buildCluster(bs, pcfg)
+		if err != nil {
+			return nil, err
+		}
+		exec, err := execute.New(cluster, plan.Builder{Router: source.AllMaster{Slice: bs.Slices[0].Name}})
+		if err != nil {
+			_ = cluster.Close()
+			return nil, err
+		}
+		return exec, nil
+	case constant.ModeRWSplit:
+		if len(bs.Slices) != 1 {
+			return nil, fmt.Errorf("server: rwsplit requires exactly 1 slice")
+		}
+		cluster, err := buildCluster(bs, pcfg)
+		if err != nil {
+			return nil, err
+		}
+		exec, err := execute.New(cluster, plan.Builder{Router: source.Pick{Slice: bs.Slices[0].Name}})
+		if err != nil {
+			_ = cluster.Close()
+			return nil, err
+		}
+		return exec, nil
+	case constant.ModeSharding:
+		return nil, fmt.Errorf("server: sharding not implemented")
+	default:
+		return nil, fmt.Errorf("server: unsupported backend.mode %q", mode)
+	}
+}
+
+// buildCluster builds one Slice per configured endpoint group. single/rwsplit
+// pass exactly one slice; sharding will pass N. Pools are lazy, so this does
+// not dial until the first Acquire.
+func buildCluster(bs config.BackendConfig, pcfg backend.PoolConfig) (*backend.Cluster, error) {
 	open := func(ep config.BackendEndpoint) backend.OpenFunc {
 		return func(ctx context.Context) (backend.Conn, error) {
 			return backend.DialMySQLWithOptions(ctx, ep.Address, ep.User, ep.Password, ep.Database,
@@ -101,43 +142,31 @@ func newExecutor(rt *config.Runtime, cfg *config.Config) (execute.Executor, erro
 				})
 		}
 	}
-
-	var g *backend.Slice
-	var builder plan.Builder
-	switch mode {
-	case constant.ModeSingle:
-		if len(bs.Slices) != 1 {
-			return nil, fmt.Errorf("server: single requires exactly 1 slice")
-		}
-		s := bs.Slices[0]
-		g = &backend.Slice{Name: s.Name, Master: backend.NewPool(pcfg, open(s.Master))}
-		builder = plan.Builder{Router: source.AllMaster{Slice: s.Name}}
-	case constant.ModeRWSplit:
-		if len(bs.Slices) != 1 {
-			return nil, fmt.Errorf("server: rwsplit requires exactly 1 slice")
-		}
-		s := bs.Slices[0]
-		g = &backend.Slice{
+	lb := bs.LoadBalance
+	if lb == "" {
+		lb = constant.LoadBalanceRoundRobin
+	}
+	slices := make([]*backend.Slice, 0, len(bs.Slices))
+	for i := range bs.Slices {
+		s := bs.Slices[i]
+		slice := &backend.Slice{
 			Name:        s.Name,
 			Master:      backend.NewPool(pcfg, open(s.Master)),
-			LoadBalance: bs.LoadBalance,
+			LoadBalance: lb,
 		}
-		if g.LoadBalance == "" {
-			g.LoadBalance = constant.LoadBalanceRoundRobin
+		for j := range s.Slaves {
+			slice.Slaves = append(slice.Slaves, backend.NewPool(pcfg, open(s.Slaves[j])))
 		}
-		for i := range s.Slaves {
-			g.Slaves = append(g.Slaves, backend.NewPool(pcfg, open(s.Slaves[i])))
-		}
-		builder = plan.Builder{Router: source.Pick{Slice: s.Name}}
-		_ = rt // pools dial from cfg snapshot at open; address reload still rejected
-	default:
-		return nil, fmt.Errorf("server: unsupported backend.mode %q", mode)
+		slices = append(slices, slice)
 	}
-	cluster, err := backend.NewCluster(g)
+	cluster, err := backend.NewCluster(slices...)
 	if err != nil {
+		for _, s := range slices {
+			_ = s.Close()
+		}
 		return nil, err
 	}
-	return execute.New(cluster, builder)
+	return cluster, nil
 }
 
 // Addr returns the bound listen address.
