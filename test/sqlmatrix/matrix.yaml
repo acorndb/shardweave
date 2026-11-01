@@ -360,9 +360,11 @@
   single: {kind: passthrough}
   sharding: {kind: reject, reason: "DoStmt is not supported"}
 - category: OTHER
+  # KILL names a frontend session, not a pooled backend thread: reject before
+  # routing in both modes.
   sql: "KILL 1"
-  single: {kind: passthrough}
-  sharding: {kind: reject, reason: "KillStmt is not supported"}
+  single: {kind: reject, reason: "KILL"}
+  sharding: {kind: reject, reason: "KILL"}
 - category: OTHER
   sql: "LOCK TABLES orders WRITE"
   single: {kind: passthrough}

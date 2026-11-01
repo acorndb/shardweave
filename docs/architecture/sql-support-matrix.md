@@ -24,8 +24,9 @@
 | `SHOW MASTER STATUS` | 拒绝 | 两种模式都拒绝 |
 | `SET NAMES latin1` | 拒绝 | 仅 utf8mb4 |
 | `SET SESSION <非白名单变量> = ...` | 拒绝 | 白名单：`time_zone`、`transaction_isolation` |
-| `LAST_INSERT_ID()` / `ROW_COUNT()` 不可改写形态 | 拒绝 | 可改写形态在管线内替换 |
+| `LAST_INSERT_ID()` / `ROW_COUNT()` / `CONNECTION_ID()` 不可改写形态 | 拒绝 | 可改写形态在管线内替换 |
 | 多语句、用户变量、临时表、`LOCK TABLES` | 转发但淘汰连接 | 会话状态不可复现 |
+| `KILL ...` | 拒绝 | 连接 ID 属于前端会话，透传会误杀池化后端 |
 | `SET TRANSACTION ...` / `SET CHARACTER SET ...` / `SET ... = DEFAULT` | **漏网** | 已知缺陷，待修，见 §5 |
 
 prepared statement：single/rwsplit 透传并钉住后端连接；sharding 仅支持可证明单分片的
