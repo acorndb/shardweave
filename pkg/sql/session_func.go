@@ -12,11 +12,12 @@ type SessionFuncKind uint8
 const (
 	SessionFuncLastInsertID SessionFuncKind = iota
 	SessionFuncRowCount
+	SessionFuncConnectionID
 )
 
-// SessionFunc is a parsed `SELECT LAST_INSERT_ID()` / `SELECT ROW_COUNT()`
-// statement with an optional alias. Detection lives in the token layer
-// (Class.SessionFunc); this type only owns the rewrite.
+// SessionFunc is a parsed `SELECT LAST_INSERT_ID()` / `SELECT ROW_COUNT()` /
+// `SELECT CONNECTION_ID()` statement with an optional alias. Detection lives
+// in the token layer (Class.SessionFunc); this type only owns the rewrite.
 type SessionFunc struct {
 	Kind  SessionFuncKind
 	Alias string

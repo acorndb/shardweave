@@ -245,6 +245,12 @@ func TestClassify_Unsupported(t *testing.T) {
 		// cannot be rewritten (COM_STMT_PREPARE).
 		{"row_count_alias", "SELECT ROW_COUNT() AS n", "ROW_COUNT"},
 		{"last_insert_id_exact", "SELECT LAST_INSERT_ID()", "LAST_INSERT_ID"},
+		{"connection_id_exact", "SELECT CONNECTION_ID()", "CONNECTION_ID"},
+		{"connection_id_expression", "SELECT CONNECTION_ID() + 1", "CONNECTION_ID"},
+		{"connection_id_rewritten", "SELECT CAST(7 AS UNSIGNED) AS `CONNECTION_ID()`", ""},
+		{"kill_connection", "KILL CONNECTION 1", "KILL"},
+		{"kill_query", "kill query 1", "KILL"},
+		{"kill_in_string", "SELECT 'KILL 1'", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -345,6 +351,9 @@ func TestClassify_SessionFunc(t *testing.T) {
 		{"last_id_comment", "/* c */ SELECT LAST_INSERT_ID()", true, SessionFuncLastInsertID, "", "LAST_INSERT_ID()"},
 		{"row_count", "SELECT ROW_COUNT()", true, SessionFuncRowCount, "", "ROW_COUNT()"},
 		{"row_count_alias", "SELECT ROW_COUNT() AS n", true, SessionFuncRowCount, "n", "n"},
+		{"connection_id", "SELECT CONNECTION_ID()", true, SessionFuncConnectionID, "", "CONNECTION_ID()"},
+		{"connection_id_lower", "select connection_id()", true, SessionFuncConnectionID, "", "connection_id()"},
+		{"connection_id_alias", "SELECT CONNECTION_ID() AS cid", true, SessionFuncConnectionID, "cid", "cid"},
 		{"expression", "SELECT LAST_INSERT_ID() + 1", false, 0, "", ""},
 		{"multi_expr", "SELECT LAST_INSERT_ID(), 1", false, 0, "", ""},
 		{"found_rows", "SELECT FOUND_ROWS()", false, 0, "", ""},
@@ -364,6 +373,19 @@ func TestClassify_SessionFunc(t *testing.T) {
 			require.Equal(t, tc.col, got.ColumnName())
 		})
 	}
+}
+
+func TestClassify_ConnectionID(t *testing.T) {
+	fn := classify(t, "SELECT CONNECTION_ID()").SessionFunc
+	require.NotNil(t, fn)
+	require.Equal(t, "CONNECTION_ID()", fn.ColumnName())
+	require.Equal(t,
+		"SELECT CAST(7 AS UNSIGNED) AS `CONNECTION_ID()`",
+		fn.Rewrite("7"))
+
+	alias := classify(t, "select connection_id() as cid").SessionFunc
+	require.NotNil(t, alias)
+	require.Equal(t, "cid", alias.ColumnName())
 }
 
 func TestClassify_SessionVarWrite(t *testing.T) {

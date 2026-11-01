@@ -104,7 +104,7 @@ type Class struct {
 	ReadOnlyProbe    bool              // probes @@read_only or SHOW ... read_only
 	SQLCalcFoundRows bool
 	ShowSub          string       // raw (uppercased) text after SHOW, for subtype checks
-	SessionFunc      *SessionFunc // exact SELECT LAST_INSERT_ID()/ROW_COUNT()
+	SessionFunc      *SessionFunc // exact SELECT LAST_INSERT_ID()/ROW_COUNT()/CONNECTION_ID()
 	// ScanFailed marks lexical failure. Consumers degrade conservatively:
 	// never slave, and the session is pinned (design D2).
 	ScanFailed bool
@@ -204,6 +204,11 @@ func (c Class) IsDML() bool {
 // is supported. Exact rewritable session functions are not rejected: the
 // pipeline rewrites them before planning, and Class.SessionFunc marks them.
 func (c Class) UnsupportedReason() string {
+	if c.First == "KILL" {
+		// KILL is connection-scoped and must never reach a pooled backend: the
+		// id would name a backend thread, not the frontend session.
+		return "KILL is not supported by shardweave"
+	}
 	if c.Kind == StmtShow {
 		if r := showUnsupported(c.ShowSub); r != "" {
 			return r
@@ -239,6 +244,8 @@ func (c Class) UnsupportedReason() string {
 			return "LAST_INSERT_ID() is not supported in this form by shardweave"
 		case "ROW_COUNT":
 			return "ROW_COUNT() is not supported in this form by shardweave"
+		case "CONNECTION_ID":
+			return "CONNECTION_ID() is not supported in this form by shardweave"
 		}
 	}
 	return ""
@@ -695,6 +702,8 @@ func parseSessionFunc(raw string, sig []Token) *SessionFunc {
 		kind = SessionFuncLastInsertID
 	case "ROW_COUNT":
 		kind = SessionFuncRowCount
+	case "CONNECTION_ID":
+		kind = SessionFuncConnectionID
 	default:
 		return nil
 	}
