@@ -79,8 +79,8 @@
 | 无按连接保存的能力位 | `server.Conn` 不暴露 capability | 无法按客户端协商结果转发/编码 |
 | 命令覆盖不全 | `pkg/proxy/serve.go:75-111` | `COM_FIELD_LIST`、`COM_STMT_SEND_LONG_DATA`、`COM_CHANGE_USER`、`COM_SET_OPTION`、`COM_STATISTICS`、`COM_PROCESS_KILL` 等直接 1047 |
 | `COM_FIELD_LIST` / `SEND_LONG_DATA` 路由分支不可达 | `pkg/route/source/pick.go:16-20` vs `proxy` 默认 ERR | 代码与行为不一致；驱动兼容性差 |
-| 连接 ID 固定 1、server status 固定 0x0002 | `server/conn.go:54,63` | 客户端诊断/事务状态不可信 |
-| PING 返回固定 autocommit status | `pkg/proxy/serve.go:78-80` | 事务中 PING 状态错误 |
+| ~~连接 ID 固定 1、server status 固定 0x0002~~ | 已修复 2026-11-01：`pkg/server/connid.go`（WL#7293 分配器）、`pkg/mysql/const.go`（`ServerStatusWord`） | 客户端诊断/事务状态可信 |
+| ~~PING 返回固定 autocommit status~~ | 已修复 2026-11-01：`pkg/server/serve.go` 按会话状态计算 | 事务中 PING 状态正确 |
 | 包大小无上限 | 已补 `max_allowed_packet`（逻辑包上限，默认 64 MiB） | 前端超限回 1153；后端响应超限断开 |
 | 无 LOCAL INFILE 处理 | `pkg/mysql/forward.go` 返回错误 | 客户端 LOAD DATA LOCAL 场景断连 |
 
@@ -93,7 +93,7 @@
 | 缺口 | 证据 | 影响 |
 |---|---|---|
 | 查询总超时 / `MAX_EXECUTION_TIME` | `pkg/execute/pipeline.go:155-172` | 慢查询仍不可控（read timeout 只是单次 I/O） |
-| 每用户/IP 限流 | 未实现 | 单实例 `server.max_connections` 已补；细粒度限流仍缺 |
+| 每用户/IP 限流 | 未实现 | 单实例 `server.max_connections` 已补（超限回 1040/08004）；细粒度限流仍缺 |
 | 无优雅退出/drain | `pkg/server/server.go:181-195` | `Close` 取消 ctx 但阻塞中的 session 不会退出；`termination_drain` 未使用 |
 | 无 accept 退避 | `server.go:145-153` | accept 错误时忙循环 |
 | `termination_drain` 配置未生效 | `pkg/config/config.go` 仅解析 | 假配置项 |
@@ -139,7 +139,7 @@
 
 ### 4.1 会话状态与事务
 
-- `session.State` 只有 database/inTx/autocommit/reserved/charset（`pkg/session/state.go:8-15`）。
+- `session.State` 只有 connectionID/database/inTx/autocommit/reserved/charset 等基础字段（`pkg/session/state.go`）。
 - 未跟踪 `sql_mode`、`time_zone`、`character_set_*`、`transaction_isolation`、用户变量值。
 - `Align` 只对齐 database/charset（`pkg/backend/conn.go`），系统变量/用户变量跨连接会丢。
 - `SET autocommit` 只识别 `1/0/ON/OFF`，不识别 `TRUE/FALSE`、`:=` 等形式（`pkg/sql/session_cmd.go`）。
@@ -169,7 +169,7 @@
 
 - 无 readiness/liveness、version/build info、pprof（可选）、metrics。
 - 无优雅 drain；`termination_drain` 未使用。
-- 无 admin kill connection / 动态日志级别之外的控制面。
+- 无 admin kill connection / 动态日志级别之外的控制面（`KILL` 已在分类层显式拒绝，避免误杀池化后端）。
 - 无连接/池/后端健康状态查询。
 
 ## 5. P2：后续增强
@@ -201,7 +201,7 @@
 - `deprecateEOF`、`multiStatements`、`multiResults`、`sessionTrack` 按协商结果使用。
 - 补 `COM_FIELD_LIST`、`COM_STMT_SEND_LONG_DATA`、`COM_CHANGE_USER`、`COM_SET_OPTION`、
   `COM_PROCESS_KILL`、`COM_STATISTICS` 等（至少明确拒绝而不是 1047 断连）。
-- packet 上限、连接 ID、动态 server status。
+- packet 上限、连接 ID、动态 server status（2026-11-01 已补齐；`CONNECTION_ID()` 由代理解答）。
 - 门禁：能力矩阵差分（带/不带 deprecateEOF）、常见驱动/ORM 冒烟。
 
 ### C. 超时、上限、优雅退出

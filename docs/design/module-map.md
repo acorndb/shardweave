@@ -86,7 +86,7 @@
 |---|---|---|
 | `pkg/mysql` | 已实现，协议保真 | 不动 |
 | `pkg/backend` | 已落地 `Conn`/`Pool`/`Slice`/`Exec`/`Cluster`（R1/R3/R6） | P3 分片规则接线 |
-| `pkg/session` | 只有 database/inTx/autocommit/reserved/charset | 增加变量；`StmtTable` 在 P3 落地 |
+| `pkg/session` | 只有 connectionID/database/inTx/autocommit/reserved/charset | 增加变量；`StmtTable` 在 P3 落地 |
 | `pkg/sql` | `Statement` 骨架（R2）+ tidb parser 包装 | 分类 + AST 上数据面 |
 | `pkg/route` | `source` 已拆出（R1），`Slice` 可配置 | 新增 `shard`；Target 带物理库/改写 SQL |
 | `pkg/plan` | N=1 `Passthrough` Plan 骨架（R2） | `EXPLAIN ROUTE` + `SingleShard`/`Reject`（P3） |
@@ -334,7 +334,7 @@ func (c *Cluster) Names() []string
 
 ```go
 type State struct {
-    // database、charset、autocommit、inTx、reserved、vars
+    // connectionID、database、charset、autocommit、inTx、reserved、vars
 }
 
 type Stmt struct {
