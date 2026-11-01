@@ -28,11 +28,11 @@ func Sort(upstream result.Stream, fields []result.Field, keys []plan.OrderKey) (
 		if col < 0 || col >= len(fields) {
 			return nil, errs.Unsupported("ORDER BY column %d is out of range", col)
 		}
-		kind, err := comparatorFor(fields[col])
+		kind, coll, err := orderComparatorFor(fields[col])
 		if err != nil {
 			return nil, err
 		}
-		resolved[i] = resolvedKey{col: col, desc: key.Desc, kind: kind}
+		resolved[i] = resolvedKey{col: col, desc: key.Desc, kind: kind, coll: coll}
 	}
 	return &sortStream{upstream: upstream, fields: fields, keys: resolved}, nil
 }
@@ -108,7 +108,7 @@ func parseSortValues(row result.Row, keys []resolvedKey) ([]orderValue, error) {
 
 func compareSortRows(a, b sortRow, keys []resolvedKey) int {
 	for i, key := range keys {
-		c := compareOrderValues(a.vals[i], b.vals[i], key.kind)
+		c := compareOrderValues(a.vals[i], b.vals[i], key.kind, key.coll)
 		if c == 0 {
 			continue
 		}

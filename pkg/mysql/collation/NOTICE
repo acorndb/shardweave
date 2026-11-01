@@ -1,0 +1,27 @@
+shardweave third-party notice
+=============================
+
+pkg/mysql/collation
+-------------------
+
+This package is copied from vitess.io/vitess/go/mysql/collations.
+
+  Upstream: https://github.com/vitessio/vitess
+  Commit:   6c6c0036ab2a3eae20195a51f1890103fe3b0ddb
+  Date:     2026-10-30
+  License:  Apache License 2.0 (retained in every file header)
+
+Local modifications:
+
+  1. Import paths rewritten from vitess.io/vitess/go/mysql/collations to
+     github.com/acorndb/shardweave/pkg/mysql/collation.
+  2. local.go: CollationForType removed (sqltypes dependency eliminated). The
+     proxy reads the collation ID from the result-set column definition.
+  3. colldata: the Hash method was removed from the Collation interface and all
+     implementations, and cached_size.go was deleted (vthash/hack dependencies
+     eliminated). Hashing is not used by the merge engine.
+  4. charset/convert.go: hack.StringBytes replaced with a plain []byte
+     conversion (same semantics, one allocation).
+  5. Test files under colldata/ and internal/ that require vitess-only test
+     utilities were dropped; upstream golden tests at the package root and under
+     charset/ are retained and run in CI.

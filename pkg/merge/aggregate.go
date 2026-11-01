@@ -24,6 +24,7 @@ func Aggregate(streams []result.Stream, fields []result.Field, specs []plan.Aggr
 		return nil, errs.Unsupported("multi-shard aggregate result has %d columns, want %d", len(fields), len(specs))
 	}
 	kinds := make([]valueKind, len(specs))
+	colls := make([]stringCollator, len(specs))
 	distincts := make([]*distinctAccumulator, len(specs))
 	for i, spec := range specs {
 		if spec.Output < 0 || spec.Output >= len(specs) {
@@ -50,11 +51,12 @@ func Aggregate(streams []result.Stream, fields []result.Field, specs []plan.Aggr
 			}
 			kinds[i] = kind
 		case plan.AggMin, plan.AggMax:
-			kind, err := comparatorFor(fields[spec.Column])
+			kind, coll, err := orderComparatorFor(fields[spec.Column])
 			if err != nil {
 				return nil, err
 			}
 			kinds[i] = kind
+			colls[i] = coll
 		case plan.AggAvg:
 			if spec.CountColumn < 0 || spec.CountColumn >= len(fields) {
 				return nil, errs.Unsupported("multi-shard AVG count column %d is out of range", spec.CountColumn)
@@ -81,6 +83,7 @@ func Aggregate(streams []result.Stream, fields []result.Field, specs []plan.Aggr
 		fields:    fields[:len(specs)],
 		specs:     specs,
 		kinds:     kinds,
+		colls:     colls,
 		distincts: distincts,
 	}, nil
 }
@@ -101,6 +104,7 @@ type aggregate struct {
 	fields    []result.Field
 	specs     []plan.AggregateSpec
 	kinds     []valueKind
+	colls     []stringCollator
 	distincts []*distinctAccumulator
 
 	row    result.Row
@@ -190,7 +194,7 @@ func (a *aggregate) fold() (result.Row, error) {
 					if bests[i] == nil {
 						bests[i] = &bestValue{}
 					}
-					if err := bests[i].add(v, a.kinds[i], spec.Func == plan.AggMax); err != nil {
+					if err := bests[i].add(v, a.kinds[i], a.colls[i], spec.Func == plan.AggMax); err != nil {
 						return nil, err
 					}
 				case plan.AggAvg:
@@ -339,7 +343,7 @@ type bestValue struct {
 	val orderValue
 }
 
-func (b *bestValue) add(v result.Value, kind valueKind, max bool) error {
+func (b *bestValue) add(v result.Value, kind valueKind, coll stringCollator, max bool) error {
 	parsed, err := parseOrderValue(v, kind)
 	if err != nil {
 		return err
@@ -349,7 +353,7 @@ func (b *bestValue) add(v result.Value, kind valueKind, max bool) error {
 		b.val = parsed
 		return nil
 	}
-	cmp := compareOrderValues(parsed, b.val, kind)
+	cmp := compareOrderValues(parsed, b.val, kind, coll)
 	if (max && cmp > 0) || (!max && cmp < 0) {
 		b.raw = append([]byte(nil), v.([]byte)...)
 		b.val = parsed

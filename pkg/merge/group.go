@@ -39,17 +39,19 @@ func Group(
 	}
 
 	kinds := make([]valueKind, len(groupBy))
+	colls := make([]stringCollator, len(groupBy))
 	outPos := make([]int, len(groupBy))
 	covered := make([]bool, len(output))
 	for i, col := range groupBy {
 		if col < 0 || col >= len(fields) {
 			return nil, errs.Unsupported("multi-shard GROUP BY column %d is out of range", col)
 		}
-		kind, err := comparatorFor(fields[col])
+		kind, coll, err := orderComparatorFor(fields[col])
 		if err != nil {
 			return nil, err
 		}
 		kinds[i] = kind
+		colls[i] = coll
 		pos := outputIndex(output, col)
 		if pos < 0 {
 			return nil, errs.Unsupported("multi-shard GROUP BY column %d is not in the output", col)
@@ -80,7 +82,7 @@ func Group(
 					fields[spec.Column].Name, fields[spec.Column].Type)
 			}
 		case plan.AggMin, plan.AggMax:
-			if _, err := comparatorFor(fields[spec.Column]); err != nil {
+			if _, _, err := orderComparatorFor(fields[spec.Column]); err != nil {
 				return nil, err
 			}
 		case plan.AggAvg:
@@ -114,6 +116,7 @@ func Group(
 		groupBy:   groupBy,
 		outPos:    outPos,
 		kinds:     kinds,
+		colls:     colls,
 		specs:     specs,
 		outFields: outFields,
 		output:    output,
@@ -136,6 +139,7 @@ type groupStream struct {
 	groupBy []int
 	outPos  []int
 	kinds   []valueKind
+	colls   []stringCollator
 	specs   []plan.AggregateSpec
 
 	outFields []result.Field
@@ -215,18 +219,23 @@ func (g *groupStream) fold() error {
 }
 
 func (g *groupStream) key(row result.Row) (string, error) {
-	return encodeRowKey(row, g.groupBy, g.kinds)
+	return encodeRowKey(row, g.groupBy, g.kinds, g.colls)
 }
 
-// encodeRowKey builds a canonical key for numeric/date group/distinct values.
-// String collations are rejected before this function is reached.
-func encodeRowKey(row result.Row, cols []int, kinds []valueKind) (string, error) {
+// encodeRowKey builds a canonical key for group/distinct values. Collated
+// strings use the collator's weight string so equal-under-collation values
+// from different shards land in the same group (D3).
+func encodeRowKey(row result.Row, cols []int, kinds []valueKind, colls []stringCollator) (string, error) {
 	var b strings.Builder
 	for i, col := range cols {
 		if col >= len(row) {
 			return "", fmt.Errorf("merge: key column %d out of row width %d", col, len(row))
 		}
-		part, err := encodeValueKey(row[col], kinds[i])
+		var coll stringCollator
+		if i < len(colls) {
+			coll = colls[i]
+		}
+		part, err := encodeValueKey(row[col], kinds[i], coll)
 		if err != nil {
 			return "", fmt.Errorf("merge: key column %d: %w", col, err)
 		}
@@ -238,9 +247,8 @@ func encodeRowKey(row result.Row, cols []int, kinds []valueKind) (string, error)
 	return b.String(), nil
 }
 
-// encodeValueKey builds the canonical key for one numeric/date value. String
-// collations are rejected before this function is reached.
-func encodeValueKey(value result.Value, kind valueKind) (string, error) {
+// encodeValueKey builds the canonical key for one value.
+func encodeValueKey(value result.Value, kind valueKind, coll stringCollator) (string, error) {
 	v, err := parseOrderValue(value, kind)
 	if err != nil {
 		return "", err
@@ -260,6 +268,11 @@ func encodeValueKey(value result.Value, kind valueKind) (string, error) {
 		return "f:" + strconv.FormatUint(math.Float64bits(f), 16), nil
 	case kind == kindDecimal:
 		return "d:" + v.r.RatString(), nil
+	case kind == kindCollated:
+		if coll == nil {
+			return "", errs.Unsupported("multi-shard collated key without a collator")
+		}
+		return "w:" + string(coll.WeightString(nil, v.b, 0)), nil
 	default:
 		return "t:" + string(v.b), nil
 	}
@@ -363,11 +376,11 @@ func (s *groupState) add(row result.Row, specs []plan.AggregateSpec, fields []re
 			if s.bests[i] == nil {
 				s.bests[i] = &bestValue{}
 			}
-			kind, err := comparatorFor(fields[spec.Column])
+			kind, coll, err := orderComparatorFor(fields[spec.Column])
 			if err != nil {
 				return err
 			}
-			if err := s.bests[i].add(v, kind, spec.Func == plan.AggMax); err != nil {
+			if err := s.bests[i].add(v, kind, coll, spec.Func == plan.AggMax); err != nil {
 				return err
 			}
 		case plan.AggAvg:

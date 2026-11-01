@@ -9,6 +9,12 @@ import (
 	"github.com/acorndb/shardweave/pkg/mysql/packet"
 )
 
+// handshakeCollation pins the backend session charset to utf8mb4_general_ci
+// (45) instead of echoing the server default. Result strings then always arrive
+// as utf8mb4, which the merge layer's collators assume. The frontend rejects
+// non-utf8mb4 SET NAMES for the same reason (merge-engine-design §13.4).
+const handshakeCollation uint8 = 45
+
 // Conn is a client-side MySQL connection after a successful handshake.
 type Conn struct {
 	pc *packet.Conn
@@ -50,7 +56,7 @@ func Dial(raw net.Conn, user, password, database string) (*Conn, error) {
 			mysql.ClientConnectWithDB | mysql.ClientTransactions |
 			mysql.ClientMultiStatements | mysql.ClientMultiResults |
 			mysql.ClientPSMultiResults | mysql.ClientDeprecateEOF),
-		Collation:      hs.Collation,
+		Collation:      handshakeCollation,
 		Username:       user,
 		AuthResponse:   authResp,
 		Database:       database,

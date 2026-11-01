@@ -63,6 +63,7 @@ shardweave/
 │   ├── mysql/                 # 【协议层】第一方代码
 │   │   ├── packet/            #   帧读写、长度编码
 │   │   ├── auth/              #   握手、native/caching_sha2
+│   │   ├── collation/         #   MySQL collation（第一方化自 vitess，stdlib-only；merge-engine-design §13）
 │   │   ├── server/            #   前端握手与连接包装
 │   │   └── client/            #   后端 raw conn 握手
 │   ├── config/                # 【配置层】YAML schema + 严格校验 + 快照
@@ -144,7 +145,7 @@ mysql、result、sql、session   ← 叶子/准叶子
 backend                        → mysql、result
 route                          → sql、session
 plan                           → sql、route、session、sql/rewrite
-merge                          → result、plan（仅 MergeSpec）
+merge                          → result、plan（仅 MergeSpec）、mysql/collation（stdlib-only 叶子）
 execute                        → plan、backend、session、merge、result、mysql
 proxy                          → mysql/server、sql、session、execute
 config                         → constant、yaml

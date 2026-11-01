@@ -42,7 +42,8 @@
 ### 1.2 非目标（P1）
 
 - 跨片 JOIN / 窗口函数 / 子查询重写。
-- 完整 MySQL collation（utf8mb4_general_ci/unicode_ci 等）实现。
+- 完整 MySQL collation 实现（2026-11-01 更新：白名单制子集提前实施，见 §13；
+  白名单外仍 Reject，「完整实现」仍是非目标）。
 - 磁盘 spill / 外部排序。
 - `GROUP_CONCAT` 跨片有序合并。
 - 多分片 binary prepared 结果集归并（多分片 prepared 先 Reject）。
@@ -260,6 +261,9 @@ distinct: hash set；首次出现的行立即产出
 - P1 只允许 `ORDER BY` 数值/时间/`BINARY`/`_bin` 字符串；
 - 普通字符串排序要么 Reject（推荐），要么明确文档化"按二进制排序"（不推荐）。
 
+（2026-11-01 更新：该硬边界按 §13 白名单制部分放开——引入第一方化 collation 库，
+utf8mb4 系三 collation 进入支持范围，其余仍 Reject。三态契约不变。）
+
 ## 7. 内存、背压与提前终止
 
 - **有序归并**：O(k) 行；每 stream 只预读 1 行。
@@ -323,7 +327,7 @@ execute.dispatch(targets) → []result.Stream
 | P0.12 聚合 DISTINCT | `Aggregate`/`Group` + 去重集合 | 已落地 `COUNT/SUM/AVG(DISTINCT expr)`：per-shard 投影原始参数并加入 GROUP BY，归并层去重后计算；可与普通聚合混用；字符串/多参数仍 Reject |
 | P1 多分片只读 v1 | concat、ordered、limit、COUNT/SUM/MIN/MAX/AVG | ORDER BY 仅数值/时间/二进制字符串 |
 | P1.5 | GROUP BY、DISTINCT、UNION 去重 | 加内存上限 |
-| P2 | 字符串 collation、bufferSort、spill、GROUP_CONCAT、窗口/跨片 JOIN | 单独设计 |
+| P2 | bufferSort、spill、GROUP_CONCAT、窗口/跨片 JOIN；字符串 collation 已提前实施（§13） | 单独设计 |
 
 ## 11. 测试策略
 
@@ -340,9 +344,188 @@ execute.dispatch(targets) → []result.Stream
 ## 12. 开放问题
 
 1. 字符串 `ORDER BY`：P1 是否只允许 `_bin`/数值/时间？推荐是。
+   （已决策：按 §13 白名单放开 utf8mb4 系；`_bin`/数值/时间维持现状。）
 2. `GROUP BY` 超限：直接报错还是引入 spill？P1 报错。
 3. 部分结果 + ERR：客户端兼容性需要真实驱动验证（go-sql-driver/MySQL CLI）。
 4. `UNION` 去重与 `DISTINCT` 的 P1/P1.5 边界。
 5. DECIMAL 比较用 `math/big.Rat` 还是引入 decimal 库。
 6. 是否在 P1 做 `GROUP BY` 分片键优化（组不重叠时用有序归并）。
 7. `ORDER BY` 相等键的 tie-break 是否需要确定性（影响 LIMIT 结果）。
+
+## 13. 字符串 Collation（P2 提前实施；方案 B：第一方化 vitess collations）
+
+> 2026-11-01 拍板：采用拷贝第一方化（方案 B），不引入 `vitess.io/vitess` module 依赖。
+> 本节部分取代 §6 的「字符串 collation 硬边界」；三态契约不变——白名单外仍 Reject。
+
+### 13.1 决策与理由
+
+| 选项 | 结论 |
+|---|---|
+| A. module 依赖 `vitess.io/vitess` | 否——运行时直接依赖 +1，闭包含 `sqltypes`（历史上经 querypb 拉 protobuf 运行库）；违背「依赖面极小」原则 |
+| **B. 拷贝第一方化到 `pkg/mysql/collation`** | **是**——与协议层「第一方代码」哲学一致；上游测试资产（golden/fuzz）跟包走；依赖面不变 |
+| C. 自实现最小子集 | 否——`0900_ai_ci` 需 UCA 权重表，自实现的正确性风险正是本次要买掉的东西 |
+
+选 B 的另一个理由：`Environment` 按后端 server version 区分 collation 行为
+（同一 collation 在 5.7/8.0 权重有差异、`0900` 系仅 8.0 存在），自实现很难覆盖。
+
+### 13.2 包形态与依赖规则
+
+- 路径 `pkg/mysql/collation`，镜像上游 `go/mysql/collations`，便于将来 diff 同步。
+- **验收条件：仅依赖 stdlib**。上游对 `go/sqltypes`、`go/hack` 的依赖必须在拷贝时消除。
+- `pkg/merge` 需要导入它；architecture.md §5 的 merge 依赖行修订为
+  `merge → result、plan（仅 MergeSpec）、mysql/collation（stdlib-only 叶子）`。
+
+### 13.3 拷贝范围与适配清单
+
+| 处置 | 内容 |
+|---|---|
+| 拷贝 | `collation.go`、`env.go`、`local.go`、`coercion.go`、`supported.go`、`cached_size.go`、`mysqlversion.go`、`charset/`、`colldata/`、`internal/` |
+| 裁剪 | `remote/`、`vindex/`、`integration/`、`testutil/`、`tools/` |
+| 消除 sqltypes | `local.go` 的 `CollationForType(sqltypes.Type)` 删除（本代理从 `result.Field.Charset` 直接拿 collation ID，不经类型推导） |
+| 消除 hack | 零拷贝 string↔[]byte 内联为普通转换（只影响 weight key 构造的分配，正确性无关） |
+| 测试资产 | 上游 golden/fuzz 测试一并拷贝——正确性门禁跟包走 |
+| provenance | 锁定 vitess **release tag**（D1 执行时定；不使用 survey checkout 的随机 commit）；包内 `doc.go` 记录来源 tag 与本地改动清单 |
+| license | 保留 Apache 2.0 文件头；NOTICE 记录来源、版本、改动 |
+
+### 13.4 集成设计
+
+1. **比较器**：`valueKind` 扩 `kindCollated`（携带 collator）。`comparatorFor(field)` 读
+   `field.Charset` → 查白名单 → 取 collator；字符串比较从 `bytes.Compare`
+   换 `collator.Collate()`。
+   **⚠ 2026-11-01 实测修正：`field.Charset` 不是列的 collation。** MySQL 的
+   ColumnDefinition41 报的是连接 charset（`character_set_results`）。用原始协议探针对同一张
+   含 `utf8mb4_bin` 与 `utf8mb4_general_ci` 列的表验证：握手 45/46/255 时，两列分别都报
+   45/46/255。由于后端握手固定 45，所有字符串列都会被误判为 `utf8mb4_general_ci`，
+   对 `utf8mb4_0900_ai_ci`/`utf8mb4_bin` 列产生**静默错误**的 ORDER BY/GROUP BY/DISTINCT。
+   真实列 collation 必须来自 catalog（`information_schema.columns`，按
+   schema/table/column 缓存），或由每分片 SQL 追加 `COLLATION(col)` 隐藏列带回。
+   在 catalog/探针落地前，collated 归并不能安全启用（见 §13.8）。
+2. **白名单（首版）**：`utf8mb4_bin`（字节序等价，零成本）、`utf8mb4_general_ci`、
+   `utf8mb4_0900_ai_ci`。`IsSupported && !白名单` → Reject。每个放行的 collation 是
+   一份保真承诺，须有 oracle 覆盖后才扩。
+3. **连接 charset 固定 utf8mb4（2026-11-01 决策，取代原 charset 门）**：前端
+   `SET NAMES` 仅允许 `utf8mb4`（其余 1235 拒绝），后端握手固定
+   `utf8mb4_general_ci`(45) 不再回显后端默认 collation。两端都固定后，结果字节恒为
+   utf8mb4，collator 假定成立；跨 charset 逆转换留作 Phase 2。
+4. **Environment**：进程级单例，按后端 server version 构建。P2 假设全部 slice 同版本；
+   混合版本策略见 §13.7。
+5. **连接 charset plumbing**：merge 目前只拿 streams/fields/spec；连接 charset（握手固定
+   255 + `SET NAMES` 跟踪值）由 `execute.dispatch` 注入。
+6. **GROUP BY / DISTINCT 组键（本设计最深的点）**：`group.go` 现为 `map[string]` 裸字节键；
+   `_ci` 下分片 0 的 `'A'` 组与分片 1 的 `'a'` 组 collation 相等，必须归同一组，裸字节键会
+   裂组。组键改为 collation 等价类键（collator 的 weight string）；`_bin`/数值列保留
+   字节键快速路径。DISTINCT accumulator 同理。
+7. **MIN/MAX**：`aggregate.go` 的比较替换复用同一 comparator（`kindCollated` 分支）。
+8. **PAD SPACE（2026-11-01 修正）**：MySQL 除 UCA 9.0.0（`*_0900_*`，NO PAD）外的
+   collation 都是 PAD SPACE——比较时忽略尾随空格。归并层用 `paddedCollator` /
+   `byteCollator{pad}` 在比较与 weight key 前裁剪尾随空格；`binary` charset 除外
+   （字节敏感，不裁剪）。已用 MySQL 8.0 实测锚定：
+   `'a'='a '` 在 general_ci/bin 为 1、0900_ai_ci 为 0；GROUP BY 分别为 1 组/2 组。
+9. **范围（2026-11-01 决策）**：不考虑用户切换 collation。归并只支持 utf8mb4 系白名单
+   （`utf8mb4_general_ci`、`utf8mb4_0900_ai_ci`、`utf8mb4_bin`）与 `binary` 字节比较；
+   非 utf8mb4 会话 charset 在 `SET NAMES` 处拒绝；跨 charset 逆转换不做。非 utf8mb4
+   **列**（latin1/gbk 等）即使结果已被转码为 utf8mb4 字节，也仍 Reject——原 collator
+   不能作用于转码后的字节。
+
+### 13.5 分阶段
+
+| 阶段 | 内容 | 红测入口 |
+|---|---|---|
+| D1 | 拷贝 + 适配 + stdlib-only 验收 + Environment 单例 | 包内 golden/fuzz 全绿；`go list -deps` 确认无外部依赖 |
+| D2 | `comparatorFor` collation 化 + ORDER BY（ordered/sort） | `ORDER BY varchar general_ci` 从 Reject → 正确排序；`'a'`/`'A'` ci 相等；`'ß'`/`'ss'` 在 general_ci（ß=s）与 0900_ai_ci（ß=ss）行为不同 |
+| D3 | GROUP BY/DISTINCT weight key 化 | 跨片 `'A'`/`'a'` 归一组；DISTINCT 跨片去重 |
+| D4 | MIN/MAX 字符串 | 同 comparator 向量 |
+| D5 | metamorphic oracle 扩展 | DDL 加 VARCHAR（bin/general_ci/0900_ai_ci）× ORDER BY/GROUP BY/DISTINCT/MIN/MAX 矩阵 |
+
+### 13.5.1 实施记录（2026-11-01）
+
+- **D1 已落地**：`pkg/mysql/collation`（54 个 go 文件，7.0 MB，含上游 golden 测试与
+  charset testdata）。`go list -deps` 确认**仅依赖 stdlib**；本地改动与来源 commit 记录在
+  `doc.go` 与 `NOTICE`。上游 `Hash(*vthash.Hasher)`、`CachedSize`、`CollationForType`
+  已移除。
+- **D2 已落地**：`pkg/merge/collation.go` 新增 `collatorFor` / `orderComparatorFor`；
+  `valueKind` 增加 `kindCollated`；`Ordered`/`Sort` 支持白名单 collation。
+  白名单：`utf8mb4_general_ci`、`utf8mb4_0900_ai_ci`、`utf8mb4_bin`、`binary`。
+- **D3 已落地**：`encodeValueKey` 对 `kindCollated` 使用 `WeightString`，GROUP BY/DISTINCT
+  跨分片按等价类合并；`Group`/`Distinct`/`aggregate DISTINCT` 全部接入。
+- **D4 已落地**：MIN/MAX 复用 collator 比较。
+- **PAD SPACE 已修正**：`utf8mb4_general_ci`/`utf8mb4_bin` 的 GROUP BY/DISTINCT 现在
+  与 MySQL 一致地忽略尾随空格（`paddedCollator`/`byteCollator`）；`*_0900_*` 保持
+  NO PAD。该差异已用 MySQL 8.0 实测确认。
+- **charset 策略已落地**：`SET NAMES` 仅接受 utf8mb4，后端握手固定 45（见 §13.4 item 3）。
+- **未完成**：D5（oracle）与 provenance 的 release tag；见
+  `docs/code-review/review-statement-classification-and-collation.md`。
+
+每步：变更包聚焦测试 + `go vet`；行为变更进差分语料；功能提交落 code-review 报告。
+
+### 13.6 测试策略增补
+
+- **oracle 规范化**：MySQL 8.0 GROUP BY 无隐式排序，组键列返回 `'A'` 还是 `'a'` 非确定——
+  对比前把字符串组键按 collation 等价类规范化行集合，否则 flaky；
+- ORDER BY 相等键 tie-break：沿用 §11 约定（唯一键消除 tie）；
+- charset 不一致（latin1 列 + utf8mb4 连接）→ Reject 用例；
+- 白名单外 collation（如 utf8mb4_unicode_ci）→ Reject 用例。
+
+### 13.7 开放问题
+
+1. Environment 的 server version：首版固定 8.0（测试矩阵即 8.0）；后端版本探测与
+   混合版本策略后置。
+2. 跨 charset 转换（Phase 2）：用 Environment 的转换能力还是继续 Reject。
+3. weight key 分配开销：`hack` 消除后 string/[]byte 转换是否需要 fast path（基准后定）。
+4. **列 collation 来源（阻塞）**：见 §13.8。
+
+### 13.8 D5 oracle 结果与阻塞项（2026-11-01）
+
+已实现并**触发** `test/metamorphic/collation_test.go`（4 分片代理 vs 单库 oracle，
+`general_ci`/`0900_ai_ci`/`bin` × ORDER BY/GROUP BY/DISTINCT/COUNT(DISTINCT)/MIN/MAX）。
+结果：`0900_ai_ci` 通过；`general_ci` 的 GROUP BY 组数错误（4 vs 3）；`utf8mb4_bin` 的
+ORDER BY 顺序错误。
+
+**根因（2026-11-01 修正，探针实测）**：不是「同一结果集内 collation 混用」，而是
+**连接池的 `COM_RESET_CONNECTION` 把会话字符集重置回服务端默认**。实测同一条连接：
+
+```
+握手 collation=45，首条查询 → 元数据 45
+COM_RESET_CONNECTION 之后   → 元数据 255（服务端默认）
+```
+
+`pool.Release` 无条件发 `COM_RESET_CONNECTION`，所以每个池化连接只有**第一条查询**是
+握手时的 45，之后都是服务端默认（本项目测试拓扑为 255）。这解释了 oracle 中
+「ORDER BY 报 45、GROUP BY/聚合报 255」——是连接新旧不同，不是查询形态不同。
+在任一连接状态下，MySQL 报的都是**统一的**结果字符集 collation，而非列 collation。
+
+**附带发现的潜在问题**：握手固定 45 只对每条连接的第一条查询有效。若后端
+`character_set_server` 不是 utf8mb4，Reset 后结果会被转码成服务端默认字符集——
+「只支持 utf8mb4」的假设在首查之后不再成立。修复 collation 或推进 Track B 时需一并处理
+（Reset 后重新对齐会话字符集，或改为条件 Reset）。
+
+（2026-11-01 后续：无条件 `COM_RESET_CONNECTION` 已移除，改为「脏/坏/未读完即 Discard」，
+见 `docs/code-review/review-pool-lifecycle.md`。干净连接不再被重置，握手字符集 45 在复用
+连接上得以保留；但「元数据是结果字符集而非列 collation」的结论不变。）
+
+**结论（2026-11-01 用户决策）：暂不修复，保持 collated 归并启用**，接受下表风险；
+oracle 测试保留为失败复现（不在 `make test-integration` 列表中，CI 门禁不受影响）。
+风险矩阵：0900 表仅 ORDER BY 可能错（尾随空格/部分权重），其 GROUP BY/DISTINCT 正确；
+`general_ci`/`bin` 表则 ORDER BY 或分组侧会错，详见 review 报告。
+
+后续修复时两个候选方案：
+
+| 方案 | 做法 | 成本 | 风险 |
+|---|---|---|---|
+| A. Catalog（不推荐） | `information_schema.columns` 按 (schema, table, column) 加载并缓存（TTL + 未命中重载）；dispatch 在 merge 前用 `Field.OrgTable/OrgName` 回填真实 collation | ~1 天 | **DDL 可绕过代理**，缓存必然有陈旧窗口，需轮询；表达式列无法解析 |
+| B. 隐藏 `COLLATION()` 列 | 每分片 SQL 追加 `COLLATION(col)` 隐藏列，取首行解析；空结果无需比较 | ~1–2 天，改 plan/rewrite/merge | 每行多一列；表达式列需 `COLLATION(expr)` |
+| C. `character_set_results=NULL` | 后端拨号后 `SET character_set_results=NULL`；元数据直接返回真实列 collation，**无需改 SQL** | 最小（一个会话变量） | 非 utf8mb4 列不再转码，单分片透传返回列原生字节；需配套拒绝非 utf8mb4 列 |
+
+**实测依据（原始协议探针，表含 bin/general_ci/0900 三列）**：
+
+| 连接设置 | `SELECT b,g,n` | `... ORDER BY b` | `... GROUP BY b` | `MIN(b)` |
+|---|---|---|---|---|
+| 握手 collation=45（当前） | 45,45,45 | 45,45,45 | 45,63 | 45 |
+| 握手 collation=0（不设置） | 255,255,255 | 255,255,255 | 255,63 | 255 |
+| 45 + `SET character_set_results=NULL` | **46,45,255** | **46,45,255** | **46,63** | **46** |
+
+结论：不设置 collation 拿到的是服务端默认值（255），同样不准；只有
+`character_set_results=NULL` 时元数据才是真实列 collation，且对四种查询形态都成立。
+
+在 A/B 落地前，`orderComparatorFor` 对字符串列应回到 Reject（三态契约优先于功能），
+oracle 测试保留为失败复现（Red）。

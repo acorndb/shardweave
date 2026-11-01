@@ -10,11 +10,12 @@ import (
 )
 
 // distinctAccumulator deduplicates raw aggregate arguments across shards and
-// computes COUNT/SUM/AVG over the distinct set. String collations are rejected
-// by comparatorFor, consistent with GROUP BY/DISTINCT/ORDER BY.
+// computes COUNT/SUM/AVG over the distinct set. Collated strings deduplicate by
+// weight string (D3).
 type distinctAccumulator struct {
 	fn      plan.AggregateFunc
 	keyKind valueKind
+	keyColl stringCollator
 	sumKind valueKind
 	seen    map[string]struct{}
 	count   uint64
@@ -28,13 +29,14 @@ func newDistinctAccumulator(spec plan.AggregateSpec, field result.Field) (*disti
 	default:
 		return nil, errs.Unsupported("multi-shard aggregate DISTINCT function %d is not supported", spec.Func)
 	}
-	keyKind, err := comparatorFor(field)
+	keyKind, keyColl, err := orderComparatorFor(field)
 	if err != nil {
 		return nil, err
 	}
 	d := &distinctAccumulator{
 		fn:      spec.Func,
 		keyKind: keyKind,
+		keyColl: keyColl,
 		seen:    make(map[string]struct{}),
 	}
 	if spec.Func == plan.AggSum || spec.Func == plan.AggAvg {
@@ -52,7 +54,7 @@ func (d *distinctAccumulator) add(v result.Value) error {
 	if v == nil {
 		return nil
 	}
-	key, err := encodeValueKey(v, d.keyKind)
+	key, err := encodeValueKey(v, d.keyKind, d.keyColl)
 	if err != nil {
 		return err
 	}

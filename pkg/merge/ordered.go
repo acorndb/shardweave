@@ -23,12 +23,15 @@ const (
 	kindFloat
 	kindDecimal
 	kindText
+	// kindCollated compares strings with a MySQL collator (D2 whitelist).
+	kindCollated
 )
 
 type resolvedKey struct {
 	col  int
 	desc bool
 	kind valueKind
+	coll stringCollator // non-nil iff kind == kindCollated
 }
 
 // Ordered merges already-sorted shard streams with a k-way heap. Each stream
@@ -57,11 +60,11 @@ func Ordered(streams []result.Stream, fields []result.Field, keys []plan.OrderKe
 		if col >= len(fields) {
 			return nil, errs.Unsupported("ORDER BY position %d is out of range", col+1)
 		}
-		kind, err := comparatorFor(fields[col])
+		kind, coll, err := orderComparatorFor(fields[col])
 		if err != nil {
 			return nil, err
 		}
-		resolved[i] = resolvedKey{col: col, desc: k.Desc, kind: kind}
+		resolved[i] = resolvedKey{col: col, desc: k.Desc, kind: kind, coll: coll}
 	}
 	return &ordered{streams: kept, fields: fields, keys: resolved}, nil
 }
@@ -154,11 +157,13 @@ func parseOrderValue(v result.Value, kind valueKind) (orderValue, error) {
 		out.r = r
 	case kindText:
 		out.b = b
+	case kindCollated:
+		out.b = b
 	}
 	return out, nil
 }
 
-func compareOrderValues(a, b orderValue, kind valueKind) int {
+func compareOrderValues(a, b orderValue, kind valueKind, coll stringCollator) int {
 	if a.null || b.null {
 		switch {
 		case a.null && b.null:
@@ -194,6 +199,12 @@ func compareOrderValues(a, b orderValue, kind valueKind) int {
 		return a.r.Cmp(b.r)
 	case kindText:
 		return bytes.Compare(a.b, b.b)
+	case kindCollated:
+		if coll == nil {
+			// Unreachable: resolvedKey carries a collator for kindCollated.
+			return 0
+		}
+		return coll.Collate(a.b, b.b, false)
 	default:
 		return 0
 	}
@@ -246,7 +257,7 @@ func (h *rowHeap) Pop() any {
 
 func compareHeapRows(a, b *heapRow, keys []resolvedKey) int {
 	for i, k := range keys {
-		c := compareOrderValues(a.vals[i], b.vals[i], k.kind)
+		c := compareOrderValues(a.vals[i], b.vals[i], k.kind, k.coll)
 		if c == 0 {
 			continue
 		}

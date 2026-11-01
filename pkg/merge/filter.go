@@ -75,7 +75,7 @@ func (f *filterStream) match(row result.Row) (bool, error) {
 		if v.null {
 			return false, nil
 		}
-		c := compareOrderValues(v, pred.value, pred.kind)
+		c := compareOrderValues(v, pred.value, pred.kind, nil)
 		switch pred.op {
 		case plan.HavingEQ:
 			if c != 0 {

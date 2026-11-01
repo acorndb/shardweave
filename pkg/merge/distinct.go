@@ -7,16 +7,18 @@ import (
 )
 
 // Distinct deduplicates rows across shards. Per-shard SQL already applies
-// DISTINCT, so only cross-shard duplicates remain. Numeric/date keys are
-// canonicalized; string collations are rejected until weights are available.
+// DISTINCT, so only cross-shard duplicates remain. Whichever collation applies
+// to a column is folded into the key via its weight string (D3).
 func Distinct(streams []result.Stream, fields []result.Field) (result.Stream, error) {
 	kinds := make([]valueKind, len(fields))
+	colls := make([]stringCollator, len(fields))
 	for i, field := range fields {
-		kind, err := comparatorFor(field)
+		kind, coll, err := orderComparatorFor(field)
 		if err != nil {
 			return nil, err
 		}
 		kinds[i] = kind
+		colls[i] = coll
 	}
 	cols := make([]int, len(fields))
 	for i := range cols {
@@ -33,6 +35,7 @@ func Distinct(streams []result.Stream, fields []result.Field) (result.Stream, er
 		fields:  fields,
 		cols:    cols,
 		kinds:   kinds,
+		colls:   colls,
 		seen:    make(map[string]struct{}),
 	}, nil
 }
@@ -42,6 +45,7 @@ type distinctStream struct {
 	fields  []result.Field
 	cols    []int
 	kinds   []valueKind
+	colls   []stringCollator
 
 	seen   map[string]struct{}
 	rows   []result.Row
@@ -77,7 +81,7 @@ func (d *distinctStream) fold() error {
 			if err != nil {
 				return err
 			}
-			key, err := encodeRowKey(row, d.cols, d.kinds)
+			key, err := encodeRowKey(row, d.cols, d.kinds, d.colls)
 			if err != nil {
 				return err
 			}
