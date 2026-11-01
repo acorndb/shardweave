@@ -153,7 +153,7 @@ func Classify(raw string, tokens []Token) Class {
 		}
 	}
 	if c.Kind == StmtSet {
-		c.SetNames, c.SessionVarWrite, c.GlobalVarWrite, c.Autocommit = parseSet(raw, sig)
+		c.SetNames, c.SessionVarWrite, c.GlobalVarWrite, c.Autocommit = parseSet(sig)
 	}
 	if c.Kind == StmtSelect {
 		c.SessionFunc = parseSessionFunc(raw, sig)
@@ -492,7 +492,7 @@ func findAssignOp(seg []Token) int {
 }
 
 // parseSet extracts SET NAMES, system-variable writes and autocommit.
-func parseSet(raw string, sig []Token) (setNames string, session, global []string, autocommit *bool) {
+func parseSet(sig []Token) (setNames string, session, global []string, autocommit *bool) {
 	if len(sig) >= 3 && sig[0].Upper == "SET" && sig[1].Upper == "NAMES" {
 		if v, ok := aliasText(sig[2]); ok {
 			setNames = v

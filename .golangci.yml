@@ -17,7 +17,13 @@ linters:
       - source: 'defer .+\.Close\(\)'
         linters:
           - errcheck
+    # vendored from vitess; kept verbatim for future upstream diffs (NOTICE)
+    paths:
+      - pkg/mysql/collation
 
 formatters:
   enable:
     - gofumpt
+  exclusions:
+    paths:
+      - pkg/mysql/collation

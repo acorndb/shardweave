@@ -20,15 +20,12 @@ test-integration:
 	$(GO) test -race -count=1 -timeout 15m -v ./test/rwsplit/ -run TestRWSplitRealTopology
 	$(GO) test -race -count=1 -timeout 15m -v ./test/sharding/ -run TestSingleShardRouting
 
+# golangci-lint must be built with a Go version >= the go directive in
+# go.mod; prebuilt binaries and `go run` toolchain switching both fail that
+# check, so force the current toolchain when building from source.
 lint:
 	$(GO) vet ./...
-	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run; \
-	elif [ -x "$(HOME)/go/bin/golangci-lint" ]; then \
-		"$(HOME)/go/bin/golangci-lint" run; \
-	else \
-		$(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION) run; \
-	fi
+	GOTOOLCHAIN=$$($(GO) env GOVERSION) $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION) run
 
 fmt:
 	go run mvdan.cc/gofumpt@latest -extra -w . 2>/dev/null || gofmt -w .

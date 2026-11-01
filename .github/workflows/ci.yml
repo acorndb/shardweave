@@ -28,10 +28,10 @@ jobs:
         with:
           go-version-file: go.mod
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v8
-        with:
-          # Prebuilt binary Go version must be >= go directive in go.mod (not toolchain).
-          version: v2.15.0
-          args: --timeout=5m
+        # golangci-lint-action installs a prebuilt binary whose Go version can
+        # be older than the go directive in go.mod, which golangci-lint
+        # rejects. Build from source with the current toolchain instead
+        # (kept in sync with Makefile GOLANGCI_VERSION).
+        run: GOTOOLCHAIN=$(go env GOVERSION) go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run --timeout=5m
       - name: go vet
         run: go vet ./...
