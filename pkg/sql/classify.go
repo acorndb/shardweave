@@ -8,6 +8,9 @@ type Effect struct {
 	UseDB      string
 	Charset    string
 	Autocommit *bool
+	// Vars holds replayable session variables (name → value). The proxy
+	// re-applies them on every backend connection used by the session.
+	Vars map[string]string
 }
 
 // StmtKind is the coarse statement category produced by the token layer.
@@ -94,10 +97,11 @@ type Class struct {
 	LockTables      bool // LOCK TABLES / UNLOCK TABLES
 	// Calls lists function names followed by '(' (stopwords such as IN excluded).
 	Calls            []string
-	SetNames         string // SET NAMES <charset>
-	UseDB            string // USE <db>
-	Autocommit       *bool  // SET autocommit = 0/1/ON/OFF/TRUE/FALSE
-	ReadOnlyProbe    bool   // probes @@read_only or SHOW ... read_only
+	SetNames         string            // SET NAMES <charset>
+	UseDB            string            // USE <db>
+	Autocommit       *bool             // SET autocommit = 0/1/ON/OFF/TRUE/FALSE
+	SessionVars      map[string]string // replayable session variables (name → value)
+	ReadOnlyProbe    bool              // probes @@read_only or SHOW ... read_only
 	SQLCalcFoundRows bool
 	ShowSub          string       // raw (uppercased) text after SHOW, for subtype checks
 	SessionFunc      *SessionFunc // exact SELECT LAST_INSERT_ID()/ROW_COUNT()
@@ -153,7 +157,7 @@ func Classify(raw string, tokens []Token) Class {
 		}
 	}
 	if c.Kind == StmtSet {
-		c.SetNames, c.SessionVarWrite, c.GlobalVarWrite, c.Autocommit = parseSet(sig)
+		c.SetNames, c.SessionVarWrite, c.GlobalVarWrite, c.Autocommit, c.SessionVars = parseSet(raw, sig)
 	}
 	if c.Kind == StmtSelect {
 		c.SessionFunc = parseSessionFunc(raw, sig)
@@ -210,8 +214,8 @@ func (c Class) UnsupportedReason() string {
 			return "SET NAMES " + c.SetNames + " is not supported by shardweave; only utf8mb4 is supported"
 		}
 		for _, v := range c.SessionVarWrite {
-			if strings.EqualFold(v, "sql_mode") {
-				return "SET sql_mode is not supported by shardweave"
+			if !sessionVarAllowed(v) {
+				return "SET SESSION " + v + " is not supported by shardweave"
 			}
 		}
 		for _, v := range c.GlobalVarWrite {
@@ -252,6 +256,9 @@ func (c Class) Effect() Effect {
 	}
 	if c.Autocommit != nil {
 		e.Autocommit = c.Autocommit
+	}
+	if len(c.SessionVars) > 0 {
+		e.Vars = c.SessionVars
 	}
 	return e
 }
@@ -491,8 +498,22 @@ func findAssignOp(seg []Token) int {
 	return -1
 }
 
-// parseSet extracts SET NAMES, system-variable writes and autocommit.
-func parseSet(sig []Token) (setNames string, session, global []string, autocommit *bool) {
+// sessionVarWhitelist lists session variables the proxy can replay on backend
+// connections (statement-classification design §5, decision D1). autocommit is
+// handled separately via Effect.Autocommit and transaction stickiness.
+var sessionVarWhitelist = map[string]bool{
+	"time_zone":             true,
+	"transaction_isolation": true,
+}
+
+// sessionVarAllowed reports whether a session variable may be assigned at all.
+func sessionVarAllowed(name string) bool {
+	return name == "autocommit" || sessionVarWhitelist[name]
+}
+
+// parseSet extracts SET NAMES, system-variable writes, autocommit and the
+// values of replayable session variables.
+func parseSet(raw string, sig []Token) (setNames string, session, global []string, autocommit *bool, vars map[string]string) {
 	if len(sig) >= 3 && sig[0].Upper == "SET" && sig[1].Upper == "NAMES" {
 		if v, ok := aliasText(sig[2]); ok {
 			setNames = v
@@ -516,9 +537,35 @@ func parseSet(sig []Token) (setNames string, session, global []string, autocommi
 			if v, ok := boolValue(seg[op+1:]); ok {
 				autocommit = v
 			}
+			continue
+		}
+		if scope != "global" && sessionVarWhitelist[name] {
+			if v, ok := valueText(raw, seg[op+1:]); ok && !strings.EqualFold(v, "DEFAULT") {
+				if vars == nil {
+					vars = make(map[string]string)
+				}
+				vars[name] = v
+			}
 		}
 	}
-	return setNames, session, global, autocommit
+	return setNames, session, global, autocommit, vars
+}
+
+// valueText renders one assignment value: a single string literal loses its
+// quotes, anything else is the raw source slice between the first and last
+// token (so multi-word values like READ COMMITTED survive verbatim).
+func valueText(raw string, toks []Token) (string, bool) {
+	if len(toks) == 0 {
+		return "", false
+	}
+	if len(toks) == 1 && toks[0].Kind == TokString {
+		return toks[0].Text, true
+	}
+	last := toks[len(toks)-1]
+	if toks[0].Pos < 0 || last.End > len(raw) {
+		return "", false
+	}
+	return raw[toks[0].Pos:last.End], true
 }
 
 // assignmentTarget normalizes the left-hand side of a SET assignment.

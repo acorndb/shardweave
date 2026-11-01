@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/acorndb/shardweave/pkg/mysql"
@@ -16,6 +18,9 @@ import (
 type AlignSettings struct {
 	Database string
 	Charset  string
+	// Vars are the replayable session variables the frontend session wants.
+	// Variables present on the connection but absent here are reset to DEFAULT.
+	Vars map[string]string
 }
 
 // ExecRequest is one full command packet plus its expected response shape.
@@ -39,6 +44,7 @@ type MySQLConn struct {
 	pc       *packet.Conn
 	database string
 	charset  string
+	vars     map[string]string // session variables set through alignVars
 }
 
 var _ Conn = (*MySQLConn)(nil)
@@ -75,12 +81,45 @@ func DialMySQLWithOptions(
 		_ = raw.Close()
 		return nil, err
 	}
+	return finishDial(raw, c, database, opts)
+}
+
+// finishDial applies the post-handshake policy and wraps the connection.
+func finishDial(raw net.Conn, c *client.Conn, database string, opts DialOptions) (*MySQLConn, error) {
+	// Collation-source policy (merge-engine-design §13.8 option C): stop
+	// transcoding results so ColumnDefinition41 reports each column's real
+	// collation instead of the connection collation. utf8mb4 data is returned
+	// as-is, so the bytes clients see do not change.
+	if err := setResultsNull(c); err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
 	_ = raw.SetDeadline(time.Time{})
 	pc := c.PacketConn()
 	pc.SetReadTimeout(opts.ReadTimeout)
 	pc.SetWriteTimeout(opts.WriteTimeout)
 	pc.SetMaxAllowedPacket(opts.MaxAllowedPacket)
 	return &MySQLConn{pc: pc, database: database}, nil
+}
+
+// setResultsNull disables result transcoding on a freshly dialed connection.
+func setResultsNull(c *client.Conn) error {
+	pc := c.PacketConn()
+	pc.ResetSequence()
+	q := append([]byte{mysql.ComQuery}, []byte("SET character_set_results = NULL")...)
+	buf := make([]byte, 4+len(q))
+	copy(buf[4:], q)
+	if err := pc.WritePacket(buf); err != nil {
+		return err
+	}
+	data, err := pc.ReadPacket()
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 || data[0] != mysql.OKHeader {
+		return fmt.Errorf("backend: set character_set_results=NULL failed: %v", data)
+	}
+	return nil
 }
 
 // Packet returns the framed packet connection.
@@ -131,12 +170,48 @@ func (b *MySQLConn) Align(ctx context.Context, s AlignSettings) error {
 		b.database = s.Database
 	}
 	if s.Charset != "" && s.Charset != b.charset {
-		q := "SET NAMES " + s.Charset
+		// SET NAMES would also reset character_set_results and undo the
+		// results=NULL policy set at dial time; align the other two legs only.
+		q := "SET character_set_client=" + s.Charset + ", character_set_connection=" + s.Charset
 		cmd := append([]byte{mysql.ComQuery}, q...)
 		if err := b.execCommand(cmd); err != nil {
-			return fmt.Errorf("pool: align SET NAMES %q: %w", s.Charset, err)
+			return fmt.Errorf("pool: align charset %q: %w", s.Charset, err)
 		}
 		b.charset = s.Charset
+	}
+	return b.alignVars(s.Vars)
+}
+
+// alignVars replays replayable session variables in one SET statement.
+// Variables set on the connection but absent from want are reset to DEFAULT,
+// so state never leaks from one frontend session to the next (Gaea-style
+// unused reset). No-op when the connection already matches.
+func (b *MySQLConn) alignVars(want map[string]string) error {
+	if len(want) == 0 && len(b.vars) == 0 {
+		return nil
+	}
+	var parts []string
+	for name, value := range want {
+		if cur, ok := b.vars[name]; !ok || cur != value {
+			parts = append(parts, name+"='"+strings.ReplaceAll(value, "'", "''")+"'")
+		}
+	}
+	for name := range b.vars {
+		if _, ok := want[name]; !ok {
+			parts = append(parts, name+"=DEFAULT")
+		}
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	sort.Strings(parts)
+	cmd := append([]byte{mysql.ComQuery}, "SET "+strings.Join(parts, ", ")...)
+	if err := b.execCommand(cmd); err != nil {
+		return fmt.Errorf("pool: align session vars: %w", err)
+	}
+	b.vars = make(map[string]string, len(want))
+	for name, value := range want {
+		b.vars[name] = value
 	}
 	return nil
 }
@@ -177,6 +252,7 @@ func (b *MySQLConn) Reset(ctx context.Context) error {
 	}
 	b.database = ""
 	b.charset = ""
+	b.vars = nil
 	return nil
 }
 

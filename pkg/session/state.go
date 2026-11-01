@@ -15,6 +15,10 @@ type State struct {
 	rowCount     int64
 	nextStmtID   uint32
 
+	// vars holds replayable session variables (statement-classification §5).
+	// Align re-applies them on every backend connection the session uses.
+	vars map[string]string
+
 	stmts *StmtTable
 }
 
@@ -86,6 +90,19 @@ func (s *State) SetRowCount(n int64) {
 	s.rowCount = n
 }
 
+// SetVar records one replayable session variable.
+func (s *State) SetVar(name, value string) {
+	if s.vars == nil {
+		s.vars = make(map[string]string)
+	}
+	s.vars[name] = value
+}
+
+// Vars returns the replayable session variables (do not mutate).
+func (s *State) Vars() map[string]string {
+	return s.vars
+}
+
 // Stmts returns the session prepared statement table.
 func (s *State) Stmts() *StmtTable {
 	if s.stmts == nil {
@@ -114,6 +131,7 @@ func (s *State) Reset() {
 	s.lastInsertID = 0
 	s.rowCount = -1
 	s.nextStmtID = 0
+	s.vars = nil
 	s.Stmts().Reset()
 }
 

@@ -846,7 +846,8 @@ func TestPipeline_ExplainRouteWritesResult(t *testing.T) {
 
 func TestPipeline_DirtyStatementDiscards(t *testing.T) {
 	cases := []string{
-		"SET SESSION sort_buffer_size = 1",
+		// "SET SESSION sort_buffer_size = 1" moved to the rejection test:
+		// non-whitelisted session variables are rejected before execution.
 		"SELECT 1; SET SESSION sort_buffer_size = 1",
 		"/*!40101 SET SESSION sort_buffer_size=1 */",
 	}
@@ -863,6 +864,39 @@ func TestPipeline_DirtyStatementDiscards(t *testing.T) {
 			require.True(t, tr.last(t).closed, "dirty session state must discard the connection")
 		})
 	}
+}
+
+func TestPipeline_SessionVarReplay(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, nil))),
+		plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	setTZ := query("SET time_zone = '+08:00'")
+	setTZ.Effect = setTZ.EnsureClass().Effect()
+	require.NoError(t, p.Handle(context.Background(), rt, setTZ))
+	require.Empty(t, rt.leases, "whitelisted vars must not pin the session")
+	require.False(t, tr.last(t).closed, "whitelisted vars must keep the connection reusable")
+
+	require.NoError(t, p.Handle(context.Background(), rt, query("SELECT 1")))
+	require.Equal(t, "+08:00", tr.last(t).lastAlign.Vars["time_zone"],
+		"the next query must replay the session variable during Align")
+	require.Equal(t, 1, tr.opens(), "the connection must be reused")
+}
+
+func TestPipeline_NonWhitelistedSessionVarRejected(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, nil))),
+		plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	err = p.Handle(context.Background(), rt, query("SET SESSION sort_buffer_size = 1"))
+	var me *errs.MySQL
+	require.ErrorAs(t, err, &me)
+	require.Equal(t, uint16(1235), me.Number)
+	require.Equal(t, 0, tr.opens(), "the statement must not reach a backend")
 }
 
 func TestPipeline_CleanStatementReturnsConnection(t *testing.T) {

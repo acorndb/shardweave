@@ -140,8 +140,18 @@ USE 的读写路由（M5：USE → 从库）在平价迁移中**按现状保留*
 对应实现：`pkg/backend/pool.go`（Release 不再 Reset）、`stream.go`/`decode.go`
 （Drained 追踪）、`pkg/execute/pipeline.go`（lease.reusable + dirtyForReuse）。
 
-B2 尚未落地：白名单外的 `SET SESSION` 目前**执行后丢弃连接**而不是拒绝；`time_zone`
-尚未进 `Align` 重放。这两项是独立的后续小步。
+**B2 已落地（2026-11-01）**，按 Gaea 模式实现白名单重放：
+
+- 白名单：`time_zone`、`transaction_isolation`（`autocommit` 走 Effect + sticky，
+  不进重放）；白名单外的 `SET SESSION` 在 `Class.UnsupportedReason` 处 1235 拒绝
+  （`sql_mode` 并入通用消息）。
+- 值提取：`Class.SessionVars`（`parseSet` 从 token/raw 切原文；`DEFAULT` 值表示移除）。
+- 会话快照：`session.State.vars`，由 `applyEffect` 维护。
+- 重放：`AlignSettings.Vars` + `MySQLConn.vars` diff——差异变量拼进一条
+  `SET name='value'`，**连接上有而会话不再需要的变量发 `name=DEFAULT`**（Gaea 的
+  unused→DEFAULT，防跨会话污染），值相同 no-op。
+- `dirtyForReuse` 的 `SessionVarWrite` 检查随之删除：拒绝前置后执行层只见白名单变量，
+  autocommit 靠 sticky、白名单变量靠重放。
 
 ## 5. 决策记录与行为变更账本
 

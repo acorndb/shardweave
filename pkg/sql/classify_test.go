@@ -29,7 +29,7 @@ func BenchmarkScanClassify(b *testing.B) {
 			b.Fatal(err)
 		}
 		c := Classify(raw, toks)
-		_ = c.WantSlave() && c.Reserved() && c.UnsupportedReason() == "" && c.Effect() == Effect{}
+		_ = c.WantSlave() && c.Reserved() && c.UnsupportedReason() == "" && len(c.Effect().Vars) == 0
 	}
 }
 
@@ -385,6 +385,45 @@ func TestClassify_SessionVarWrite(t *testing.T) {
 			c := classify(t, tc.sql)
 			require.Equal(t, tc.session, c.SessionVarWrite, tc.sql)
 			require.Equal(t, tc.global, c.GlobalVarWrite, tc.sql)
+		})
+	}
+}
+
+func TestClassify_SessionVars(t *testing.T) {
+	cases := []struct {
+		name        string
+		sql         string
+		vars        map[string]string
+		unsupported string
+	}{
+		{name: "time_zone", sql: "SET time_zone = '+08:00'", vars: map[string]string{"time_zone": "+08:00"}},
+		{name: "time_zone_session", sql: "SET SESSION time_zone='SYSTEM'", vars: map[string]string{"time_zone": "SYSTEM"}},
+		{
+			name: "tx_isolation",
+			sql:  "SET SESSION transaction_isolation = 'READ COMMITTED'",
+			vars: map[string]string{"transaction_isolation": "READ COMMITTED"},
+		},
+		{name: "default_removes", sql: "SET time_zone = DEFAULT", vars: nil},
+		{name: "autocommit_separate", sql: "SET autocommit=0", vars: nil},
+		{
+			name:        "non_whitelisted",
+			sql:         "SET SESSION sort_buffer_size = 1",
+			unsupported: "sort_buffer_size",
+		},
+		{name: "sql_mode_still_rejected", sql: "SET sql_mode='ANSI'", unsupported: "sql_mode"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := classify(t, tc.sql)
+			require.Equal(t, tc.vars, c.SessionVars, tc.sql)
+			if tc.unsupported != "" {
+				require.Contains(t, c.UnsupportedReason(), tc.unsupported, tc.sql)
+				return
+			}
+			require.Empty(t, c.UnsupportedReason(), tc.sql)
+			if tc.vars != nil {
+				require.Equal(t, tc.vars, c.Effect().Vars, tc.sql)
+			}
 		})
 	}
 }

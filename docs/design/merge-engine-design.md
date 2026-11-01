@@ -503,7 +503,11 @@ COM_RESET_CONNECTION 之后   → 元数据 255（服务端默认）
 见 `docs/code-review/review-pool-lifecycle.md`。干净连接不再被重置，握手字符集 45 在复用
 连接上得以保留；但「元数据是结果字符集而非列 collation」的结论不变。）
 
-**结论（2026-11-01 用户决策）：暂不修复，保持 collated 归并启用**，接受下表风险；
+**结论（2026-11-01 更新：方案 C 已落地并通过 oracle 验收）**：后端拨号后固定
+`SET character_set_results = NULL`，元数据直接返回列真实 collation；`Align` 的字符集
+对齐改为 `SET character_set_client/connection`（不动 results）。三个 collation 子用例
+（general_ci/0900_ai_ci/bin）全部转绿。非 utf8mb4 列的元数据如实报本 charset →
+非白名单 → 自动 Reject，与「只支持 utf8mb4」决策闭环。风险矩阵作废。
 oracle 测试保留为失败复现（不在 `make test-integration` 列表中，CI 门禁不受影响）。
 风险矩阵：0900 表仅 ORDER BY 可能错（尾随空格/部分权重），其 GROUP BY/DISTINCT 正确；
 `general_ci`/`bin` 表则 ORDER BY 或分组侧会错，详见 review 报告。

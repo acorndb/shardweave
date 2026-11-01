@@ -148,6 +148,7 @@ func (p *Pipeline) execOnLease(ctx context.Context, rt *Runtime, stmt *sql.State
 	if err := l.conn.Align(ctx, backend.AlignSettings{
 		Database: targetDatabase(rt, target),
 		Charset:  rt.State.Charset(),
+		Vars:     rt.State.Vars(),
 	}); err != nil {
 		return nil, err
 	}
@@ -221,21 +222,16 @@ func (p *Pipeline) executePlan(ctx context.Context, rt *Runtime, stmt *sql.State
 }
 
 // dirtyForReuse reports whether a statement may have left backend session
-// state that the proxy cannot reproduce on acquire. SET NAMES, USE and
-// autocommit are tracked by Effect/Align; everything else forces a discard.
+// state that the proxy cannot reproduce on acquire. SET NAMES, USE,
+// autocommit and whitelisted session variables are tracked by Effect/Align;
+// everything else forces a discard. Non-whitelisted SET SESSION never reaches
+// this layer (rejected in Class.UnsupportedReason).
 func dirtyForReuse(c *sql.Class) bool {
 	if c == nil {
 		return false
 	}
-	if c.ScanFailed || c.HasExecComment || c.Multi || c.TempTable || c.LockTables || c.UserVarWrite {
-		return true
-	}
-	for _, name := range c.SessionVarWrite {
-		if name != "autocommit" {
-			return true
-		}
-	}
-	return false
+	return c.ScanFailed || c.HasExecComment || c.Multi || c.TempTable ||
+		c.LockTables || c.UserVarWrite
 }
 
 // streamDrained reports whether a backend stream was consumed to its
@@ -520,5 +516,8 @@ func applyEffect(st *session.State, e sql.Effect) {
 	}
 	if e.Autocommit != nil {
 		st.SetAutocommit(*e.Autocommit)
+	}
+	for name, value := range e.Vars {
+		st.SetVar(name, value)
 	}
 }
