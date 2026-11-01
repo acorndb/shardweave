@@ -60,7 +60,7 @@ func TestPool_AcquireReleaseReuse(t *testing.T) {
 	require.Equal(t, 1, s1.id)
 
 	require.NoError(t, p.Release(b1))
-	require.Equal(t, int32(1), s1.resetCalls.Load())
+	require.Equal(t, int32(0), s1.resetCalls.Load(), "clean release must not reset")
 
 	b2, err := p.Acquire(ctx)
 	require.NoError(t, err)
@@ -68,11 +68,11 @@ func TestPool_AcquireReleaseReuse(t *testing.T) {
 	require.Equal(t, int32(1), n.Load(), "no new open")
 }
 
-func TestPool_ReleaseResetFailureDiscards(t *testing.T) {
+func TestPool_ReleaseDoesNotReset(t *testing.T) {
 	var n atomic.Int32
-	p := backend.NewPool(backend.PoolConfig{Capacity: 0, MaxCapacity: 2, AcquireTimeout: time.Second}, func(ctx context.Context) (backend.Conn, error) {
+	p := backend.NewPool(backend.PoolConfig{Capacity: 0, MaxCapacity: 2}, func(context.Context) (backend.Conn, error) {
 		id := int(n.Add(1))
-		return &stubConn{id: id, resetErr: errors.New("reset failed")}, nil
+		return &stubConn{id: id}, nil
 	})
 	t.Cleanup(func() { _ = p.Close() })
 
@@ -80,13 +80,15 @@ func TestPool_ReleaseResetFailureDiscards(t *testing.T) {
 	b1, err := p.Acquire(ctx)
 	require.NoError(t, err)
 	s1 := b1.(*stubConn)
-	require.Error(t, p.Release(b1), "reset failure is surfaced")
-	require.Equal(t, int32(1), s1.closeCalls.Load())
+	require.NoError(t, p.Release(b1))
+	require.Equal(t, int32(0), s1.resetCalls.Load(),
+		"returning a clean connection must not issue COM_RESET_CONNECTION")
+	require.Equal(t, int32(0), s1.closeCalls.Load())
 
 	b2, err := p.Acquire(ctx)
 	require.NoError(t, err)
-	require.NotSame(t, b1, b2)
-	require.Equal(t, int32(2), n.Load())
+	require.Same(t, b1, b2, "a clean connection must be reused")
+	require.Equal(t, int32(1), n.Load())
 }
 
 func TestPool_DiscardFreesCapacity(t *testing.T) {

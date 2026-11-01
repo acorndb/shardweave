@@ -50,6 +50,6 @@ func (r Pick) Route(_ context.Context, st *session.State, stmt *sql.Statement) (
 	}
 	return []route.Target{{
 		Slice: r.sliceName(),
-		Role:  PickRole(st, stmt.Cmd, stmt.Raw),
+		Role:  PickRole(st, stmt),
 	}}, nil
 }

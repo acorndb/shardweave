@@ -230,15 +230,14 @@ func (p *Pool) Acquire(ctx context.Context) (Conn, error) {
 	}
 }
 
-// Release resets and returns b to the idle list, or closes it when the pool is
-// closed, b is too old, or MaxIdle is reached.
+// Release returns b to the idle list. Callers must only pass connections that
+// are safe to reuse: the response was fully consumed and the session state is
+// either clean or reproducible by Align. Broken or dirty connections must go
+// through Discard instead. Release no longer issues COM_RESET_CONNECTION.
 func (p *Pool) Release(b Conn) error {
 	if b == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), p.opTimeout())
-	defer cancel()
-	resetErr := b.Reset(ctx)
 
 	p.mu.Lock()
 	if p.active > 0 {
@@ -251,11 +250,11 @@ func (p *Pool) Release(b Conn) error {
 	}
 	expired := p.cfg.MaxLifetime > 0 && time.Since(created) >= p.cfg.MaxLifetime
 	full := len(p.idle) >= p.cfg.MaxIdle
-	if resetErr != nil || p.closed || expired || full {
+	if p.closed || expired || full {
 		delete(p.created, b)
 		p.mu.Unlock()
 		_ = b.Close()
-		return resetErr
+		return nil
 	}
 	p.idle = append(p.idle, idleConn{conn: b, since: time.Now()})
 	p.mu.Unlock()

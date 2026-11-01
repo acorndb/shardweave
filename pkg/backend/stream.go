@@ -16,15 +16,24 @@ import (
 type rawStream struct {
 	pc      *packet.Conn
 	prepare bool
+	drained bool
 }
 
 func (s *rawStream) ForwardTo(ctx context.Context, front *packet.Conn) (mysql.ResponseInfo, error) {
 	_ = ctx
 	if s.prepare {
-		return mysql.ResponseInfo{}, mysql.ForwardPrepareResponse(front, s.pc, true)
+		err := mysql.ForwardPrepareResponse(front, s.pc, true)
+		s.drained = err == nil
+		return mysql.ResponseInfo{}, err
 	}
-	return mysql.ForwardResponseInfo(front, s.pc, true)
+	info, err := mysql.ForwardResponseInfo(front, s.pc, true)
+	s.drained = err == nil
+	return info, err
 }
+
+// Drained reports whether the backend response was fully consumed. Only a
+// drained stream leaves the connection safe to return to the pool.
+func (s *rawStream) Drained() bool { return s.drained }
 
 // ForwardPrepareTo forwards a COM_STMT_PREPARE response while replacing the
 // backend statement id with clientID. The returned id is the backend id used
@@ -34,6 +43,7 @@ func (s *rawStream) ForwardPrepareTo(front *packet.Conn, clientID uint32) (mysql
 		return mysql.ResponseInfo{}, 0, fmt.Errorf("backend: not a COM_STMT_PREPARE stream")
 	}
 	backendID, serverErr, err := mysql.ForwardPrepareResponseWithID(front, s.pc, true, clientID)
+	s.drained = err == nil
 	return mysql.ResponseInfo{ServerErr: serverErr}, backendID, err
 }
 
@@ -55,3 +65,6 @@ func (noReplyStream) Fields() []result.Field { return nil }
 func (noReplyStream) Next() (result.Row, error) { return nil, io.EOF }
 
 func (noReplyStream) Close() error { return nil }
+
+// Drained is always true: commands without a response consume nothing.
+func (noReplyStream) Drained() bool { return true }

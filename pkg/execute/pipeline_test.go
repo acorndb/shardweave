@@ -43,10 +43,12 @@ type fakeConn struct {
 	lastAlign    backend.AlignSettings
 	execHook     func()
 
-	fields    []result.Field
-	rows      []result.Row
-	decodeErr error
-	rowErr    error
+	fields     []result.Field
+	rows       []result.Row
+	decodeErr  error
+	rowErr     error
+	undrained  bool
+	forwardErr error
 }
 
 func (c *fakeConn) Ping(context.Context) error {
@@ -63,6 +65,7 @@ func (c *fakeConn) Exec(_ context.Context, req backend.ExecRequest) (result.Stre
 	affected, lastID, resultSet := c.affectedRows, c.lastInsertID, c.resultSet
 	prepareID := c.prepareID
 	fields, rows, decodeErr, rowErr := c.fields, c.rows, c.decodeErr, c.rowErr
+	undrained, forwardErr := c.undrained, c.forwardErr
 	hook := c.execHook
 	c.mu.Unlock()
 	if hook != nil {
@@ -82,6 +85,8 @@ func (c *fakeConn) Exec(_ context.Context, req backend.ExecRequest) (result.Stre
 		rows:         rows,
 		decodeErr:    decodeErr,
 		rowErr:       rowErr,
+		undrained:    undrained,
+		forwardErr:   forwardErr,
 	}, nil
 }
 
@@ -117,10 +122,12 @@ type fakeStream struct {
 	prepareID    uint32
 	closed       bool
 
-	fields    []result.Field
-	rows      []result.Row
-	decodeErr error
-	rowErr    error
+	fields     []result.Field
+	rows       []result.Row
+	decodeErr  error
+	rowErr     error
+	undrained  bool
+	forwardErr error
 }
 
 var (
@@ -133,6 +140,9 @@ func (s *fakeStream) ForwardPrepareTo(*packet.Conn, uint32) (mysql.ResponseInfo,
 }
 
 func (s *fakeStream) ForwardTo(context.Context, *packet.Conn) (mysql.ResponseInfo, error) {
+	if s.forwardErr != nil {
+		return mysql.ResponseInfo{}, s.forwardErr
+	}
 	return mysql.ResponseInfo{
 		Status:       s.status,
 		ServerErr:    s.serverErr,
@@ -148,6 +158,8 @@ func (s *fakeStream) Decode() (result.Stream, error) {
 	}
 	return &fakeResultStream{fields: s.fields, rows: s.rows, rowErr: s.rowErr}, nil
 }
+
+func (s *fakeStream) Drained() bool { return !s.undrained }
 
 func (s *fakeStream) Fields() []result.Field { return s.fields }
 
@@ -297,7 +309,7 @@ func TestPipeline_SingleUsesMaster(t *testing.T) {
 	c := tr.last(t)
 	require.Equal(t, "master", c.tag)
 	require.Equal(t, 1, c.execCalls)
-	require.Equal(t, 1, c.resets, "non-sticky must return the lease")
+	require.False(t, c.closed, "clean connection must return to the pool")
 	require.Empty(t, rt.leases)
 }
 
@@ -340,7 +352,7 @@ func TestPipeline_StickyKeepsLease(t *testing.T) {
 	require.True(t, rt.State.InTx())
 	c := tr.last(t)
 	require.Equal(t, 1, c.execCalls)
-	require.Equal(t, 0, c.resets)
+	require.False(t, c.closed)
 
 	require.NoError(t, p.Handle(context.Background(), rt, query("SELECT 1")))
 	require.Equal(t, 2, c.execCalls)
@@ -348,7 +360,7 @@ func TestPipeline_StickyKeepsLease(t *testing.T) {
 
 	require.NoError(t, p.Release(rt, false))
 	require.Empty(t, rt.leases)
-	require.Equal(t, 1, c.resets)
+	require.True(t, c.closed, "releasing mid-transaction must discard the connection")
 }
 
 func TestPipeline_ReleaseDiscard(t *testing.T) {
@@ -380,7 +392,7 @@ func TestPipeline_AlignFailureReleases(t *testing.T) {
 	require.Error(t, p.Handle(context.Background(), rt, query("SELECT 1")))
 	require.Empty(t, rt.leases)
 	c := tr.last(t)
-	require.Equal(t, 1, c.resets)
+	require.True(t, c.closed, "an align failure means the connection state is unknown")
 	require.Equal(t, 0, c.execCalls)
 }
 
@@ -397,7 +409,7 @@ func TestPipeline_ExecFailureReleases(t *testing.T) {
 	require.Empty(t, rt.leases)
 	c := tr.last(t)
 	require.Equal(t, 1, c.execCalls)
-	require.Equal(t, 1, c.resets)
+	require.True(t, c.closed, "an exec failure discards the connection")
 }
 
 func TestPipeline_EffectAppliedAfterSuccess(t *testing.T) {
@@ -434,7 +446,7 @@ func TestPipeline_EffectSkippedOnServerErr(t *testing.T) {
 	require.Empty(t, rt.State.Database())
 	require.True(t, rt.State.Autocommit())
 	require.Empty(t, rt.leases, "non-sticky server error must release")
-	require.Equal(t, 1, tr.last(t).resets)
+	require.False(t, tr.last(t).closed, "a backend ERR leaves the connection reusable")
 }
 
 func TestPipeline_ServerErrKeepsInTx(t *testing.T) {
@@ -450,7 +462,7 @@ func TestPipeline_ServerErrKeepsInTx(t *testing.T) {
 	require.NoError(t, p.Handle(context.Background(), rt, query("SELECT 1")))
 	require.True(t, rt.State.InTx(), "ERR must not clear transaction state")
 	require.Len(t, rt.leases, 1)
-	require.Equal(t, 0, tr.last(t).resets)
+	require.False(t, tr.last(t).closed)
 	require.NoError(t, p.Release(rt, true))
 }
 
@@ -552,8 +564,8 @@ func TestPipeline_MultiSliceLeases(t *testing.T) {
 
 	require.NoError(t, p.Release(rt, false))
 	require.Empty(t, rt.leases)
-	require.Equal(t, 1, tr0.last(t).resets)
-	require.Equal(t, 1, tr1.last(t).resets)
+	require.True(t, tr0.last(t).closed, "mid-transaction release discards")
+	require.True(t, tr1.last(t).closed, "mid-transaction release discards")
 }
 
 func TestPipeline_UnknownSlice(t *testing.T) {
@@ -755,7 +767,7 @@ func TestPipeline_PrepareLifecycle(t *testing.T) {
 	require.Zero(t, rt.State.Stmts().Len())
 	require.False(t, rt.State.NeedsSticky(), "closing the last stmt releases the pin")
 	require.Empty(t, rt.leases, "closing the last stmt releases the backend lease")
-	require.Equal(t, 1, tr.last(t).resets)
+	require.False(t, tr.last(t).closed, "a closed stmt leaves the connection clean")
 }
 
 func TestPipeline_UsesTargetSQL(t *testing.T) {
@@ -830,4 +842,67 @@ func TestPipeline_ExplainRouteWritesResult(t *testing.T) {
 	require.NoError(t, p.Handle(context.Background(), rt, stmt))
 	require.NotEmpty(t, collect())
 	require.Equal(t, int64(-1), rt.State.RowCount())
+}
+
+func TestPipeline_DirtyStatementDiscards(t *testing.T) {
+	cases := []string{
+		"SET SESSION sort_buffer_size = 1",
+		"SELECT 1; SET SESSION sort_buffer_size = 1",
+		"/*!40101 SET SESSION sort_buffer_size=1 */",
+	}
+	for _, raw := range cases {
+		t.Run(raw, func(t *testing.T) {
+			tr := &tracker{}
+			p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, nil))),
+				plan.Builder{Router: source.AllMaster{}})
+			require.NoError(t, err)
+
+			rt := newRuntime()
+			require.NoError(t, p.Handle(context.Background(), rt, query(raw)))
+			require.Empty(t, rt.leases)
+			require.True(t, tr.last(t).closed, "dirty session state must discard the connection")
+		})
+	}
+}
+
+func TestPipeline_CleanStatementReturnsConnection(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, nil))),
+		plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	require.NoError(t, p.Handle(context.Background(), rt, query("SELECT 1")))
+	require.NoError(t, p.Handle(context.Background(), rt, query("SELECT 2")))
+
+	c := tr.last(t)
+	require.False(t, c.closed, "clean connections must return to the pool")
+	require.Equal(t, 0, c.resets, "returning a clean connection must not reset it")
+	require.Equal(t, 1, tr.opens(), "the second query must reuse the connection")
+}
+
+func TestPipeline_UndrainedStreamDiscards(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
+		c.undrained = true
+	}))), plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	require.NoError(t, p.Handle(context.Background(), rt, query("SELECT 1")))
+	require.Empty(t, rt.leases)
+	require.True(t, tr.last(t).closed, "unread rows make the connection unsafe to reuse")
+}
+
+func TestPipeline_ForwardFailureDiscards(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
+		c.forwardErr = errors.New("forward failed")
+	}))), plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	rt := newRuntime()
+	require.Error(t, p.Handle(context.Background(), rt, query("SELECT 1")))
+	require.Empty(t, rt.leases)
+	require.True(t, tr.last(t).closed, "a broken forward must discard the connection")
 }

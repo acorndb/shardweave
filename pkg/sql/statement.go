@@ -2,8 +2,6 @@
 package sql
 
 import (
-	"strings"
-
 	"github.com/pingcap/tidb/pkg/parser/ast"
 )
 
@@ -35,20 +33,31 @@ type Statement struct {
 	Kind    Kind
 	Effect  Effect
 	Err     error
+
+	// Class is the single statement-level semantic snapshot. It is computed
+	// once from Raw (see EnsureClass) and must be the only input to routing,
+	// planning and session decisions.
+	Class Class
+
+	classReady bool
 }
 
-// IsDML reports whether raw starts with a DML keyword. ROW_COUNT() uses
-// affected_rows for these statements and 0/-1 for everything else.
-func IsDML(raw string) bool {
-	s := trimLeadingSQLComments(strings.TrimSpace(raw))
-	i := 0
-	for i < len(s) && isSQLIdentChar(s[i]) {
-		i++
+// EnsureClass returns the semantic snapshot, computing it from Raw on first
+// use. A scan failure degrades conservatively (design D2): the statement is
+// never treated as a read and the session is pinned to the master.
+func (s *Statement) EnsureClass() *Class {
+	if s == nil {
+		return &Class{}
 	}
-	switch strings.ToUpper(s[:i]) {
-	case "INSERT", "UPDATE", "DELETE", "REPLACE", "LOAD":
-		return true
-	default:
-		return false
+	if s.classReady {
+		return &s.Class
 	}
+	toks, err := Scan(s.Raw)
+	if err != nil {
+		s.Class = Class{ScanFailed: true}
+	} else {
+		s.Class = Classify(s.Raw, toks)
+	}
+	s.classReady = true
+	return &s.Class
 }

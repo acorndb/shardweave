@@ -122,18 +122,18 @@ func (r *Router) Route(_ context.Context, st *session.State, stmt *sql.Statement
 	case *ast.UseStmt:
 		return r.defaultTargets(constant.RoleMaster), nil
 	case *ast.SetStmt:
-		if isSetNames(stmt.Raw) {
+		if stmt.EnsureClass().SetNames != "" {
 			return r.defaultTargets(constant.RoleMaster), nil
 		}
 		return nil, reject("SET is not supported in sharding mode")
 	case *ast.ShowStmt:
 		if isSafeShow(s.Tp) {
-			return r.defaultTargets(source.PickRole(st, stmt.Cmd, stmt.Raw)), nil
+			return r.defaultTargets(source.PickRole(st, stmt)), nil
 		}
 		return nil, reject("SHOW type is not supported in sharding mode")
 	case *ast.ExplainStmt:
-		if isDescribe(stmt.Raw) {
-			return r.defaultTargets(source.PickRole(st, stmt.Cmd, stmt.Raw)), nil
+		if isDescribe(stmt) {
+			return r.defaultTargets(source.PickRole(st, stmt)), nil
 		}
 		return nil, reject("EXPLAIN is not supported in sharding mode; use EXPLAIN ROUTE")
 	case *ast.SelectStmt:
@@ -142,7 +142,7 @@ func (r *Router) Route(_ context.Context, st *session.State, stmt *sql.Statement
 			// ROW_COUNT() have no table; any slice can answer the literal.
 			return []route.Target{{
 				Slice: r.defaultSlice,
-				Role:  source.PickRole(st, stmt.Cmd, stmt.Raw),
+				Role:  source.PickRole(st, stmt),
 			}}, nil
 		}
 		tn, err = singleTable(s.From)
@@ -167,7 +167,7 @@ func (r *Router) Route(_ context.Context, st *session.State, stmt *sql.Statement
 				return nil, err
 			}
 		}
-		return targetsForSlices(slices, source.PickRole(st, stmt.Cmd, stmt.Raw)), nil
+		return targetsForSlices(slices, source.PickRole(st, stmt)), nil
 	case *ast.UpdateStmt:
 		if s.MultipleTable {
 			return nil, reject("multi-table UPDATE is not supported")
@@ -213,7 +213,7 @@ func (r *Router) Route(_ context.Context, st *session.State, stmt *sql.Statement
 	}
 	return []route.Target{{
 		Slice: slice,
-		Role:  source.PickRole(st, stmt.Cmd, stmt.Raw),
+		Role:  source.PickRole(st, stmt),
 	}}, nil
 }
 
@@ -315,41 +315,21 @@ func selectHasSubquery(s *ast.SelectStmt) bool {
 	return v.found
 }
 
-func isSetNames(raw string) bool {
-	s := strings.TrimSpace(raw)
-	upper := strings.ToUpper(s)
-	if !hasWordPrefix(upper, "SET") {
-		return false
-	}
-	rest := strings.TrimSpace(s[len("SET"):])
-	return hasWordPrefix(strings.ToUpper(rest), "NAMES")
-}
-
-func isDescribe(raw string) bool {
-	s := strings.TrimSpace(raw)
-	upper := strings.ToUpper(s)
-	return hasWordPrefix(upper, "DESC") || hasWordPrefix(upper, "DESCRIBE")
-}
-
-func isSafeShow(tp ast.ShowStmtType) bool {
-	switch tp {
-	case ast.ShowTables, ast.ShowColumns, ast.ShowCreateTable, ast.ShowIndex,
-		ast.ShowVariables, ast.ShowDatabases:
+// isDescribe reports DESCRIBE/DESC (as opposed to EXPLAIN). First comes from
+// the statement Class, so the decision stays in the token layer.
+func isDescribe(stmt *sql.Statement) bool {
+	switch stmt.EnsureClass().First {
+	case "DESC", "DESCRIBE":
 		return true
 	default:
 		return false
 	}
 }
 
-func hasWordPrefix(s, prefix string) bool {
-	if !strings.HasPrefix(s, prefix) {
-		return false
-	}
-	if len(s) == len(prefix) {
-		return true
-	}
-	switch s[len(prefix)] {
-	case ' ', '\t', '\n', '\r', ';':
+func isSafeShow(tp ast.ShowStmtType) bool {
+	switch tp {
+	case ast.ShowTables, ast.ShowColumns, ast.ShowCreateTable, ast.ShowIndex,
+		ast.ShowVariables, ast.ShowDatabases:
 		return true
 	default:
 		return false

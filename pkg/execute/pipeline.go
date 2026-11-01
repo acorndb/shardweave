@@ -30,6 +30,10 @@ type lease struct {
 	slice *backend.Slice
 	conn  backend.Conn
 	pool  *backend.Pool
+	// reusable is false when the statement may have changed backend session
+	// state we cannot reproduce, or when the response was not fully consumed.
+	// Such connections are discarded instead of returned to the pool.
+	reusable bool
 }
 
 // Executor is the process-shared execution strategy.
@@ -74,7 +78,9 @@ func (p *Pipeline) releaseOne(rt *Runtime, sliceName string, discard bool) error
 		return nil
 	}
 	delete(rt.leases, sliceName)
-	if discard {
+	// A connection that is broken, dirty, or still mid-transaction must not go
+	// back to the pool; closing it lets the pool rebuild a clean one.
+	if discard || !l.reusable || rt.State.NeedsSticky() {
 		return l.slice.Discard(l.pool, l.conn)
 	}
 	return l.slice.Release(l.pool, l.conn)
@@ -110,7 +116,7 @@ func (p *Pipeline) acquireLease(ctx context.Context, rt *Runtime, target route.T
 	if err != nil {
 		return nil, false, err
 	}
-	l := &lease{slice: slice, conn: conn, pool: pool}
+	l := &lease{slice: slice, conn: conn, pool: pool, reusable: true}
 	rt.leases[target.Slice] = l
 	return l, true, nil
 }
@@ -124,6 +130,7 @@ func (p *Pipeline) execTarget(ctx context.Context, rt *Runtime, stmt *sql.Statem
 	}
 	stream, err := p.execOnLease(ctx, rt, stmt, target, l)
 	if err != nil {
+		l.reusable = false
 		if acquired {
 			_ = p.releaseOne(rt, target.Slice, false)
 		}
@@ -135,6 +142,9 @@ func (p *Pipeline) execTarget(ctx context.Context, rt *Runtime, stmt *sql.Statem
 // execOnLease aligns and executes on an already-acquired lease. Dispatch uses
 // it to run independent shard targets concurrently.
 func (p *Pipeline) execOnLease(ctx context.Context, rt *Runtime, stmt *sql.Statement, target route.Target, l *lease) (result.Stream, error) {
+	if dirtyForReuse(stmt.EnsureClass()) {
+		l.reusable = false
+	}
 	if err := l.conn.Align(ctx, backend.AlignSettings{
 		Database: targetDatabase(rt, target),
 		Charset:  rt.State.Charset(),
@@ -210,13 +220,52 @@ func (p *Pipeline) executePlan(ctx context.Context, rt *Runtime, stmt *sql.State
 	}
 }
 
+// dirtyForReuse reports whether a statement may have left backend session
+// state that the proxy cannot reproduce on acquire. SET NAMES, USE and
+// autocommit are tracked by Effect/Align; everything else forces a discard.
+func dirtyForReuse(c *sql.Class) bool {
+	if c == nil {
+		return false
+	}
+	if c.ScanFailed || c.HasExecComment || c.Multi || c.TempTable || c.LockTables || c.UserVarWrite {
+		return true
+	}
+	for _, name := range c.SessionVarWrite {
+		if name != "autocommit" {
+			return true
+		}
+	}
+	return false
+}
+
+// streamDrained reports whether a backend stream was consumed to its
+// terminator. Streams that do not implement Drained are assumed complete
+// (test doubles and synthetic streams).
+type drainReporter interface{ Drained() bool }
+
+func streamDrained(s result.Stream) bool {
+	if d, ok := s.(drainReporter); ok {
+		return d.Drained()
+	}
+	return true
+}
+
+func (p *Pipeline) markUnreusable(rt *Runtime, sliceName string) {
+	if rt == nil || rt.leases == nil {
+		return
+	}
+	if l := rt.leases[sliceName]; l != nil {
+		l.reusable = false
+	}
+}
+
 // runOne executes one target, acquires/reuses its lease and forwards the raw
 // response. It returns whether session state was successfully updated.
-func (p *Pipeline) runOne(ctx context.Context, rt *Runtime, stmt *sql.Statement, target route.Target) (bool, error) {
+func (p *Pipeline) runOne(ctx context.Context, rt *Runtime, stmt *sql.Statement, target route.Target) (ok bool, err error) {
 	// Evaluate stickiness after execution: BEGIN sets InTx from the backend status.
 	defer func() {
 		if !rt.State.NeedsSticky() {
-			_ = p.Release(rt, false)
+			_ = p.Release(rt, err != nil)
 		}
 	}()
 
@@ -234,7 +283,11 @@ func (p *Pipeline) runOne(ctx context.Context, rt *Runtime, stmt *sql.Statement,
 		clientID := rt.State.NextStmtID()
 		info, backendID, err := pf.ForwardPrepareTo(rt.Front, clientID)
 		if err != nil {
+			p.markUnreusable(rt, target.Slice)
 			return false, err
+		}
+		if !streamDrained(stream) {
+			p.markUnreusable(rt, target.Slice)
 		}
 		if info.ServerErr {
 			return false, nil
@@ -259,7 +312,11 @@ func (p *Pipeline) runOne(ctx context.Context, rt *Runtime, stmt *sql.Statement,
 	}
 	info, err := raw.ForwardTo(ctx, rt.Front)
 	if err != nil {
+		p.markUnreusable(rt, target.Slice)
 		return false, err
+	}
+	if !streamDrained(stream) {
+		p.markUnreusable(rt, target.Slice)
 	}
 	if info.ServerErr {
 		return false, nil // ERR already forwarded; rowCount is marked -1
@@ -399,8 +456,8 @@ func rewriteSessionFunc(st *session.State, stmt *sql.Statement) {
 	if stmt.Cmd != mysql.ComQuery {
 		return
 	}
-	fn, ok := sql.ParseSessionFunc(stmt.Raw)
-	if !ok {
+	fn := stmt.EnsureClass().SessionFunc
+	if fn == nil {
 		return
 	}
 	var value string
@@ -435,7 +492,7 @@ func applyResponseState(st *session.State, stmt *sql.Statement, info mysql.Respo
 		st.SetRowCount(-1)
 		return
 	}
-	if stmt.Cmd == mysql.ComStmtExecute || sql.IsDML(stmt.Raw) {
+	if stmt.Cmd == mysql.ComStmtExecute || stmt.EnsureClass().IsDML() {
 		st.SetRowCount(int64(info.AffectedRows))
 		return
 	}

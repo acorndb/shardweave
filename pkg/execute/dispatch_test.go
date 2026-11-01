@@ -168,8 +168,8 @@ func TestDispatch_Concat(t *testing.T) {
 
 	require.Equal(t, 1, tr0.last(t).execCalls)
 	require.Equal(t, 1, tr1.last(t).execCalls)
-	require.Equal(t, 1, tr0.last(t).resets, "successful concat releases every lease")
-	require.Equal(t, 1, tr1.last(t).resets)
+	require.False(t, tr0.last(t).closed, "successful concat releases every lease")
+	require.False(t, tr1.last(t).closed)
 	require.Empty(t, rt.leases)
 	require.Equal(t, int64(-1), rt.State.RowCount())
 }
@@ -288,8 +288,8 @@ func TestDispatch_Ordered(t *testing.T) {
 	}
 	require.Equal(t, []string{"1", "2", "3", "4"}, ids)
 	require.Empty(t, rt.leases)
-	require.Equal(t, 1, tr0.last(t).resets, "fully consumed ordered streams are released")
-	require.Equal(t, 1, tr1.last(t).resets)
+	require.False(t, tr0.last(t).closed, "fully consumed ordered streams are released")
+	require.False(t, tr1.last(t).closed)
 }
 
 func TestDispatch_OrderedHiddenProjection(t *testing.T) {
@@ -331,8 +331,8 @@ func TestDispatch_OrderedHiddenProjection(t *testing.T) {
 	require.Equal(t, "200", string(first[0]))
 	require.Equal(t, "50", string(second[0]))
 	require.Empty(t, rt.leases)
-	require.Equal(t, 1, tr0.last(t).resets)
-	require.Equal(t, 1, tr1.last(t).resets)
+	require.False(t, tr0.last(t).closed)
+	require.False(t, tr1.last(t).closed)
 }
 
 func TestDispatch_OrderedLimit(t *testing.T) {
@@ -443,8 +443,8 @@ func TestDispatch_Aggregate(t *testing.T) {
 	require.Equal(t, "5", string(cells[0]))
 	require.Equal(t, "250", string(cells[1]))
 	require.Empty(t, rt.leases)
-	require.Equal(t, 1, tr0.last(t).resets, "aggregate consumes every shard row")
-	require.Equal(t, 1, tr1.last(t).resets)
+	require.False(t, tr0.last(t).closed, "aggregate consumes every shard row")
+	require.False(t, tr1.last(t).closed)
 }
 
 func TestDispatch_Avg(t *testing.T) {
@@ -483,8 +483,8 @@ func TestDispatch_Avg(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "3.2500", string(cells[0]))
 	require.Empty(t, rt.leases)
-	require.Equal(t, 1, tr0.last(t).resets)
-	require.Equal(t, 1, tr1.last(t).resets)
+	require.False(t, tr0.last(t).closed)
+	require.False(t, tr1.last(t).closed)
 }
 
 func TestDispatch_GroupOrderLimit(t *testing.T) {
@@ -575,8 +575,8 @@ func TestDispatch_Distinct(t *testing.T) {
 	}
 	require.Equal(t, [][2]string{{"1", "50"}, {"2", "200"}, {"2", "50"}}, rows)
 	require.Empty(t, rt.leases)
-	require.Equal(t, 1, tr0.last(t).resets)
-	require.Equal(t, 1, tr1.last(t).resets)
+	require.False(t, tr0.last(t).closed)
+	require.False(t, tr1.last(t).closed)
 }
 
 func TestDispatch_Group(t *testing.T) {
@@ -626,8 +626,8 @@ func TestDispatch_Group(t *testing.T) {
 	require.Equal(t, []string{"1", "3", "35"}, []string{string(first[0]), string(first[1]), string(first[2])})
 	require.Equal(t, []string{"2", "1", "100"}, []string{string(second[0]), string(second[1]), string(second[2])})
 	require.Empty(t, rt.leases)
-	require.Equal(t, 1, tr0.last(t).resets)
-	require.Equal(t, 1, tr1.last(t).resets)
+	require.False(t, tr0.last(t).closed)
+	require.False(t, tr1.last(t).closed)
 }
 
 func TestDispatch_AggregateLimitZero(t *testing.T) {

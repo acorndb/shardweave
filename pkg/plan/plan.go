@@ -180,7 +180,7 @@ func (b Builder) Build(ctx context.Context, st *session.State, stmt *sql.Stateme
 	if stmt == nil {
 		return nil, fmt.Errorf("plan: nil statement")
 	}
-	if reason := sql.UnsupportedReason(stmt.Raw); reason != "" {
+	if reason := stmt.EnsureClass().UnsupportedReason(); reason != "" {
 		return &Plan{
 			Kind:   Reject,
 			Reject: errs.New(errs.ErNotSupportedYet, errs.StateSyntax, reason),

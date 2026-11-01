@@ -16,6 +16,7 @@ type decodedStream struct {
 	fields       []result.Field
 	ncols        int
 	done         bool
+	drained      bool
 }
 
 // Decode switches a raw stream into logical rows. It must be called before
@@ -108,6 +109,7 @@ func (s *decodedStream) Next() (result.Row, error) {
 		}
 		if data[0] == mysql.EOFHeader && len(data) < 9 {
 			s.done = true
+			s.drained = true
 			return nil, io.EOF
 		}
 		cells, err := mysql.DecodeTextRow(data, s.ncols)
@@ -128,3 +130,7 @@ func (s *decodedStream) Close() error {
 	s.done = true
 	return nil
 }
+
+// Drained reports whether the row terminator was read. Closing early leaves
+// unread packets on the wire, so the connection must not be reused.
+func (s *decodedStream) Drained() bool { return s.drained }

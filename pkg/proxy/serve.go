@@ -89,7 +89,7 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 					stmt.Payload = append([]byte{mysql.ComQuery}, []byte(raw)...)
 				}
 				stmt.Raw = raw
-				stmt.Effect = sql.ParseSessionEffect(raw)
+				stmt.Effect = stmt.EnsureClass().Effect()
 				if cfg.ParseAST {
 					parseStatementAST(stmt, raw)
 				}
@@ -124,7 +124,7 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 				continue
 			}
 		case mysql.ComQuery:
-			if sql.DetectReservedSQL(stmt.Raw) {
+			if stmt.EnsureClass().Reserved() {
 				st.MarkReserved()
 			}
 			if err := cfg.Exec.Handle(ctx, ec, stmt); err != nil {

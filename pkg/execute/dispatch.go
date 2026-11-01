@@ -38,6 +38,9 @@ func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statemen
 	if rt.Front == nil {
 		return false, fmt.Errorf("execute: multi-shard plan requires a frontend")
 	}
+	// Compute the statement snapshot before spawning per-shard goroutines:
+	// EnsureClass is not safe for concurrent first use.
+	stmt.EnsureClass()
 
 	type shardResult struct {
 		slice  string
@@ -162,7 +165,13 @@ func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statemen
 
 	// With LIMIT the merge may stop before every shard stream reaches EOF;
 	// unread packets make the connection unsafe to reuse, so discard.
-	cleanup(pl.Merge.Limit != nil)
+	discard := pl.Merge.Limit != nil
+	for _, o := range opened {
+		if !streamDrained(o.stream) {
+			discard = true
+		}
+	}
+	cleanup(discard)
 	rt.State.SetRowCount(-1)
 	return true, nil
 }
