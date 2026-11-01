@@ -42,3 +42,22 @@ func TestProtocolConstants(t *testing.T) {
 		})
 	}
 }
+
+func TestServerStatusWord(t *testing.T) {
+	cases := []struct {
+		name       string
+		autocommit bool
+		inTx       bool
+		want       uint16
+	}{
+		{"autocommit", true, false, ServerStatusAutocommit},
+		{"in_transaction", true, true, ServerStatusAutocommit | ServerStatusInTrans},
+		{"autocommit_off", false, false, 0},
+		{"autocommit_off_in_tx", false, true, ServerStatusInTrans},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, ServerStatusWord(tc.autocommit, tc.inTx))
+		})
+	}
+}

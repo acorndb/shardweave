@@ -63,3 +63,18 @@ const (
 	ServerStatusDBDropped       uint16 = 0x0100
 	ServerStatusMetadataChanged uint16 = 0x0400
 )
+
+// ServerStatusWord composes the SERVER_STATUS flags the proxy tracks for a
+// frontend session: AUTOCOMMIT while autocommit is on, IN_TRANS while a
+// transaction is open. Backend-only flags (MORE_RESULTS, CURSOR_EXISTS, ...)
+// are per-response and reach the client untouched on the passthrough path.
+func ServerStatusWord(autocommit, inTx bool) uint16 {
+	var status uint16
+	if autocommit {
+		status |= ServerStatusAutocommit
+	}
+	if inTx {
+		status |= ServerStatusInTrans
+	}
+	return status
+}
