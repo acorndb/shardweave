@@ -1,10 +1,10 @@
-# shardweave 架构设计（v0.2：模块化形态）
+# shardweave 架构设计（v0.3：M3 完成基线）
 
-> 状态：讨论稿。模块形态已定；模块边界、接口与配置细节以
-> [design/module-map.md](design/module-map.md) 为准（该文件当前位于被 gitignore 的
+> 状态：实现基线。模块边界、接口与配置细节以
+> [design/module-map.md](design/module-map.md) 为准（该文件位于被 gitignore 的
 > `docs/design/`，提交时需 `git add -f`）。
 > 本文是项目的 north star；实现偏离此处记录的设计时先改文档。
-> 日期：2026-10-31
+> 日期：2026-11-01
 > 模块路径：`github.com/acorndb/shardweave`
 
 ## 1. 设计原则
@@ -133,9 +133,16 @@ pkg/execute.Handle
 
 说明：
 
+- **两处本地应答，不触后端**：`EXPLAIN ROUTE`（合成路由结果集）与
+  `SET NAMES utf8mb4`（合成 OK）。后者的本地化是列元数据保真的前提——透传执行会把
+  后端 `character_set_results` 从 NULL 重置，破坏列定义携带真实 collation（A10）。
 - **N=1 Passthrough 不解析、不解码**：`Plan.Kind=Passthrough` 时直接把后端包转发给前端。
 - **SingleShard 可以走 raw**：表名/库名改写不改变结果集形状，仍然零解码。
-- **只有 MultiShard 解码**：把结果集变成 `Row` 后交给 `merge`。
+- **只有 MultiShard 解码**：把结果集变成 `Row` 后交给 `merge`；字符串比较按列
+  collation（白名单 utf8mb4 族 + PAD SPACE，A11）。
+- **Align 是会话状态到连接的重放点**：库、字符集、白名单会话变量
+  （`time_zone`/`transaction_isolation`，含 unused→DEFAULT，A13）；结果未读完的
+  连接在归还时淘汰（A12）。
 - **Plan 不可变**：构建完成后只读，可被 `EXPLAIN ROUTE` 和后续 plan cache 复用。
 
 ## 5. 依赖规则（强制）
@@ -237,7 +244,7 @@ P3 的路由只接受能证明单分片的谓词（分片键等值、同片 `IN`
 | `pkg/route` | 规则→目标（纯函数） | 路由确定性 | — | — | 分片 vs 单库 |
 | `pkg/plan` | Kind/Reject/Explain | — | — | — | — |
 | `pkg/execute` | fake backend/stream | — | 多分片下发 | — | — |
-| `pkg/merge` | identity/order/agg | — | — | — | 分片 vs 单库 |
+| `pkg/merge` | identity/order/agg/collation | — | — | — | **分片 vs 单库（聚合 + collation oracle）** |
 | `pkg/config` | 校验/归一化 | — | 热加载不中断 | — | — |
 
 测试原则：
@@ -258,13 +265,13 @@ P3 的路由只接受能证明单分片的谓词（分片键等值、同片 `IN`
 
 | 里程碑 | 内容 | 退出条件 |
 |---|---|---|
-| **M1 透传**（当前） | 协议、池、passthrough、差分 harness | 已有 P0–P2 能力 |
-| **M1.5 模块化 seam** | `backend.Slice`、`route/source`、`plan`/`result`/`execute` 骨架；删 sharding 桩 | 差分全绿，行为不变 |
-| **M2 会话与单分片** | `Session` 状态、`backend` 配置、单分片路由、`Reject`、`EXPLAIN ROUTE` | 路由表驱动单测 + 单分片 e2e |
-| **M3 跨分片** | MultiShard、dispatch、identity/order/aggregate/limit、变形 harness | 分片 vs 单库一致 |
-| **M4 生产化** | 健康检查、故障回落、限流/指标、容量与性能门禁 | 故障注入 + 性能门禁 |
+| **M1 透传** ✅ | 协议、池、passthrough、差分 harness | 已达成 |
+| **M1.5 模块化 seam** ✅ | `backend.Slice`、`route/source`、`plan`/`result`/`execute` 骨架；删 sharding 桩 | 差分全绿，行为不变 |
+| **M2 会话与单分片** ✅ | `Session` 状态、`backend` 配置、单分片路由、`Reject`、`EXPLAIN ROUTE` | 路由表驱动单测 + 单分片 e2e |
+| **M3 跨分片** ✅ | MultiShard、dispatch、identity/order/aggregate/limit、变形 harness；超出设计的增量：collation 归并、池生命周期（脏即弃）、会话变量重放、语句判定单真相源 | 分片 vs 单库一致（聚合 + collation 矩阵 oracle 全绿） |
+| **M4 生产化**（未开始） | 健康检查、故障回落、限流/指标、容量与性能门禁 | 故障注入 + 性能门禁 |
 
-M1.5/M2 已按模块 seam 落地，当前模块边界与依赖以
+M1–M3 已按模块 seam 落地，当前模块边界与依赖以
 [design/module-map.md](design/module-map.md) 为准。
 
 ## 11. 决策记录
@@ -279,6 +286,12 @@ M1.5/M2 已按模块 seam 落地，当前模块边界与依赖以
 | A6 | P3 只做"单分片可证明 + 拒绝跨片" | locked |
 | A7 | N=1 走 raw packet，不 Decode | locked |
 | A8 | 物理库映射放 `Target.DB` | locked |
+| A9 | collation 引擎第一方化拷贝 vitess（`pkg/mysql/collation`，stdlib-only，commit 锁定），不引 module 依赖 | locked |
+| A10 | 列元数据保真：后端拨号后固定 `character_set_results=NULL`；`SET NAMES utf8mb4` 本地应答不透传；Align 用 `character_set_client/connection` | locked |
+| A11 | 归并 collation 白名单：utf8mb4 族（general_ci/0900_ai_ci/bin）+ binary，PAD SPACE 语义；用户不可切换 collation（utf8mb4-only） | locked |
+| A12 | 池生命周期：不再无条件 `COM_RESET_CONNECTION`；未读尽/出错/不可复现会话状态的连接淘汰，干净连接直接归还 | locked |
+| A13 | 会话变量白名单重放：`time_zone`/`transaction_isolation`（diff + unused→DEFAULT，Gaea 模式）；白名单外 1235 | locked |
+| A14 | 语句级语义单真相源：token 扫描一次产出 `Class`（AST 为超集）；`ParseAST` 并入 `Sharding` 会话开关 | locked |
 
 ## 12. 参考
 
