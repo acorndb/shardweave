@@ -18,11 +18,16 @@ type UserProvider interface {
 	Password(user string) (password string, ok bool)
 }
 
-// Options controls frontend I/O deadlines and the logical packet limit.
+// Options controls frontend I/O deadlines, the logical packet limit, and the
+// connection id advertised in the handshake.
 type Options struct {
 	ReadTimeout      time.Duration
 	WriteTimeout     time.Duration
 	MaxAllowedPacket int
+	// ConnectionID is the value clients see in HandshakeV10 and through
+	// CONNECTION_ID(). Zero means 1: MySQL never issues 0, and callers that
+	// bypass pkg/server have no allocator.
+	ConnectionID uint32
 }
 
 // Conn is a server-side MySQL connection after a successful handshake.
@@ -31,10 +36,14 @@ type Conn struct {
 	user     string
 	database string
 	scramble []byte
+	id       uint32
 }
 
 // PacketConn returns the framed connection for subsequent commands.
 func (c *Conn) PacketConn() *packet.Conn { return c.pc }
+
+// ConnectionID returns the id advertised to the client in the handshake.
+func (c *Conn) ConnectionID() uint32 { return c.id }
 
 // User returns the authenticated username.
 func (c *Conn) User() string { return c.user }
@@ -65,10 +74,14 @@ func NewConnWithOptions(raw net.Conn, users UserProvider, opts Options) (*Conn, 
 		}
 	}
 
+	connID := opts.ConnectionID
+	if connID == 0 {
+		connID = 1
+	}
 	hs := &auth.HandshakeV10{
 		ProtocolVersion: 10,
 		ServerVersion:   "8.0.36-shardweave",
-		ConnectionID:    1,
+		ConnectionID:    connID,
 		AuthPluginData:  scramble,
 		Capability: mysql.ClientProtocol41 | mysql.ClientSecureConnection |
 			mysql.ClientPluginAuth | mysql.ClientTransactions |
@@ -77,7 +90,7 @@ func NewConnWithOptions(raw net.Conn, users UserProvider, opts Options) (*Conn, 
 			mysql.ClientSessionTrack | mysql.ClientConnectWithDB |
 			mysql.ClientPluginAuthLenEncClientData,
 		Collation:      255,
-		Status:         0x0002, // SERVER_STATUS_AUTOCOMMIT
+		Status:         mysql.ServerStatusAutocommit,
 		AuthPluginName: auth.NativePasswordPlugin,
 	}
 	payload, err := hs.Encode()
@@ -122,5 +135,5 @@ func NewConnWithOptions(raw net.Conn, users UserProvider, opts Options) (*Conn, 
 		return nil, err
 	}
 
-	return &Conn{pc: pc, user: resp.Username, database: resp.Database, scramble: scramble}, nil
+	return &Conn{pc: pc, user: resp.Username, database: resp.Database, scramble: scramble, id: connID}, nil
 }
