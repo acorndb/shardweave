@@ -338,11 +338,11 @@ func TestServe_RejectErrorWrites1235AndContinues(t *testing.T) {
 	quit(t, pc, serveErr)
 }
 
-func TestServe_ParseAST(t *testing.T) {
+func TestServe_ShardingParsesAST(t *testing.T) {
 	t.Run("enabled", func(t *testing.T) {
 		exec := newFakeExec()
 		pc, serveErr := newProxySessionWithConfig(t, exec, func(c *SessionConfig) {
-			c.ParseAST = true
+			c.Sharding = true
 		})
 
 		writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("SELECT 1")...))
@@ -367,7 +367,7 @@ func TestServe_ParseAST(t *testing.T) {
 	t.Run("parse_error_keeps_forwarding", func(t *testing.T) {
 		exec := newFakeExec()
 		pc, serveErr := newProxySessionWithConfig(t, exec, func(c *SessionConfig) {
-			c.ParseAST = true
+			c.Sharding = true
 		})
 
 		writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("SELEKT 1")...))

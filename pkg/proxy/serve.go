@@ -25,11 +25,10 @@ type SessionConfig struct {
 	ReadTimeout      time.Duration
 	WriteTimeout     time.Duration
 	MaxAllowedPacket int
-	// ParseAST enables one TiDB-parser pass per COM_QUERY. It is off for
-	// single/rwsplit and on for sharding (routing/rewrite need the AST).
-	ParseAST bool
-	// Sharding disables legacy sticky behaviors that do not apply when
-	// prepared statements are rejected by the shard router.
+	// Sharding marks the session as running in sharding mode: statements get
+	// one TiDB-parser pass (routing/rewrite need the AST) and prepared
+	// statements go through the proxy statement table instead of pinning a
+	// backend. single/rwsplit keep the zero-parse passthrough path.
 	Sharding bool
 }
 
@@ -90,7 +89,7 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 				}
 				stmt.Raw = raw
 				stmt.Effect = stmt.EnsureClass().Effect()
-				if cfg.ParseAST {
+				if cfg.Sharding {
 					parseStatementAST(stmt, raw)
 				}
 			case mysql.ComInitDB:
@@ -99,7 +98,7 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 				stmt.Effect = sql.Effect{UseDB: stmt.Raw}
 			case mysql.ComStmtPrepare:
 				stmt.Raw = string(data[1:])
-				if cfg.ParseAST {
+				if cfg.Sharding {
 					parseStatementAST(stmt, stmt.Raw)
 				}
 			case mysql.ComStmtExecute, mysql.ComStmtReset, mysql.ComStmtClose:
