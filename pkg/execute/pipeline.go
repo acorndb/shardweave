@@ -196,10 +196,7 @@ func (p *Pipeline) Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement)
 	if stmt.Cmd == mysql.ComQuery && stmt.EnsureClass().SetNames != "" {
 		applyEffect(rt.State, stmt.Effect)
 		rt.State.SetRowCount(0)
-		status := mysql.ServerStatusAutocommit
-		if rt.State.InTx() {
-			status |= mysql.ServerStatusInTrans
-		}
+		status := mysql.ServerStatusWord(rt.State.Autocommit(), rt.State.InTx())
 		return mysql.WriteOK(rt.Front, 0, 0, status, 0)
 	}
 
@@ -393,7 +390,8 @@ func (p *Pipeline) explainRoute(ctx context.Context, rt *Runtime, stmt *sql.Stat
 		pl, buildErr = p.builder.Build(ctx, rt.State, stmt)
 	}
 	cols, rows := explainRows(stmt, pl, buildErr)
-	return writeTextResult(rt.Front, cols, rows)
+	status := mysql.ServerStatusWord(rt.State.Autocommit(), rt.State.InTx())
+	return writeTextResult(rt.Front, cols, rows, status)
 }
 
 func explainRows(stmt *sql.Statement, pl *plan.Plan, buildErr error) ([]string, [][]string) {
@@ -428,7 +426,7 @@ func explainRows(stmt *sql.Statement, pl *plan.Plan, buildErr error) ([]string, 
 	return cols, rows
 }
 
-func writeTextResult(front *packet.Conn, cols []string, rows [][]string) error {
+func writeTextResult(front *packet.Conn, cols []string, rows [][]string, status uint16) error {
 	if front == nil {
 		return fmt.Errorf("execute: nil frontend for explain")
 	}
@@ -452,7 +450,7 @@ func writeTextResult(front *packet.Conn, cols []string, rows [][]string) error {
 	}
 	// The frontend handshake advertises CLIENT_DEPRECATE_EOF; keep this in sync
 	// if capability negotiation becomes per-session.
-	return mysql.WriteEOF(front, frontendDeprecateEOF, mysql.ServerStatusAutocommit, 0)
+	return mysql.WriteEOF(front, frontendDeprecateEOF, status, 0)
 }
 
 func writeFrontPayload(front *packet.Conn, payload []byte) error {
@@ -478,6 +476,8 @@ func rewriteSessionFunc(st *session.State, stmt *sql.Statement) {
 		value = strconv.FormatUint(st.LastInsertID(), 10)
 	case sql.SessionFuncRowCount:
 		value = strconv.FormatInt(st.RowCount(), 10)
+	case sql.SessionFuncConnectionID:
+		value = strconv.FormatUint(uint64(st.ConnectionID()), 10)
 	}
 	rewritten := fn.Rewrite(value)
 	payload := make([]byte, 1+len(rewritten))

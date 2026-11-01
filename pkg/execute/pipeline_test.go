@@ -450,6 +450,74 @@ func TestPipeline_EffectSkippedOnServerErr(t *testing.T) {
 	require.False(t, tr.last(t).closed, "a backend ERR leaves the connection reusable")
 }
 
+func TestPipeline_RewriteConnectionID(t *testing.T) {
+	st := session.NewState()
+	st.SetConnectionID(7)
+	stmt := query("SELECT CONNECTION_ID()")
+	rewriteSessionFunc(st, stmt)
+
+	want := "SELECT CAST(7 AS UNSIGNED) AS `CONNECTION_ID()`"
+	require.Equal(t, want, string(stmt.Payload[1:]))
+	require.Equal(t, want, stmt.Raw)
+	require.Nil(t, stmt.EnsureClass().SessionFunc, "the rewritten statement no longer references the session function")
+}
+
+func TestPipeline_KillRejected(t *testing.T) {
+	tr := &tracker{}
+	g := sliceWith("default", newPool(t, "master", tr, nil))
+	p, err := New(clusterOf(t, g), plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	err = p.Handle(context.Background(), newRuntime(), query("KILL 1"))
+	var rej *errs.MySQL
+	require.ErrorAs(t, err, &rej)
+	require.Equal(t, uint16(1235), rej.Number)
+	require.Contains(t, rej.Message, "KILL")
+	require.Zero(t, tr.opens(), "KILL must never reach a pooled backend")
+}
+
+func TestPipeline_ExplainRouteStatusInTransaction(t *testing.T) {
+	tr := &tracker{}
+	g := sliceWith("default", newPool(t, "master", tr, nil))
+	p, err := New(clusterOf(t, g), plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	rt.State.SetInTx(true)
+
+	stmt := query("SELECT 1")
+	stmt.Kind = sql.KindExplainRoute
+	require.NoError(t, p.Handle(context.Background(), rt, stmt))
+
+	pkts := collect()
+	require.NotEmpty(t, pkts)
+	require.Equal(t,
+		mysql.EncodeEOF(true, mysql.ServerStatusAutocommit|mysql.ServerStatusInTrans, 0),
+		pkts[len(pkts)-1],
+		"a synthetic result set inside a transaction must report SERVER_STATUS_IN_TRANS")
+	require.Equal(t, int64(-1), rt.State.RowCount())
+}
+
+func TestPipeline_SetNamesStatusInTransaction(t *testing.T) {
+	tr := &tracker{}
+	g := sliceWith("default", newPool(t, "master", tr, nil))
+	p, err := New(clusterOf(t, g), plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	rt.State.SetInTx(true)
+
+	require.NoError(t, p.Handle(context.Background(), rt, query("SET NAMES utf8mb4")))
+	pkts := collect()
+	require.Len(t, pkts, 1)
+	require.Equal(t, mysql.EncodeOK(0, 0, mysql.ServerStatusAutocommit|mysql.ServerStatusInTrans, 0), pkts[0])
+	require.Zero(t, tr.opens(), "SET NAMES is answered locally")
+}
+
 func TestPipeline_ServerErrKeepsInTx(t *testing.T) {
 	tr := &tracker{}
 	g := sliceWith("default", newPool(t, "master", tr, func(c *fakeConn) {
