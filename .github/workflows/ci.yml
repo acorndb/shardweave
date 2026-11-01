@@ -9,13 +9,24 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # 私有仓库：Codecov 上传与徽章都需要 token。未配置 secret 时下面
+      # 的上传步骤会被跳过，CI 不会因此变红。
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: 单元测试(short, 无 Docker 依赖)
-        run: make test-unit
+      - name: 单元测试(short, 含覆盖率)
+        run: make coverage
+      - name: 上传覆盖率(Codecov)
+        if: env.CODECOV_TOKEN != ''
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.out
+          token: ${{ env.CODECOV_TOKEN }}
+          fail_ci_if_error: false
       - name: 差分校准(需要 Docker, runner 自带)
         run: make test-integration
 

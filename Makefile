@@ -2,7 +2,7 @@ GO ?= go
 # Keep in sync with .github/workflows/ci.yml golangci-lint-action version.
 GOLANGCI_VERSION ?= v2.15.0
 
-.PHONY: build test test-unit test-integration lint fmt tidy
+.PHONY: build test test-unit coverage test-integration lint fmt tidy
 
 build:
 	$(GO) build ./...
@@ -12,6 +12,10 @@ test: test-unit test-integration
 # -short 跳过需要 Docker 的差分校准
 test-unit:
 	$(GO) test -race -short -count=1 ./...
+
+# 单元测试 + 覆盖率（CI 上传 Codecov；coverage.out 已被 .gitignore 忽略）
+coverage:
+	$(GO) test -race -short -count=1 -covermode=atomic -coverprofile=coverage.out ./...
 
 test-integration:
 	$(GO) test -race -count=1 -timeout 20m -v ./test/differential/ -run 'TestNullProxyCalibration|TestPassthroughDifferential|TestPassthroughQueryScenarios'

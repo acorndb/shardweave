@@ -1,6 +1,9 @@
 # shardweave
 
 [![CI](https://github.com/acorndb/shardweave/actions/workflows/ci.yml/badge.svg)](https://github.com/acorndb/shardweave/actions/workflows/ci.yml)
+<!-- 私有仓库：把 ?token= 后的 CODECOV_TOKEN 换成 Codecov 后台生成的 badge token -->
+[![codecov](https://codecov.io/gh/acorndb/shardweave/branch/main/graph/badge.svg?token=CODECOV_TOKEN)](https://codecov.io/gh/acorndb/shardweave)
+[![Go](https://img.shields.io/badge/go-1.27.3-blue.svg)](go.mod)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 MySQL 分库分表代理。单条数据通路承载三种拓扑（`single` / `rwsplit` / `sharding`），

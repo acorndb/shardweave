@@ -1,0 +1,5 @@
+# Codecov 只统计第一方代码：vendor 进来的 collation 引擎与 test/ 下的
+# 夹具/校准用例不计入覆盖率（排除后总量约 82%，不排除会被 0% 的 vendor 包拉低）。
+ignore:
+  - "pkg/mysql/collation/**"
+  - "test/**"
