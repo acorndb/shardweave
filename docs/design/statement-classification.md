@@ -1,7 +1,7 @@
 # 语句级判定统一（Single Truth）设计
 
 > 状态：决策稿（2026-11-01 复核收缩：D4 库绑定移出范围，见 §6）。
-> 前置：[architecture.md](../architecture.md) §1（设计原则）、§5（依赖规则）。
+> 前置：[architecture.md](../architecture/README.md) §1（设计原则）、§5（依赖规则）。
 > 本文只解决一个问题：语句级语义判定的双真相源。实现偏离本文时先改文档。
 > 提交提示：`docs/design/` 被 `.gitignore` 忽略，入仓需 `git add -f`。
 

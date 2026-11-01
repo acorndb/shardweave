@@ -1,7 +1,7 @@
 # 模块地图与依赖（module-map）
 
 > 状态：当前模块地图（2026-10-31）
-> 上位：[docs/architecture.md](../architecture.md)
+> 上位：[docs/architecture.md](../architecture/README.md)
 > 范围：模块形态、边界、依赖、核心接口、配置与落地顺序；接口以实现为准。
 >
 > 提交提示：`docs/design/` 仍被 `.gitignore` 忽略；入仓需 `git add -f`。
@@ -14,7 +14,7 @@
 
 ## 1. 调研结论（为什么是这个形态）
 
-完整对照见 [architecture.md §2](../architecture.md#2-开源对照结论)。关键证据：
+完整对照见 [architecture.md §2](../architecture/README.md#2-开源对照结论)。关键证据：
 
 | 项目 | 事实 | 对 shardweave 的含义 |
 |---|---|---|

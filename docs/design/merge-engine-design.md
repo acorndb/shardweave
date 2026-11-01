@@ -372,7 +372,7 @@ execute.dispatch(targets) → []result.Stream
 
 - 路径 `pkg/mysql/collation`，镜像上游 `go/mysql/collations`，便于将来 diff 同步。
 - **验收条件：仅依赖 stdlib**。上游对 `go/sqltypes`、`go/hack` 的依赖必须在拷贝时消除。
-- `pkg/merge` 需要导入它；architecture.md §5 的 merge 依赖行修订为
+- `pkg/merge` 需要导入它；architecture/README.md §3 的 merge 依赖行修订为
   `merge → result、plan（仅 MergeSpec）、mysql/collation（stdlib-only 叶子）`。
 
 ### 13.3 拷贝范围与适配清单

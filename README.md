@@ -76,7 +76,7 @@ MySQL 分库分表代理。单条数据通路承载三种拓扑（`single` / `rw
                 （master / slaves，MySQL 5.7+ / 8.0）
 ```
 
-模块层级与依赖规则的完整说明见 [docs/architecture.md](docs/architecture.md)。
+模块层级与依赖规则的完整说明见 [docs/architecture/](docs/architecture/README.md)。
 
 ## 快速开始
 

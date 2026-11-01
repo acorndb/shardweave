@@ -2,7 +2,7 @@
 
 > 状态：当前测试基建说明（2026-10-31）
 > 日期：2026-10-31
-> 上位：[architecture.md](../architecture.md)、[module-map.md](module-map.md)
+> 上位：[architecture.md](../architecture/README.md)、[module-map.md](module-map.md)
 > 范围：测试分层、MTR / RQG 评估、目录与 CI、落地顺序。
 > 提交提示：`docs/design/` 当前被 `.gitignore` 忽略；本文件需
 > `git add -f docs/design/test-infrastructure.md`。

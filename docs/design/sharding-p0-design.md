@@ -2,7 +2,7 @@
 
 > 状态：当前分片设计与实现状态（2026-10-31）
 > 范围：`backend.mode=sharding` 的能力盘点、模块拆分、分阶段落地与已实现边界。
-> 关联：[architecture.md](../architecture.md)、[module-map.md](module-map.md)、
+> 关联：[architecture.md](../architecture/README.md)、[module-map.md](module-map.md)、
 > [merge-engine-design.md](merge-engine-design.md)、[test-infrastructure.md](test-infrastructure.md)
 > 提交提示：`docs/design/` 被 `.gitignore` 忽略；入仓需 `git add -f`。
 
@@ -791,4 +791,4 @@ DDL 不通过代理执行：由外部迁移工具按片变更（§6.4），代�
   `engine/scatter_conn.go`
 - ShardingSphere：`infra/route`、`infra/rewrite`、`infra/executor`、`infra/merge`
   五阶段；`LastInsertIdReviser`
-- 现有设计：[module-map.md](module-map.md)、[architecture.md](../architecture.md)
+- 现有设计：[module-map.md](module-map.md)、[architecture.md](../architecture/README.md)

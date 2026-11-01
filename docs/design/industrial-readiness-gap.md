@@ -258,7 +258,7 @@
 
 ## 9. 参考
 
-- 现有设计：`docs/architecture.md`、`docs/design/module-map.md`、
+- 现有设计：`docs/architecture/README.md`、`docs/design/module-map.md`、
   `docs/design/test-infrastructure.md`
 - 开源对照：ProxySQL、Gaea、kingshard、Vitess、ShardingSphere 的能力面
 - MySQL 协议：HandshakeV10 / HandshakeResponse41、COM_*、CLIENT_* 能力位、
