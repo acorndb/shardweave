@@ -18,6 +18,10 @@
 | [merge.md](merge.md) | 归并与结果层 | `pkg/merge`、`pkg/result` |
 | [assembly.md](assembly.md) | 装配与进程层 | `pkg/server`、`pkg/config`、`cmd/shardweave` |
 
+横切：[sql-support-matrix.md](sql-support-matrix.md) 枚举 SQL 语法族在
+single/rwsplit（raw 透传）与 sharding（单分片/多分片/拒绝）下的计划层结果，
+由 `test/sqlmatrix/` 的表驱动测试锁定；执行期归并约束另列。
+
 ```
                 ┌────────────────────────────────────────────┐
   MySQL client  │                 shardweave                 │
@@ -170,6 +174,10 @@ grep -rn "strings.Contains\|strings.HasPrefix\|strings.ToUpper" pkg/route pkg/pl
 
 测试原则：route/plan 不依赖 Docker/MySQL（表驱动单测为主要正确性门禁）；execute 用
 fake backend + 脚本化 Stream；差分保持全绿；变形 harness 是跨分片功能的准入门槛。
+SDK 视角由 `test/gorm` 覆盖：GORM 走完整 CRUD/事务/预处理链路，并锁定 sharding 模式
+下 `interpolateParams` + `SkipDefaultTransaction` 的客户端约束。SQL 语料由
+`test/corpus` 覆盖：YAML case 对固定 Docker 环境做代理 vs 直连差分，默认 schema
+覆盖各数据类型（`docker/init/schema.sql` 的 `sql_type_test`）。
 
 ## 7. v1 明确不做
 

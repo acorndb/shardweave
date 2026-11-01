@@ -1,0 +1,21 @@
+# multi-column order
+SELECT id, user_id, amount FROM orders ORDER BY user_id DESC, id LIMIT 10;
+id	user_id	amount
+80	79	1904
+79	78	1903
+78	77	1902
+77	76	1901
+76	75	1804
+75	74	1803
+74	73	1802
+73	72	1801
+72	71	1704
+71	70	1703
+# limit offset
+SELECT id FROM orders ORDER BY id LIMIT 5 OFFSET 10;
+id
+11
+12
+13
+14
+15

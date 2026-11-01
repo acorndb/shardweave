@@ -1,0 +1,21 @@
+DROP TABLE IF EXISTS mtr_dml;
+affected_rows: 0
+CREATE TABLE mtr_dml (id INT PRIMARY KEY, v INT NOT NULL);
+affected_rows: 0
+INSERT INTO mtr_dml VALUES (1,1),(2,2),(3,3),(4,4);
+affected_rows: 4
+UPDATE mtr_dml SET v = v * 10 WHERE id IN (2, 4);
+affected_rows: 2
+SELECT id, v FROM mtr_dml ORDER BY id;
+id	v
+1	1
+2	20
+3	3
+4	40
+DELETE FROM mtr_dml WHERE v < 10;
+affected_rows: 2
+SELECT COUNT(*), SUM(v), MIN(v), MAX(v) FROM mtr_dml;
+COUNT(*)	SUM(v)	MIN(v)	MAX(v)
+2	60	20	40
+DROP TABLE mtr_dml;
+affected_rows: 0

@@ -1,0 +1,40 @@
+- id: expr_scalar_and_functions
+  setup:
+    - DROP TABLE IF EXISTS corpus_expr
+    - >-
+      CREATE TABLE corpus_expr (
+        id INT PRIMARY KEY, i INT, d DECIMAL(12,3), s VARCHAR(32), dt DATETIME(6)
+      )
+    - >-
+      INSERT INTO corpus_expr VALUES
+        (1, 2, 1.500, 'Abc', '2026-11-01 01:02:03.000004'),
+        (2, -3, NULL, 'abc ', NULL)
+  steps:
+    - name: arithmetic
+      query: >-
+        SELECT id, i+1, i*2, d/3, -i, ABS(i)
+        FROM corpus_expr ORDER BY id
+    - name: case_if
+      query: >-
+        SELECT id, CASE WHEN i > 0 THEN 'pos' ELSE 'neg' END,
+               IF(i IS NULL, 'n', 'v')
+        FROM corpus_expr ORDER BY id
+    - name: strings
+      query: >-
+        SELECT id, UPPER(s), LOWER(s), LENGTH(s), CONCAT(s, '!')
+        FROM corpus_expr ORDER BY id
+    - name: temporal
+      query: >-
+        SELECT id, DATE_ADD(dt, INTERVAL 1 DAY), YEAR(dt),
+               DATE_FORMAT(dt, '%Y-%m-%d %H:%i:%s')
+        FROM corpus_expr ORDER BY id
+    - name: nulls
+      query: >-
+        SELECT id, d IS NULL, COALESCE(d, 0), IFNULL(d, -1)
+        FROM corpus_expr ORDER BY id
+    - name: casts
+      query: >-
+        SELECT CAST('12abc' AS SIGNED), CAST(1.9 AS SIGNED),
+               CAST(1.234 AS DECIMAL(10,2))
+  teardown:
+    - DROP TABLE IF EXISTS corpus_expr

@@ -16,6 +16,17 @@
   `go-sql-driver` 客户端的行为矩阵。
 - `test/differential`：`CalibrationScript` 经真代理 vs 直连 MySQL 的透传差分。
 - `test/handshake`、`test/passthrough`：握手与真代理冒烟。
+- `test/gorm`：ORM/SDK 视角的 GORM 集成：rwsplit 全量 CRUD/事务/预处理；sharding
+  验证 `interpolateParams` + `SkipDefaultTransaction` 的客户端约束。
+- `test/corpus`：YAML SQL 语料（`testdata/sql/**/*.yaml`），对固定 Docker 环境
+  （`make e2e-up MODE=single`）做代理 vs 直连差分；默认 schema 覆盖整数/浮点/
+  DECIMAL/位/字符/文本/二进制/时间/枚举/集合/JSON/生成列。
+- `test/sqlmatrix`：计划层 SQL 语法支持矩阵（YAML 驱动，无 Docker），锁定
+  single/rwsplit 与 sharding 的 Passthrough/SingleShard/MultiShard/Reject。
+- `test/mtr`：MTR 风格 golden（`.sql` + `.result`）；`t/` 21 个单机 case，
+  `t_sharding/` 9 个 4 分片归并 case。golden 从单机规范数据集录制一次，正常测试
+  只连代理对比；分片正例（keyed/scatter/merge）由此覆盖，拒绝类仍由
+  `test/sharding/` 覆盖。
 - 本次 R1/R2 后的聚焦覆盖率：
 
 | 包 | 覆盖率 |
@@ -197,6 +208,8 @@ test/
 │   └── mysql-test/         # 可选：MTR 白名单 .test
 ├── harness/                # 真实 MySQL 主从 + 进程内代理
 ├── rwsplit/                # 真实客户端 rwsplit 行为矩阵
+├── gorm/                   # ORM/SDK 视角（GORM CRUD/事务/预处理）
+├── sqlmatrix/              # 计划层语法支持矩阵（无 Docker）
 ├── differential/           # 现有 runner：对比、录制、失败最小化
 ├── randgen/                # 种子化随机 SQL 生成 + shrink
 ├── metamorphic/            # 分片 vs 单库（P4）

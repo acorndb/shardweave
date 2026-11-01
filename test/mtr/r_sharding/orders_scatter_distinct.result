@@ -1,0 +1,16 @@
+# distinct values
+SELECT DISTINCT amount FROM orders ORDER BY amount LIMIT 10;
+amount
+1
+2
+3
+4
+101
+102
+103
+104
+201
+202
+SELECT COUNT(DISTINCT amount) FROM orders;
+COUNT(DISTINCT amount)
+80

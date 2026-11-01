@@ -1,0 +1,16 @@
+- id: dml_update_delete
+  setup:
+    - DROP TABLE IF EXISTS corpus_dml
+    - CREATE TABLE corpus_dml (id INT PRIMARY KEY, v INT NOT NULL)
+    - INSERT INTO corpus_dml VALUES (1,1),(2,2),(3,3),(4,4)
+  steps:
+    - name: update
+      exec: UPDATE corpus_dml SET v = v * 10 WHERE id IN (2, 4)
+    - name: select-after-update
+      query: SELECT id, v FROM corpus_dml ORDER BY id
+    - name: delete
+      exec: DELETE FROM corpus_dml WHERE v < 10
+    - name: aggregate
+      query: SELECT COUNT(*), SUM(v), MIN(v), MAX(v) FROM corpus_dml
+  teardown:
+    - DROP TABLE IF EXISTS corpus_dml

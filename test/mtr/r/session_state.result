@@ -1,0 +1,40 @@
+SET NAMES utf8mb4;
+affected_rows: 0
+SET SESSION time_zone = '+08:00';
+affected_rows: 0
+SELECT @@session.time_zone;
+@@session.time_zone
++08:00
+SET SESSION transaction_isolation = 'READ-COMMITTED';
+affected_rows: 0
+SELECT @@session.transaction_isolation;
+@@session.transaction_isolation
+READ-COMMITTED
+SET @x = 42;
+affected_rows: 0
+SELECT @x;
+@x
+42
+DROP TABLE IF EXISTS mtr_sess;
+affected_rows: 0
+CREATE TABLE mtr_sess (id INT AUTO_INCREMENT PRIMARY KEY, v INT);
+affected_rows: 0
+INSERT INTO mtr_sess (v) VALUES (10),(20);
+affected_rows: 2
+SELECT LAST_INSERT_ID();
+LAST_INSERT_ID()
+1
+SELECT ROW_COUNT();
+ROW_COUNT()
+-1
+SELECT id, v FROM mtr_sess ORDER BY id;
+id	v
+1	10
+2	20
+USE bench;
+affected_rows: 0
+SELECT DATABASE();
+DATABASE()
+bench
+DROP TABLE mtr_sess;
+affected_rows: 0

@@ -1,0 +1,49 @@
+DROP TABLE IF EXISTS mtr_dml;
+affected_rows: 0
+DROP TABLE IF EXISTS mtr_src;
+affected_rows: 0
+CREATE TABLE mtr_dml (id INT PRIMARY KEY, v INT, note VARCHAR(16));
+affected_rows: 0
+CREATE TABLE mtr_src (id INT PRIMARY KEY, v INT);
+affected_rows: 0
+INSERT INTO mtr_src VALUES (10,100),(11,110);
+affected_rows: 2
+# insert forms
+INSERT INTO mtr_dml VALUES (1,1,'a'),(2,2,'b'),(3,3,'c');
+affected_rows: 3
+INSERT INTO mtr_dml SELECT id, v, 'src' FROM mtr_src;
+affected_rows: 2
+INSERT INTO mtr_dml VALUES (2,20,'dup') ON DUPLICATE KEY UPDATE v = VALUES(v);
+affected_rows: 2
+SELECT id, v, note FROM mtr_dml ORDER BY id;
+id	v	note
+1	1	a
+2	20	b
+3	3	c
+10	100	src
+11	110	src
+# replace and update join
+REPLACE INTO mtr_dml VALUES (3,30,'replaced');
+affected_rows: 2
+UPDATE mtr_dml d JOIN mtr_src s ON s.id = d.id SET d.v = s.v * 2;
+affected_rows: 2
+SELECT id, v, note FROM mtr_dml ORDER BY id;
+id	v	note
+1	1	a
+2	20	b
+3	30	replaced
+10	200	src
+11	220	src
+# delete forms
+DELETE FROM mtr_dml WHERE v < 3 LIMIT 1;
+affected_rows: 1
+DELETE FROM mtr_dml WHERE id IN (SELECT id FROM mtr_src);
+affected_rows: 2
+SELECT id, v, note FROM mtr_dml ORDER BY id;
+id	v	note
+2	20	b
+3	30	replaced
+DROP TABLE mtr_src;
+affected_rows: 0
+DROP TABLE mtr_dml;
+affected_rows: 0

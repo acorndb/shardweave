@@ -1,0 +1,63 @@
+DROP TABLE IF EXISTS mtr_tx;
+affected_rows: 0
+CREATE TABLE mtr_tx (id INT PRIMARY KEY, v INT);
+affected_rows: 0
+# rollback
+BEGIN;
+affected_rows: 0
+INSERT INTO mtr_tx VALUES (1,1);
+affected_rows: 1
+ROLLBACK;
+affected_rows: 0
+SELECT COUNT(*) FROM mtr_tx;
+COUNT(*)
+0
+# commit
+BEGIN;
+affected_rows: 0
+INSERT INTO mtr_tx VALUES (2,2);
+affected_rows: 1
+COMMIT;
+affected_rows: 0
+SELECT id, v FROM mtr_tx ORDER BY id;
+id	v
+2	2
+# autocommit=0
+SET autocommit = 0;
+affected_rows: 0
+INSERT INTO mtr_tx VALUES (3,3);
+affected_rows: 1
+COMMIT;
+affected_rows: 0
+SELECT id, v FROM mtr_tx ORDER BY id;
+id	v
+2	2
+3	3
+SET autocommit = 1;
+affected_rows: 0
+# savepoint
+BEGIN;
+affected_rows: 0
+INSERT INTO mtr_tx VALUES (4,4);
+affected_rows: 1
+SAVEPOINT s1;
+affected_rows: 0
+INSERT INTO mtr_tx VALUES (5,5);
+affected_rows: 1
+ROLLBACK TO SAVEPOINT s1;
+affected_rows: 0
+COMMIT;
+affected_rows: 0
+SELECT id, v FROM mtr_tx ORDER BY id;
+id	v
+2	2
+3	3
+4	4
+# isolation
+SET SESSION transaction_isolation = 'READ-COMMITTED';
+affected_rows: 0
+SELECT @@session.transaction_isolation;
+@@session.transaction_isolation
+READ-COMMITTED
+DROP TABLE mtr_tx;
+affected_rows: 0

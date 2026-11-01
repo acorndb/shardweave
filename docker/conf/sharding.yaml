@@ -1,0 +1,71 @@
+listen: "0.0.0.0:3307"
+
+users:
+  - name: app
+    password: "app-pass-123"
+
+server:
+  read_timeout: 30s
+  write_timeout: 30s
+  max_allowed_packet: 67108864
+  max_connections: 1024
+
+backend:
+  mode: sharding
+  load_balance: round_robin
+  slices:
+    - name: s0
+      master:
+        address: "mysql-s0:3306"
+        user: app
+        password: "app-pass-123"
+        database: "bench"
+    - name: s1
+      master:
+        address: "mysql-s1:3306"
+        user: app
+        password: "app-pass-123"
+        database: "bench"
+    - name: s2
+      master:
+        address: "mysql-s2:3306"
+        user: app
+        password: "app-pass-123"
+        database: "bench"
+    - name: s3
+      master:
+        address: "mysql-s3:3306"
+        user: app
+        password: "app-pass-123"
+        database: "bench"
+  sharding:
+    rules:
+      - table: orders
+        key: user_id
+        algorithm: hash_mod
+        slices: [s0, s1, s2, s3]
+      - table: profiles
+        key: name
+        algorithm: hash_mod_str
+        slices: [s0, s1, s2, s3]
+      - table: sql_type_test
+        key: shard_key
+        algorithm: hash_mod
+        slices: [s0, s1, s2, s3]
+
+pool:
+  capacity: 0
+  max_capacity: 16
+  max_idle: 8
+  idle_timeout: 5m
+  max_lifetime: 1h
+  health_check_interval: 30s
+  acquire_timeout: 5s
+  dial_timeout: 5s
+  read_timeout: 30s
+  write_timeout: 30s
+
+log:
+  level: info
+
+termination_drain: 5s

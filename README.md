@@ -125,11 +125,14 @@ backend:
 
 ## SQL 支持矩阵（sharding 模式）
 
+完整枚举见 [docs/architecture/sql-support-matrix.md](docs/architecture/sql-support-matrix.md)
+（计划层由 `test/sqlmatrix/` 锁定，执行期额外约束见文档 §4）。
+
 | 状态 | 含义 | 示例 |
 |---|---|---|
 | 跨分片归并 | 语义与单库一致 | `ORDER BY`、`LIMIT`、`GROUP BY`+`HAVING`、`DISTINCT`、聚合族 |
 | 单分片直通 | 可证明单分片，raw 透传 | `WHERE user_id = ?`、同片 `IN`、单分片 prepared |
-| 明确拒绝（1235） | 带理由报错，不猜 | 跨分片写、JOIN、子查询、窗口函数、非 utf8mb4 `SET NAMES` |
+| 明确拒绝（1235） | 带理由报错，不猜 | 跨分片写、JOIN、子查询、窗口函数、DDL、事务语句 |
 
 写路径一律要求可证明单分片；跨分片事务不在 v1 范围。
 
@@ -138,15 +141,24 @@ backend:
 ```sh
 make build            # 编译
 make test-unit        # 单元测试（-race -short，无 Docker）
-make test-integration # 差分 + 握手 + 透传 + 读写分离 + 分片（需要 Docker）
+make test-integration # 差分 + 握手 + 透传 + 读写分离 + 分片 + GORM SDK（需要 Docker）
 make lint             # go vet + golangci-lint
 make fmt              # gofumpt
+
+# 固定 Docker 环境 + MTR golden（端口/账号固定，见 docker/README.md）
+make e2e-up MODE=single|rwsplit|sharding
+make e2e-mtr-record MODE=single   # 从单机录制两个 suite（单机 + 分片归并）
+make e2e-test MODE=single|sharding # 只连代理，对比 golden
+make e2e-corpus MODE=single       # 可选：直连 vs 代理差分（新增语料时）
+make e2e-down MODE=single
 ```
 
 测试体系分三层：单元测试（fake/stub，无外部依赖）；差分校准
 （[test/differential/](test/differential/)，经真代理 vs 直连对比，每个真实 bug 沉淀为
 CalibrationScript 条目）；变形 oracle（[test/metamorphic/](test/metamorphic/)，
-分片代理 vs 单库全量数据结果一致）。
+分片代理 vs 单库全量数据结果一致）。SQL 语料在
+[test/corpus/testdata/sql/](test/corpus/testdata/sql/)，对固定 Docker 环境做差分；
+默认 schema 覆盖整数/浮点/DECIMAL/位/字符/文本/二进制/时间/枚举/集合/JSON/生成列。
 
 ## 路线图
 
@@ -164,6 +176,8 @@ CalibrationScript 条目）；变形 oracle（[test/metamorphic/](test/metamorph
 - 仅 `mysql_native_password`，无 TLS（路线图中）
 - 会话字符集固定 utf8mb4；非 utf8mb4 列的跨分片排序 / 分组明确拒绝
 - 跨分片写与事务明确拒绝（写必须可证明单分片）
+- 分片模式对 ORM 有客户端要求：`interpolateParams=true`（分片键必须以字面量出现在
+  SQL 中）且 `SkipDefaultTransaction=true`（事务语句被拒绝）；`test/gorm` 已锁定该约束
 - 无全局 ID 生成：分片表 `AUTO_INCREMENT` 主键跨片不保证唯一，建议应用侧生成
 - 多语句 / 用户变量语句执行后淘汰连接（保守策略）
 

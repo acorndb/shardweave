@@ -1,0 +1,29 @@
+DROP TABLE IF EXISTS mtr_err;
+affected_rows: 0
+CREATE TABLE mtr_err (id INT PRIMARY KEY, v VARCHAR(4) NOT NULL);
+affected_rows: 0
+INSERT INTO mtr_err VALUES (1,'a');
+affected_rows: 1
+# duplicate key
+INSERT INTO mtr_err VALUES (1,'b');
+ERROR 1062 (23000): Duplicate entry '1' for key 'mtr_err.PRIMARY'
+# not null
+INSERT INTO mtr_err VALUES (2,NULL);
+ERROR 1048 (23000): Column 'v' cannot be null
+# data too long
+INSERT INTO mtr_err VALUES (3,'toolong');
+ERROR 1406 (22001): Data too long for column 'v' at row 1
+# unknown table / column
+SELECT * FROM mtr_no_such_table;
+ERROR 1146 (42S02): Table 'bench.mtr_no_such_table' doesn't exist
+SELECT no_such_column FROM mtr_err;
+ERROR 1054 (42S22): Unknown column 'no_such_column' in 'field list'
+# syntax error
+SELEC 1;
+ERROR 1064 (42000): You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'SELEC 1' at line 1
+# connection still usable
+SELECT 1;
+1
+1
+DROP TABLE mtr_err;
+affected_rows: 0

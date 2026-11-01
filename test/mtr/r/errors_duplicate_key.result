@@ -1,0 +1,14 @@
+DROP TABLE IF EXISTS mtr_err;
+affected_rows: 0
+CREATE TABLE mtr_err (id INT PRIMARY KEY, v VARCHAR(8) NOT NULL);
+affected_rows: 0
+INSERT INTO mtr_err VALUES (1, 'a');
+affected_rows: 1
+INSERT INTO mtr_err VALUES (1, 'b');
+ERROR 1062 (23000): Duplicate entry '1' for key 'mtr_err.PRIMARY'
+# connection is still usable after the error
+SELECT id, v FROM mtr_err ORDER BY id;
+id	v
+1	a
+DROP TABLE mtr_err;
+affected_rows: 0

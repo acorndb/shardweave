@@ -1,0 +1,16 @@
+DROP TABLE IF EXISTS mtr_types;
+affected_rows: 0
+CREATE TABLE mtr_types ( id INT PRIMARY KEY, d DECIMAL(30,10), f FLOAT, db DOUBLE, dt DATETIME(6), b VARBINARY(16), j JSON );
+affected_rows: 0
+INSERT INTO mtr_types VALUES (1, '12345678901234567890.1234567890', 1.25, 2.5, '2026-11-01 12:34:56.654321', x'deadbeef', '{"a":[1,2,3],"b":"世界"}');
+affected_rows: 1
+# values
+SELECT id, d, f, db, dt, HEX(b), JSON_EXTRACT(j, '$.a[1]'), JSON_UNQUOTE(JSON_EXTRACT(j, '$.b')) FROM mtr_types;
+id	d	f	db	dt	HEX(b)	JSON_EXTRACT(j, '$.a[1]')	JSON_UNQUOTE(JSON_EXTRACT(j, '$.b'))
+1	12345678901234567890.1234567890	1.25	2.5	2026-11-01 12:34:56.654321	DEADBEEF	2	世界
+# casts
+SELECT CAST(d AS CHAR), CAST(dt AS CHAR), LENGTH(b) FROM mtr_types;
+CAST(d AS CHAR)	CAST(dt AS CHAR)	LENGTH(b)
+12345678901234567890.1234567890	2026-11-01 12:34:56.654321	4
+DROP TABLE mtr_types;
+affected_rows: 0

@@ -1,0 +1,38 @@
+listen: "0.0.0.0:3307"
+
+users:
+  - name: app
+    password: "app-pass-123"
+
+server:
+  read_timeout: 30s
+  write_timeout: 30s
+  max_allowed_packet: 67108864
+  max_connections: 1024
+
+backend:
+  mode: single
+  slices:
+    - name: default
+      master:
+        address: "mysql:3306"
+        user: app
+        password: "app-pass-123"
+        database: "bench"
+
+pool:
+  capacity: 0
+  max_capacity: 16
+  max_idle: 8
+  idle_timeout: 5m
+  max_lifetime: 1h
+  health_check_interval: 30s
+  acquire_timeout: 5s
+  dial_timeout: 5s
+  read_timeout: 30s
+  write_timeout: 30s
+
+log:
+  level: info
+
+termination_drain: 5s

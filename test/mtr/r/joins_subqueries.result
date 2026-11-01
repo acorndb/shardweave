@@ -1,0 +1,74 @@
+DROP TABLE IF EXISTS mtr_a;
+affected_rows: 0
+DROP TABLE IF EXISTS mtr_b;
+affected_rows: 0
+CREATE TABLE mtr_a (id INT PRIMARY KEY, v VARCHAR(8));
+affected_rows: 0
+CREATE TABLE mtr_b (id INT PRIMARY KEY, a_id INT, n INT);
+affected_rows: 0
+INSERT INTO mtr_a VALUES (1,'one'),(2,'two'),(3,'three');
+affected_rows: 3
+INSERT INTO mtr_b VALUES (10,1,5),(11,2,7),(12,2,9);
+affected_rows: 3
+# inner join
+SELECT a.id, a.v, b.id, b.n FROM mtr_a a JOIN mtr_b b ON b.a_id = a.id ORDER BY a.id, b.id;
+id	v	id	n
+1	one	10	5
+2	two	11	7
+2	two	12	9
+# left and right join
+SELECT a.id, b.n FROM mtr_a a LEFT JOIN mtr_b b ON b.a_id = a.id ORDER BY a.id, b.n;
+id	n
+1	5
+2	7
+2	9
+3	NULL
+SELECT a.id, b.id FROM mtr_a a RIGHT JOIN mtr_b b ON b.a_id = a.id ORDER BY b.id;
+id	id
+1	10
+2	11
+2	12
+# cross and self join
+SELECT COUNT(*) FROM mtr_a CROSS JOIN mtr_b;
+COUNT(*)
+9
+SELECT a.id, b.id FROM mtr_a a JOIN mtr_a b ON a.id < b.id ORDER BY a.id, b.id;
+id	id
+1	2
+1	3
+2	3
+# subqueries
+SELECT id FROM mtr_a WHERE EXISTS (SELECT 1 FROM mtr_b WHERE a_id = mtr_a.id) ORDER BY id;
+id
+1
+2
+SELECT id FROM mtr_a WHERE id IN (SELECT a_id FROM mtr_b) ORDER BY id;
+id
+1
+2
+SELECT (SELECT MAX(n) FROM mtr_b) AS max_n;
+max_n
+9
+SELECT * FROM (SELECT id, v FROM mtr_a) d ORDER BY id;
+id	v
+1	one
+2	two
+3	three
+# union
+SELECT id FROM mtr_a UNION SELECT a_id FROM mtr_b ORDER BY id;
+id
+1
+2
+3
+SELECT id FROM mtr_a UNION ALL SELECT a_id FROM mtr_b ORDER BY id;
+id
+1
+1
+2
+2
+2
+3
+DROP TABLE mtr_b;
+affected_rows: 0
+DROP TABLE mtr_a;
+affected_rows: 0

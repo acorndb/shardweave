@@ -54,4 +54,4 @@
 
 `pool_test.go / stream_test.go / conn_test.go`（net.Pipe 假服务端）、
 `pipeline_test.go / dispatch_test.go`（fakeConn/fakeStream，
-含脏语句淘汰、Drained、重放断言）、`test/rwsplit/`（真拓扑 sql_type_matrix）。
+含脏语句淘汰、Drained、重放断言）、`test/rwsplit/`（真拓扑 sql_types）。

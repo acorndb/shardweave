@@ -1,0 +1,80 @@
+name: shardweave-rwsplit
+
+services:
+  mysql-master:
+    image: mysql:8.0
+    command:
+      - mysqld
+      - --server-id=1
+      - --gtid-mode=ON
+      - --enforce-gtid-consistency=ON
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: bench
+      MYSQL_USER: app
+      MYSQL_PASSWORD: app-pass-123
+    ports:
+      - "127.0.0.1:3308:3306"
+    volumes:
+      - ./init/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+      - ./init/single.sql:/docker-entrypoint-initdb.d/20-seed.sql:ro
+      - ./init/master.sql:/docker-entrypoint-initdb.d/30-repl.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot", "--silent"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  mysql-replica:
+    image: mysql:8.0
+    command:
+      - mysqld
+      - --server-id=2
+      - --gtid-mode=ON
+      - --enforce-gtid-consistency=ON
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-authentication-plugin=mysql_native_password
+    environment:
+      # No MYSQL_DATABASE/MYSQL_USER here: bench and the app user arrive from
+      # the master through real GTID replication, matching test/harness.
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "127.0.0.1:3309:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot", "--silent"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  replication:
+    image: mysql:8.0
+    depends_on:
+      mysql-master:
+        condition: service_healthy
+      mysql-replica:
+        condition: service_healthy
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+    volumes:
+      - ./scripts/setup-replication.sh:/setup-replication.sh:ro
+    entrypoint: ["/bin/sh", "/setup-replication.sh"]
+    restart: "no"
+
+  shardweave:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["-config", "/etc/shardweave/config.yaml"]
+    volumes:
+      - ./conf/rwsplit.yaml:/etc/shardweave/config.yaml:ro
+    ports:
+      - "127.0.0.1:3307:3307"
+    depends_on:
+      replication:
+        condition: service_completed_successfully

@@ -1,0 +1,16 @@
+# plain comment
+/* plain comment */ SELECT 1;
+affected_rows: 0
+# sql line comment
+-- a line comment SELECT 2;
+affected_rows: 0
+# optimizer hint
+SELECT /*+ MAX_EXECUTION_TIME(1000) */ 1;
+1
+1
+# version comment
+/*!40101 SET NAMES utf8mb4 */;
+affected_rows: 0
+SELECT 3;
+3
+3

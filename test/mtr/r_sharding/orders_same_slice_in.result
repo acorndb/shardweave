@@ -1,0 +1,8 @@
+# user_id IN (1,5): both hash to s1
+SELECT id, user_id, amount FROM orders WHERE user_id IN (1, 5) ORDER BY id;
+id	user_id	amount
+2	1	2
+6	5	102
+SELECT COUNT(*) FROM orders WHERE user_id IN (1, 5);
+COUNT(*)
+2

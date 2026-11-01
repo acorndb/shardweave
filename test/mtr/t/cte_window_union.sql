@@ -1,0 +1,13 @@
+--echo # CTE
+WITH x AS (SELECT 1 AS n UNION ALL SELECT 2) SELECT n FROM x ORDER BY n;
+
+--echo # window functions
+SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn,
+       RANK() OVER (ORDER BY v) AS rk,
+       SUM(id) OVER (ORDER BY id) AS running
+FROM (SELECT 1 AS id, 'b' AS v UNION ALL SELECT 2,'a' UNION ALL SELECT 3,'a') t
+ORDER BY id;
+
+--echo # union
+SELECT 1 AS x UNION SELECT 2 ORDER BY x;
+SELECT 1 AS x UNION ALL SELECT 1 ORDER BY x;

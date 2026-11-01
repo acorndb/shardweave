@@ -1,0 +1,19 @@
+# type rows scatter
+SELECT id, shard_key, int_i, varchar_v FROM sql_type_test ORDER BY id;
+id	shard_key	int_i	varchar_v
+1	0	-2147483648	varchar-utf8-世界
+2	1	NULL	NULL
+3	2	42	shard2-世界
+4	3	-4	shard3-世界
+# type rows keyed
+SELECT id, shard_key, int_i, varchar_v FROM sql_type_test WHERE shard_key = 2;
+id	shard_key	int_i	varchar_v
+3	2	42	shard2-世界
+# type aggregates across shards
+SELECT COUNT(*), SUM(int_i), MIN(varchar_v), MAX(varchar_v) FROM sql_type_test;
+COUNT(*)	SUM(int_i)	MIN(varchar_v)	MAX(varchar_v)
+4	-2147483610	shard2-世界	varchar-utf8-世界
+# type count
+SELECT COUNT(*) FROM sql_type_test;
+COUNT(*)
+4

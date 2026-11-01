@@ -147,8 +147,8 @@ func TestRWSplitRealTopology(t *testing.T) {
 		runRandomizedSelectDifferential(t, ctx, tp, proxy)
 	})
 
-	t.Run("sql_type_matrix", func(t *testing.T) {
-		runSQLTypeMatrix(t, ctx, tp, proxy)
+	t.Run("sql_types", func(t *testing.T) {
+		runSQLTypes(t, ctx, tp, proxy)
 	})
 }
 

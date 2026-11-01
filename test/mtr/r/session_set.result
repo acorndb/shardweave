@@ -1,0 +1,11 @@
+# whitelisted session variables survive backend connection changes
+SET SESSION time_zone = '+08:00';
+affected_rows: 0
+SELECT @@session.time_zone;
+@@session.time_zone
++08:00
+SET SESSION transaction_isolation = 'READ-COMMITTED';
+affected_rows: 0
+SELECT @@session.transaction_isolation;
+@@session.transaction_isolation
+READ-COMMITTED

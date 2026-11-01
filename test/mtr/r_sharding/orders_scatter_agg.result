@@ -1,0 +1,8 @@
+# scatter aggregates
+SELECT COUNT(*), SUM(amount), MIN(amount), MAX(amount), AVG(amount) FROM orders;
+COUNT(*)	SUM(amount)	MIN(amount)	MAX(amount)	AVG(amount)
+80	76200	1	1904	952.5000
+# distinct aggregates
+SELECT COUNT(DISTINCT user_id), COUNT(DISTINCT amount) FROM orders;
+COUNT(DISTINCT user_id)	COUNT(DISTINCT amount)
+80	80

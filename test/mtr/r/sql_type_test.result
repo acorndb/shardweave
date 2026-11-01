@@ -1,0 +1,49 @@
+# integers
+SELECT id, tiny_i, utiny_i, small_i, medium_i, int_i, uint_i, big_i, ubig_i FROM sql_type_test ORDER BY id;
+id	tiny_i	utiny_i	small_i	medium_i	int_i	uint_i	big_i	ubig_i
+1	-128	255	-32768	-8388608	-2147483648	4294967295	-9223372036854775808	18446744073709551615
+2	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL
+3	7	7	7	7	42	42	42	42
+4	-1	1	-2	-3	-4	5	-6	7
+# decimals and bit
+SELECT id, dec_v, float_v, double_v, bit_v+0 FROM sql_type_test ORDER BY id;
+id	dec_v	float_v	double_v	bit_v+0
+1	12345678901234567890.1234567890	1.25	2.5	43690
+2	NULL	NULL	NULL	NULL
+3	12.3400000000	3.5	7.25	1
+4	0.0000000001	0.5	0.125	15
+# temporal
+SELECT id, date_v, time_v, datetime_v, timestamp_v, year_v FROM sql_type_test ORDER BY id;
+id	date_v	time_v	datetime_v	timestamp_v	year_v
+1	2026-11-01	12:34:56.123456	2026-11-01 12:34:56.654321	2026-11-01 12:34:56.000001	2026
+2	NULL	NULL	NULL	NULL	NULL
+3	2026-11-02	01:02:03.000004	2026-11-02 01:02:03.000004	2026-11-02 01:02:03.000004	2026
+4	2026-11-03	23:59:59.999999	2026-11-03 23:59:59.999999	2026-11-03 23:59:59.999999	2026
+# strings and collations
+SELECT id, char_v, varchar_v, ci_v, bin_v, nopad_v, LENGTH(varchar_v) FROM sql_type_test ORDER BY id;
+id	char_v	varchar_v	ci_v	bin_v	nopad_v	LENGTH(varchar_v)
+1	char	varchar-utf8-世界	Alpha	Alpha 	Alpha	19
+2	NULL	NULL	NULL	NULL	NULL	NULL
+3	char2	shard2-世界	alpha	Alpha 	alpha	13
+4	char3	shard3-世界	BETA	beta 	BETA	13
+# binary
+SELECT id, HEX(binary_v), HEX(varbinary_v), HEX(blob_v), HEX(tinyblob_v), HEX(mediumblob_v), HEX(longblob_v) FROM sql_type_test ORDER BY id;
+id	HEX(binary_v)	HEX(varbinary_v)	HEX(blob_v)	HEX(tinyblob_v)	HEX(mediumblob_v)	HEX(longblob_v)
+1	0001020304050607	DEADBEEF	0102	00	030405	060708
+2	NULL	NULL	NULL	NULL	NULL	NULL
+3	0102030405060708	CAFEBABE	0304	02	050607	08090A
+4	1112131415161718	01020304	0405	03	060708	090A0B
+# enum, set, json
+SELECT id, enum_v, set_v, json_v, JSON_EXTRACT(json_v, '$.k') FROM sql_type_test ORDER BY id;
+id	enum_v	set_v	json_v	JSON_EXTRACT(json_v, '$.k')
+1	b	x,z	{"k": "v", "n": 1}	"v"
+2	NULL	NULL	NULL	NULL
+3	c	y,z	{"n": 2, "who": "shard2"}	NULL
+4	a	x	{"n": 3, "who": "shard3"}	NULL
+# generated column
+SELECT id, int_i, gen_v FROM sql_type_test ORDER BY id;
+id	int_i	gen_v
+1	-2147483648	-2147483647
+2	NULL	NULL
+3	42	43
+4	-4	-3

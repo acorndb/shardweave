@@ -1,0 +1,49 @@
+DROP VIEW IF EXISTS mtr_v;
+affected_rows: 0
+DROP TABLE IF EXISTS mtr_ddl;
+affected_rows: 0
+CREATE TABLE mtr_ddl (id INT PRIMARY KEY, v VARCHAR(16));
+affected_rows: 0
+CREATE INDEX idx_mtr_ddl_v ON mtr_ddl (v);
+affected_rows: 0
+ALTER TABLE mtr_ddl ADD COLUMN n INT NOT NULL DEFAULT 0;
+affected_rows: 0
+# show metadata
+SHOW TABLES LIKE 'mtr_ddl';
+Tables_in_bench (mtr_ddl)
+mtr_ddl
+SHOW COLUMNS FROM mtr_ddl;
+Field	Type	Null	Key	Default	Extra
+id	int	NO	PRI	NULL	
+v	varchar(16)	YES	MUL	NULL	
+n	int	NO		0	
+SHOW INDEX FROM mtr_ddl;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+mtr_ddl	0	PRIMARY	1	id	A	0	NULL	NULL		BTREE			YES	NULL
+mtr_ddl	1	idx_mtr_ddl_v	1	v	A	0	NULL	NULL	YES	BTREE			YES	NULL
+SHOW CREATE TABLE mtr_ddl;
+Table	Create Table
+mtr_ddl	CREATE TABLE `mtr_ddl` (\n  `id` int NOT NULL,\n  `v` varchar(16) DEFAULT NULL,\n  `n` int NOT NULL DEFAULT '0',\n  PRIMARY KEY (`id`),\n  KEY `idx_mtr_ddl_v` (`v`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+DESC mtr_ddl;
+Field	Type	Null	Key	Default	Extra
+id	int	NO	PRI	NULL	
+v	varchar(16)	YES	MUL	NULL	
+n	int	NO		0	
+# view
+CREATE VIEW mtr_v AS SELECT 1 AS x;
+affected_rows: 0
+SELECT * FROM mtr_v;
+x
+1
+# rename and truncate
+RENAME TABLE mtr_ddl TO mtr_ddl2;
+affected_rows: 0
+SHOW TABLES LIKE 'mtr_ddl2';
+Tables_in_bench (mtr_ddl2)
+mtr_ddl2
+TRUNCATE TABLE mtr_ddl2;
+affected_rows: 0
+DROP VIEW mtr_v;
+affected_rows: 0
+DROP TABLE mtr_ddl2;
+affected_rows: 0

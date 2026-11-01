@@ -1,0 +1,390 @@
+# SQL 语法支持矩阵（计划层）。
+# kind: passthrough | single_shard | multi_shard | reject
+# reason: reject 时的错误信息子串（可省略）。
+# 本文件由 test/sqlmatrix/matrix_test.go 驱动；执行期合并层可能再收紧，
+# 见 docs/architecture/sql-support-matrix.md 的说明。
+
+- category: DDL
+  sql: "CREATE TABLE t (id INT)"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "CreateTableStmt is not supported"}
+- category: DDL
+  sql: "CREATE INDEX idx ON orders (amount)"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "CreateIndexStmt is not supported"}
+- category: DDL
+  sql: "ALTER TABLE orders ADD COLUMN note VARCHAR(8)"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "AlterTableStmt is not supported"}
+- category: DDL
+  sql: "DROP TABLE orders"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "DropTableStmt is not supported"}
+- category: DDL
+  sql: "TRUNCATE TABLE orders"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "TruncateTableStmt is not supported"}
+- category: DDL
+  sql: "RENAME TABLE orders TO orders2"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "RenameTableStmt is not supported"}
+- category: DDL
+  sql: "CREATE VIEW v AS SELECT 1"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "CreateViewStmt is not supported"}
+
+- category: DML
+  sql: "INSERT INTO orders (user_id, amount) VALUES (1, 10)"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: DML
+  sql: "INSERT INTO orders (user_id, amount) VALUES (1, 10), (5, 20)"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: DML
+  sql: "INSERT INTO orders (user_id, amount) VALUES (1, 10), (3, 20)"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "statement spans multiple shards"}
+- category: DML
+  sql: "INSERT INTO orders (user_id, amount) VALUES (1, 10), (2, 20)"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "statement spans multiple shards"}
+- category: DML
+  sql: "INSERT INTO orders (user_id, amount) SELECT user_id, amount FROM orders"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "INSERT ... SELECT is not supported"}
+- category: DML
+  sql: "REPLACE INTO orders (id, user_id, amount) VALUES (1, 1, 10)"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: DML
+  sql: "UPDATE orders SET amount = 1 WHERE user_id = 1"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: DML
+  sql: "UPDATE orders SET amount = 1"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "WHERE must constrain shard key"}
+- category: DML
+  sql: "UPDATE orders SET amount = 1 LIMIT 1"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "WHERE must constrain shard key"}
+- category: DML
+  sql: "UPDATE orders o JOIN profiles p ON p.name = 'x' SET o.amount = 1"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "joins/multiple tables are not supported"}
+- category: DML
+  sql: "DELETE FROM orders WHERE user_id = 1"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: DML
+  sql: "DELETE FROM orders"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "WHERE must constrain shard key"}
+- category: DML
+  sql: "DELETE FROM orders LIMIT 1"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "WHERE must constrain shard key"}
+- category: DML
+  sql: "DELETE o FROM orders o JOIN profiles p ON p.name = 'x'"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "multi-table DELETE is not supported"}
+- category: DML
+  sql: "LOAD DATA INFILE '/tmp/a' INTO TABLE orders"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "LoadDataStmt is not supported"}
+
+- category: SELECT
+  sql: "SELECT * FROM orders WHERE user_id = 1"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: SELECT
+  sql: "SELECT * FROM orders"
+  single: {kind: passthrough}
+  sharding: {kind: multi_shard}
+- category: SELECT
+  sql: "SELECT * FROM orders WHERE user_id > 1"
+  single: {kind: passthrough}
+  sharding: {kind: multi_shard}
+- category: SELECT
+  sql: "SELECT * FROM orders WHERE user_id IN (1, 3)"
+  single: {kind: passthrough}
+  sharding: {kind: multi_shard}
+- category: SELECT
+  sql: "SELECT * FROM orders WHERE user_id IN (1, 5)"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: SELECT
+  sql: "SELECT * FROM orders WHERE user_id IN (1, 2)"
+  single: {kind: passthrough}
+  sharding: {kind: multi_shard}
+- category: SELECT
+  sql: "SELECT 1"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: SELECT
+  sql: "SELECT * FROM sql_type_test WHERE shard_key = 2"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+
+- category: JOIN
+  sql: "SELECT * FROM orders o JOIN profiles p ON p.name = 'x'"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "joins/multiple tables are not supported"}
+- category: JOIN
+  sql: "SELECT * FROM orders o LEFT JOIN profiles p ON p.name = 'x'"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "joins/multiple tables are not supported"}
+- category: JOIN
+  sql: "SELECT * FROM orders o RIGHT JOIN profiles p ON p.name = 'x'"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "joins/multiple tables are not supported"}
+- category: JOIN
+  sql: "SELECT * FROM orders a JOIN orders b ON a.user_id = b.user_id"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "joins/multiple tables are not supported"}
+
+- category: SUBQUERY
+  sql: "SELECT (SELECT 1) FROM orders WHERE user_id = 1"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: SUBQUERY
+  sql: "SELECT * FROM orders WHERE EXISTS (SELECT 1)"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "multi-shard subqueries are not supported"}
+- category: SUBQUERY
+  sql: "SELECT * FROM orders WHERE user_id IN (SELECT user_id FROM orders)"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "multi-shard subqueries are not supported"}
+- category: SUBQUERY
+  sql: "SELECT * FROM (SELECT user_id FROM orders) x"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "derived tables are not supported"}
+
+- category: CTE
+  sql: "WITH x AS (SELECT 1) SELECT * FROM x"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "not sharded"}
+
+- category: UNION
+  sql: "SELECT user_id FROM orders UNION SELECT score FROM profiles"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "SetOprStmt is not supported"}
+- category: UNION
+  sql: "SELECT user_id FROM orders UNION ALL SELECT score FROM profiles"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "SetOprStmt is not supported"}
+
+- category: WINDOW
+  sql: "SELECT ROW_NUMBER() OVER (ORDER BY amount) FROM orders"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "window function is not supported"}
+
+- category: AGG
+  sql: "SELECT COUNT(*) FROM orders"
+  single: {kind: passthrough}
+  sharding: {kind: multi_shard}
+- category: AGG
+  sql: "SELECT SUM(amount), AVG(amount), MIN(amount), MAX(amount) FROM orders"
+  single: {kind: passthrough}
+  sharding: {kind: multi_shard}
+- category: AGG
+  sql: "SELECT COUNT(DISTINCT amount) FROM orders"
+  single: {kind: passthrough}
+  sharding: {kind: multi_shard}
+- category: AGG
+  sql: "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id"
+  single: {kind: passthrough}
+  sharding: {kind: multi_shard}
+- category: AGG
+  sql: "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id HAVING COUNT(*) > 1"
+  single: {kind: passthrough}
+  sharding: {kind: multi_shard}
+- category: AGG
+  sql: "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id WITH ROLLUP"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "WITH ROLLUP is not supported"}
+
+- category: DISTINCT
+  sql: "SELECT DISTINCT amount FROM orders"
+  single: {kind: passthrough}
+  sharding: {kind: multi_shard}
+- category: DISTINCT
+  sql: "SELECT DISTINCT user_id FROM orders ORDER BY user_id"
+  single: {kind: passthrough}
+  sharding: {kind: multi_shard}
+
+- category: ORDER_LIMIT
+  sql: "SELECT id FROM orders ORDER BY id"
+  single: {kind: passthrough}
+  sharding: {kind: multi_shard}
+- category: ORDER_LIMIT
+  sql: "SELECT id FROM orders LIMIT 2"
+  single: {kind: passthrough}
+  sharding: {kind: multi_shard}
+- category: ORDER_LIMIT
+  sql: "SELECT id FROM orders LIMIT 1, 2"
+  single: {kind: passthrough}
+  sharding: {kind: multi_shard}
+- category: ORDER_LIMIT
+  sql: "SELECT id FROM orders ORDER BY id LIMIT 2"
+  single: {kind: passthrough}
+  sharding: {kind: multi_shard}
+
+- category: LOCK
+  sql: "SELECT * FROM orders WHERE user_id = 1 FOR UPDATE"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: LOCK
+  sql: "SELECT * FROM orders LOCK IN SHARE MODE"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "multi-shard locking reads are not supported"}
+- category: INTO
+  sql: "SELECT * FROM orders INTO OUTFILE '/tmp/a'"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "multi-shard SELECT INTO is not supported"}
+- category: CALC
+  sql: "SELECT SQL_CALC_FOUND_ROWS * FROM orders"
+  single: {kind: reject, reason: "SQL_CALC_FOUND_ROWS is not supported"}
+  sharding: {kind: reject, reason: "SQL_CALC_FOUND_ROWS is not supported"}
+
+- category: FUNCTION
+  sql: "SELECT JSON_EXTRACT('{\"a\":1}', '$.a')"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: FUNCTION
+  sql: "SELECT DATE_ADD(NOW(), INTERVAL 1 DAY)"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: FUNCTION
+  sql: "SELECT CONCAT('a', 'b'), UPPER('a')"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: FUNCTION
+  sql: "SELECT CASE WHEN 1=1 THEN 'y' ELSE 'n' END, CAST('1' AS SIGNED)"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+
+- category: TX
+  sql: "BEGIN"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "BeginStmt is not supported"}
+- category: TX
+  sql: "START TRANSACTION READ ONLY"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "BeginStmt is not supported"}
+- category: TX
+  sql: "COMMIT"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "CommitStmt is not supported"}
+- category: TX
+  sql: "ROLLBACK"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "RollbackStmt is not supported"}
+- category: TX
+  sql: "SAVEPOINT s1"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "SavepointStmt is not supported"}
+- category: TX
+  sql: "SET TRANSACTION ISOLATION LEVEL READ COMMITTED"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "SET is not supported in sharding mode"}
+
+- category: SESSION
+  sql: "SET NAMES utf8mb4"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: SESSION
+  sql: "SET NAMES latin1"
+  single: {kind: reject, reason: "only utf8mb4 is supported"}
+  sharding: {kind: reject, reason: "only utf8mb4 is supported"}
+- category: SESSION
+  sql: "SET autocommit = 0"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "SET is not supported in sharding mode"}
+- category: SESSION
+  sql: "SET SESSION time_zone = '+08:00'"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "SET is not supported in sharding mode"}
+- category: SESSION
+  sql: "SET SESSION transaction_isolation = 'READ-COMMITTED'"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "SET is not supported in sharding mode"}
+- category: SESSION
+  sql: "SET sql_mode = 'ANSI'"
+  single: {kind: reject, reason: "SET SESSION sql_mode is not supported"}
+  sharding: {kind: reject, reason: "SET SESSION sql_mode is not supported"}
+- category: SESSION
+  sql: "SET @x = 1"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "SET is not supported in sharding mode"}
+- category: SESSION
+  sql: "SET CHARACTER SET utf8mb4"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "SET is not supported in sharding mode"}
+- category: SESSION
+  sql: "SET GLOBAL read_only = ON"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "SET is not supported in sharding mode"}
+- category: SESSION
+  sql: "USE bench"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: SESSION
+  sql: "SHOW TABLES"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: SESSION
+  sql: "SHOW STATUS"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "SHOW type is not supported"}
+- category: SESSION
+  sql: "SHOW MASTER STATUS"
+  single: {kind: reject, reason: "SHOW MASTER STATUS is not supported"}
+  sharding: {kind: reject, reason: "SHOW MASTER STATUS is not supported"}
+- category: SESSION
+  sql: "DESC orders"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: SESSION
+  sql: "EXPLAIN SELECT * FROM orders WHERE user_id = 1"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "EXPLAIN is not supported"}
+
+- category: OTHER
+  sql: "CALL p()"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "CallStmt is not supported"}
+- category: OTHER
+  sql: "DO 1"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "DoStmt is not supported"}
+- category: OTHER
+  sql: "KILL 1"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "KillStmt is not supported"}
+- category: OTHER
+  sql: "LOCK TABLES orders WRITE"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "LockTablesStmt is not supported"}
+- category: OTHER
+  sql: "FLUSH TABLES"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "FlushStmt is not supported"}
+- category: OTHER
+  sql: "PREPARE s FROM 'SELECT 1'"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "PrepareStmt is not supported"}
+
+- category: COMMENT
+  sql: "/* comment */ SELECT 1"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}
+- category: COMMENT
+  sql: "/*!40101 SET NAMES utf8mb4 */"
+  single: {kind: passthrough}
+  sharding: {kind: reject, reason: "SET is not supported in sharding mode"}
+- category: COMMENT
+  sql: "SELECT /*+ MAX_EXECUTION_TIME(1000) */ 1"
+  single: {kind: passthrough}
+  sharding: {kind: single_shard}

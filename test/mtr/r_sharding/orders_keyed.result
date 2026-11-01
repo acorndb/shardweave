@@ -1,0 +1,21 @@
+# keyed rows: user_id % 4 selects the slice
+SELECT id, user_id, amount FROM orders WHERE user_id = 0;
+id	user_id	amount
+1	0	1
+SELECT id, user_id, amount FROM orders WHERE user_id = 1;
+id	user_id	amount
+2	1	2
+SELECT id, user_id, amount FROM orders WHERE user_id = 2;
+id	user_id	amount
+3	2	3
+SELECT id, user_id, amount FROM orders WHERE user_id = 3;
+id	user_id	amount
+4	3	4
+# keyed count
+SELECT COUNT(*) FROM orders WHERE user_id = 2;
+COUNT(*)
+1
+# keyed locking read (autocommit)
+SELECT id, user_id, amount FROM orders WHERE user_id = 2 AND id = 3 FOR UPDATE;
+id	user_id	amount
+3	2	3

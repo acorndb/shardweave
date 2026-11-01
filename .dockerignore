@@ -1,0 +1,3 @@
+# The image only needs the prebuilt binary; keep the build context tiny.
+*
+!bin/shardweave

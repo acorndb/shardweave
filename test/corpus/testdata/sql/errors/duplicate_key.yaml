@@ -1,0 +1,13 @@
+- id: errors_duplicate_key
+  setup:
+    - DROP TABLE IF EXISTS corpus_err
+    - CREATE TABLE corpus_err (id INT PRIMARY KEY, v VARCHAR(8) NOT NULL)
+  steps:
+    - name: first-insert
+      exec: INSERT INTO corpus_err VALUES (1, 'a')
+    - name: duplicate
+      exec: INSERT INTO corpus_err VALUES (1, 'b')
+    - name: still-usable
+      query: SELECT id, v FROM corpus_err ORDER BY id
+  teardown:
+    - DROP TABLE IF EXISTS corpus_err

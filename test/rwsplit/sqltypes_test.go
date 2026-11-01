@@ -23,10 +23,10 @@ const indexMetadataQuery = `SELECT TABLE_NAME, NON_UNIQUE, KEY_NAME, SEQ_IN_INDE
 	WHERE table_schema = DATABASE() AND table_name = 'sqltype_users'
 	ORDER BY KEY_NAME, SEQ_IN_INDEX`
 
-// runSQLTypeMatrix exercises DDL, DML, SELECT shapes, SHOW, prepared
+// runSQLTypes exercises DDL, DML, SELECT shapes, SHOW, prepared
 // statements, transactions, errors, charset and a >16MiB payload through the
 // proxy, using the direct master as the oracle.
-func runSQLTypeMatrix(t *testing.T, ctx context.Context, tp *harness.Topology, proxy *harness.Proxy) {
+func runSQLTypes(t *testing.T, ctx context.Context, tp *harness.Topology, proxy *harness.Proxy) {
 	t.Helper()
 
 	master := tp.Master.DB

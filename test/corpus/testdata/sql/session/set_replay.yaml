@@ -1,0 +1,11 @@
+# Whitelisted session variables must survive connection release/acquire via Align.
+- id: session_whitelisted_set
+  steps:
+    - name: set-time-zone
+      exec: SET SESSION time_zone = '+08:00'
+    - name: read-time-zone
+      query: SELECT @@session.time_zone
+    - name: set-isolation
+      exec: SET SESSION transaction_isolation = 'READ-COMMITTED'
+    - name: read-isolation
+      query: SELECT @@session.transaction_isolation
