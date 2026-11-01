@@ -229,7 +229,7 @@ func (s *Server) Run() error {
 			continue
 		}
 		if !s.acquireConn() {
-			slog.Warn("server max connections reached", "remote", conn.RemoteAddr().String(), "max", s.maxConns)
+			slog.Warn("server reached max connections", "remote", conn.RemoteAddr().String(), "max", s.maxConns)
 			_ = conn.Close()
 			continue
 		}
