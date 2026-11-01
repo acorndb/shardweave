@@ -45,7 +45,6 @@ func TestBuilder_ShardingSingle(t *testing.T) {
 		context.Background(), session.NewState(), stmt("SELECT 1"))
 	require.NoError(t, err)
 	require.Equal(t, plan.SingleShard, p.Kind)
-	require.Equal(t, plan.TxSingleShard, p.Tx)
 	require.Len(t, p.Targets, 1)
 }
 
@@ -129,7 +128,6 @@ func TestBuilder_MultiShard(t *testing.T) {
 	p, err := b.Build(context.Background(), session.NewState(), stmt("SELECT * FROM orders"))
 	require.NoError(t, err)
 	require.Equal(t, plan.MultiShard, p.Kind)
-	require.Equal(t, plan.TxNone, p.Tx)
 	require.Equal(t, targets, p.Targets)
 
 	t.Run("sticky_rejected", func(t *testing.T) {
@@ -834,7 +832,6 @@ func TestKind_String(t *testing.T) {
 func TestPlan_ShardingContracts(t *testing.T) {
 	p := plan.Plan{
 		Kind: plan.SingleShard,
-		Tx:   plan.TxSingleShard,
 		Merge: plan.MergeSpec{
 			OrderBy:    []plan.OrderKey{{Column: 0, Desc: true}},
 			Limit:      &plan.Limit{Offset: 1, Count: 2},
@@ -845,10 +842,6 @@ func TestPlan_ShardingContracts(t *testing.T) {
 		},
 	}
 	require.Equal(t, plan.SingleShard, p.Kind)
-	require.Equal(t, plan.TxSingleShard, p.Tx)
-	require.Equal(t, "TxSingleShard", p.Tx.String())
 	require.Equal(t, int64(1), p.Merge.Limit.Offset)
 	require.Equal(t, plan.AggSum, p.Merge.Aggregates[0].Func)
-	require.Equal(t, "TxNone", plan.TxNone.String())
-	require.Equal(t, "TxReject", plan.TxReject.String())
 }

@@ -44,28 +44,6 @@ func (k Kind) String() string {
 	}
 }
 
-// TxPolicy is the transaction constraint attached to a sharding plan.
-type TxPolicy uint8
-
-const (
-	TxNone TxPolicy = iota
-	TxSingleShard
-	TxReject
-)
-
-func (p TxPolicy) String() string {
-	switch p {
-	case TxNone:
-		return "TxNone"
-	case TxSingleShard:
-		return "TxSingleShard"
-	case TxReject:
-		return "TxReject"
-	default:
-		return "Unknown"
-	}
-}
-
 // HavingOp is one HAVING comparison operator.
 type HavingOp uint8
 
@@ -158,7 +136,6 @@ type Plan struct {
 	Kind    Kind
 	Targets []route.Target
 	Merge   MergeSpec
-	Tx      TxPolicy
 	Reject  *errs.MySQL
 }
 
@@ -166,13 +143,13 @@ type Plan struct {
 type Builder struct {
 	Router route.Router
 	// Sharding marks the plan as a sharding plan. It is set only by the
-	// assembly layer; one target becomes SingleShard + TxSingleShard.
+	// assembly layer; one target becomes SingleShard.
 	Sharding bool
 }
 
 // Build produces a one-target Passthrough plan for single/rwsplit. In sharding
-// mode one target becomes SingleShard + TxSingleShard and several targets
-// become MultiShard + TxNone (concat merge, P0 query path).
+// mode one target becomes SingleShard and several targets become MultiShard
+// (concat merge, P0 query path).
 func (b Builder) Build(ctx context.Context, st *session.State, stmt *sql.Statement) (*Plan, error) {
 	if b.Router == nil {
 		return nil, fmt.Errorf("plan: nil router")
@@ -194,11 +171,11 @@ func (b Builder) Build(ctx context.Context, st *session.State, stmt *sql.Stateme
 	case 0:
 		return nil, fmt.Errorf("plan: router returned no targets")
 	case 1:
-		kind, tx := Passthrough, TxNone
+		kind := Passthrough
 		if b.Sharding {
-			kind, tx = SingleShard, TxSingleShard
+			kind = SingleShard
 		}
-		return &Plan{Kind: kind, Targets: targets, Tx: tx}, nil
+		return &Plan{Kind: kind, Targets: targets}, nil
 	default:
 		if !b.Sharding {
 			return &Plan{
@@ -216,7 +193,7 @@ func (b Builder) Build(ctx context.Context, st *session.State, stmt *sql.Stateme
 		if rej != nil {
 			return &Plan{Kind: Reject, Reject: rej}, nil
 		}
-		return &Plan{Kind: MultiShard, Targets: targets, Tx: TxNone, Merge: merge}, nil
+		return &Plan{Kind: MultiShard, Targets: targets, Merge: merge}, nil
 	}
 }
 
