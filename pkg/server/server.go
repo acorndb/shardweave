@@ -1,4 +1,5 @@
-// Package server owns the proxy listener and accept loop.
+// Package server owns the proxy listener, accept loop, and per-connection
+// command loop (serve.go, folded in from pkg/proxy — A15).
 // API shape follows kingshard/Gaea: New → Run (blocking Accept) → Close;
 // config hot-reload via UpdateConfig (caller re-reads YAML, same as kingshard main).
 package server
@@ -18,7 +19,6 @@ import (
 	"github.com/acorndb/shardweave/pkg/constant"
 	"github.com/acorndb/shardweave/pkg/execute"
 	"github.com/acorndb/shardweave/pkg/plan"
-	"github.com/acorndb/shardweave/pkg/proxy"
 	"github.com/acorndb/shardweave/pkg/route/shard"
 	"github.com/acorndb/shardweave/pkg/route/source"
 )
@@ -289,7 +289,7 @@ func (s *Server) onConn(c net.Conn) {
 		_ = c.Close()
 	}()
 
-	_ = proxy.Serve(s.ctx, c, proxy.SessionConfig{
+	_ = Serve(s.ctx, c, SessionConfig{
 		Users:            s.rt.UserProvider(),
 		Exec:             s.exec,
 		ReadTimeout:      s.readTimeout,

@@ -16,12 +16,12 @@
 | [routing.md](routing.md) | 路由与计划层 | `pkg/route/{source,shard}`、`pkg/plan` |
 | [execution.md](execution.md) | 执行与资源层 | `pkg/execute`、`pkg/backend`、`pkg/session` |
 | [merge.md](merge.md) | 归并与结果层 | `pkg/merge`、`pkg/result` |
-| [assembly.md](assembly.md) | 装配与进程层 | `pkg/proxy`、`pkg/server`、`pkg/config`、`cmd/shardweave` |
+| [assembly.md](assembly.md) | 装配与进程层 | `pkg/server`、`pkg/config`、`cmd/shardweave` |
 
 ```
                 ┌────────────────────────────────────────────┐
   MySQL client  │                 shardweave                 │
- ──────────────►│  proxy ─► sql（token 扫描，一次语义快照）    │
+ ──────────────►│  server ─► sql（token 扫描，一次语义快照）    │
                 │    │                                       │
                 │    ▼                                       │
                 │  plan（router → Targets + MergeSpec）        │
@@ -98,21 +98,23 @@ route                          → sql、session
 plan                           → sql、route、session、sql/rewrite
 merge                          → result、plan（仅 MergeSpec）、mysql/collation（stdlib-only 叶子）
 execute                        → plan、backend、session、merge、result、mysql
-proxy                          → mysql/server、sql、session、execute
 config                         → constant、yaml
-server                         → 全部（唯一装配点）
+server                         → 全部（唯一装配点 + 前端连接循环，A15）
 cmd                            → server、config、log
 ```
 
 强制规则：
 
-1. **只有 `pkg/server` 按 `mode` 分支**。`execute` / `proxy` / `session` / `backend` /
+1. **只有 `pkg/server` 按 `mode` 分支**。`execute` / `session` / `backend` /
    `route` 里不出现 mode。
 2. **`route` / `plan` 不 import `backend`**：只产出 SliceID 字符串和角色，不持有池。
-3. **`execute` 是唯一 import `backend` 的数据面模块**；`proxy` 不 import `backend`。
+3. **`execute` 是唯一 import `backend` 的数据面模块**。`server` 作为装配点为建池
+   import `backend`（`buildCluster`），但连接循环（`serve.go`）不触碰 backend，
+   只经 Executor——这条自 A15 起是**文件级约定**，不再是包级 import 规则。
 4. **lease 归 `execute`，不归 `session`**：session 只表达"需要粘性"的意图。
-5. **协议层不做 SQL 语义**：`mysql` 只负责帧与编码；`proxy` 只构造 `Statement`。
-6. **只解析一次**：`Statement` 在 `proxy` 构造，AST 被 route/rewrite/plan 复用。
+5. **协议层不做 SQL 语义**：`mysql` 只负责帧与编码；连接循环（`server/serve.go`）
+   只构造 `Statement`。
+6. **只解析一次**：`Statement` 在连接循环构造，AST 被 route/rewrite/plan 复用。
 7. **N=1 不解码**：只有 MultiShard 进入行级归并。
 8. **物理库在 `Target.DB`**：session 存逻辑库，route 产出每目标物理库。
 9. **下层不 import 上层**：`mysql` / `result` / `sql` / `session` 不依赖运行时上层。
@@ -124,7 +126,7 @@ cmd                            → server、config、log
 # route/plan 不得依赖 backend；session 不得依赖 backend
 grep -rn "pkg/backend" pkg/route pkg/plan pkg/session
 # 除 server/config 外不得出现 mode
-grep -rn "ModeSingle\|ModeRWSplit\|ModeSharding" pkg/execute pkg/proxy pkg/session pkg/backend
+grep -rn "ModeSingle\|ModeRWSplit\|ModeSharding" pkg/execute pkg/session pkg/backend
 # 语义判定不得退回字符串启发式
 grep -rn "strings.Contains\|strings.HasPrefix\|strings.ToUpper" pkg/route pkg/plan pkg/execute --include='*.go' | grep -v _test
 ```
@@ -204,6 +206,7 @@ gnet/evio 事件循环（goroutine-per-connection 足够）、跨分片 2PC 与�
 | A12 | 池生命周期：不再无条件 `COM_RESET_CONNECTION`；未读尽/出错/不可复现会话状态的连接淘汰，干净连接直接归还 | locked |
 | A13 | 会话变量白名单重放：`time_zone`/`transaction_isolation`（diff + unused→DEFAULT，Gaea 模式）；白名单外 1235 | locked |
 | A14 | 语句级语义单真相源：token 扫描一次产出 `Class`（AST 为超集）；`ParseAST` 并入 `Sharding` 会话开关 | locked |
+| A15 | `pkg/proxy` 并入 `pkg/server`（`server.Serve` / `server.SessionConfig`）：连接循环与装配同居一包，对齐 kingshard 形态；「连接循环不触碰 backend」从包级 import 规则降为文件级约定（`serve.go` 只经 Executor） | locked |
 
 ## 10. 参考
 

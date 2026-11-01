@@ -24,7 +24,7 @@ tokenizer；**AST 是 token 层的超集，不是替代**。
 ## 1. 目标形态
 
 ```
-                COM_QUERY 到达 (pkg/proxy)
+                COM_QUERY 到达 (pkg/server 连接循环，A15 后原 pkg/proxy)
                        │
               ┌────────▼────────┐
               │  Scan() 一次     │  pkg/sql/scanner.go —— 第一方 tokenizer
@@ -45,7 +45,7 @@ tokenizer；**AST 是 token 层的超集，不是替代**。
 
 1. **AST 是超集**。sharding 模式下路由语义以 AST 为准，`Class` 兜底；两者重叠字段
    （首关键字等）以一致性 property 测试约束（B3）。
-2. **只判定一次**。`Class` 在 `proxy/serve.go` 构造 `Statement` 时填充（架构原则 #6），
+2. **只判定一次**。`Class` 在连接循环（`server/serve.go`，A15）构造 `Statement` 时填充（架构原则 #6），
    下游禁止再对原始文本做语义判定。
 
 ## 2. API 骨架
@@ -98,7 +98,7 @@ SHOW 子类型需要原文切片。`Token` 另带 `End` 字段。`Class` 另带 
 |---|---|---|---|
 | 1 | `IsDML` | `execute/pipeline.go:438` | 改读 `Class.Kind` |
 | 2 | `ParseSessionFunc` | `pipeline.go:402` | 识别层换 token；`Rewrite()` 原样保留 |
-| 3 | `ParseSessionEffect` | `proxy/serve.go:92` | `Effect` 结构不变，填充换 token |
+| 3 | `ParseSessionEffect` | `server/serve.go:92`（A15 前为 `proxy/serve.go`） | `Effect` 结构不变，填充换 token |
 | 4 | `ClassifyWantSlave` | `source/pick.go:20`、`router.go` 5 处 | 新 `WantSlave(cls)`；`PickRole` 收 `*sql.Statement` |
 | 5 | `UnsupportedReason` | `plan.go:183` | 语义最重（函数调用任意位置），测试表整体平移 |
 | 6 | `isSetNames`/`isDescribe` | `router.go:125,135` | 直接用 AST（SetStmt 赋值 / ExplainStmt 判型） |
@@ -200,7 +200,7 @@ USE 的读写路由（M5：USE → 从库）在平价迁移中**按现状保留*
 
 评审中拍板过一个策略：**「代理启动时就只服务于固定的数据库，不允许用户 USE 切换」**。
 它与判定双真相源无直接关系，涉及 `pkg/config`、`pkg/mysql/server`（握手期校验）、
-`pkg/proxy`/`pkg/execute`（USE 拒绝路径），属产品策略改动，应独立设计与评审
+`pkg/server`（连接循环）/`pkg/execute`（USE 拒绝路径），属产品策略改动，应独立设计与评审
 （建议 `docs/design/database-binding.md`，配置形态、握手矩阵、差分锚点届时再定）。
 在本次整改中：USE 检测进 `Class.UseDB`（token 层自然产出），消费策略维持现状。
 

@@ -3,8 +3,7 @@
 *.out
 coverage.txt
 
-# superpowers / agent 过程产物，不入仓
+# superpowers / agent 过程产物，不入仓（docs/design 是受跟踪的设计档案，勿加回忽略）
 docs/superpowers/
-docs/design/
 # SDD / agent scratch (never commit)
 .superpowers/

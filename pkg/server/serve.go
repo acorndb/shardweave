@@ -1,4 +1,4 @@
-package proxy
+package server
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"github.com/acorndb/shardweave/pkg/execute"
 	"github.com/acorndb/shardweave/pkg/mysql"
 	"github.com/acorndb/shardweave/pkg/mysql/packet"
-	"github.com/acorndb/shardweave/pkg/mysql/server"
+	mysqlserver "github.com/acorndb/shardweave/pkg/mysql/server"
 	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/acorndb/shardweave/pkg/sql"
 	sqlparser "github.com/acorndb/shardweave/pkg/sql/parser"
@@ -21,7 +21,7 @@ import (
 
 // SessionConfig wires frontend auth and backend executor for passthrough.
 type SessionConfig struct {
-	Users            server.UserProvider
+	Users            mysqlserver.UserProvider
 	Exec             execute.Executor
 	ReadTimeout      time.Duration
 	WriteTimeout     time.Duration
@@ -36,9 +36,9 @@ type SessionConfig struct {
 // Serve runs one frontend connection: handshake then command loop.
 func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 	if cfg.Exec == nil {
-		return fmt.Errorf("proxy: nil executor")
+		return fmt.Errorf("server: nil executor")
 	}
-	sc, err := server.NewConnWithOptions(raw, cfg.Users, server.Options{
+	sc, err := mysqlserver.NewConnWithOptions(raw, cfg.Users, mysqlserver.Options{
 		ReadTimeout:      cfg.ReadTimeout,
 		WriteTimeout:     cfg.WriteTimeout,
 		MaxAllowedPacket: cfg.MaxAllowedPacket,
@@ -151,7 +151,7 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 				continue
 			}
 		case mysql.ComResetConnection:
-			// Match prior behavior: Release failure still clears proxy state.
+			// Match prior behavior: Release failure still clears the session state.
 			_ = cfg.Exec.Release(ec, false)
 			st.Reset()
 			if err := mysql.WriteOK(front, 0, 0, mysql.ServerStatusAutocommit, 0); err != nil {

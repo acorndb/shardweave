@@ -10,8 +10,8 @@ import (
 	"github.com/acorndb/shardweave/pkg/backend"
 	"github.com/acorndb/shardweave/pkg/execute"
 	"github.com/acorndb/shardweave/pkg/plan"
-	"github.com/acorndb/shardweave/pkg/proxy"
 	"github.com/acorndb/shardweave/pkg/route/source"
+	"github.com/acorndb/shardweave/pkg/server"
 	"github.com/stretchr/testify/require"
 	mysqltc "github.com/testcontainers/testcontainers-go/modules/mysql"
 )
@@ -77,7 +77,7 @@ func TestPassthroughQueryScenarios(t *testing.T) {
 				return
 			}
 			go func(c net.Conn) {
-				_ = proxy.Serve(serveCtx, c, proxy.SessionConfig{
+				_ = server.Serve(serveCtx, c, server.SessionConfig{
 					Users: mapUsers{calibUser: calibPass},
 					Exec:  exec,
 				})
