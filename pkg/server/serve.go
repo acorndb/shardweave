@@ -31,6 +31,23 @@ type SessionConfig struct {
 	// statements go through the proxy statement table instead of pinning a
 	// backend. single/rwsplit keep the zero-parse passthrough path.
 	Sharding bool
+	// ConnectionID is the frontend connection id advertised in the handshake
+	// and answered by CONNECTION_ID(). Zero falls back to 1 (see
+	// mysqlserver.Options).
+	ConnectionID uint32
+}
+
+// rejectTooManyConnections sends ER_CON_COUNT_ERROR as the first packet
+// instead of dropping the TCP connection. MySQL does the same once its hard
+// connection limit is reached; clients then see 1040 rather than a reset.
+func rejectTooManyConnections(conn net.Conn, timeout time.Duration) {
+	pc := packet.NewConn(conn)
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	pc.SetWriteTimeout(timeout)
+	_ = mysql.WriteERR(pc, errs.TooManyConnections())
+	_ = pc.Close()
 }
 
 // Serve runs one frontend connection: handshake then command loop.
@@ -42,12 +59,14 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 		ReadTimeout:      cfg.ReadTimeout,
 		WriteTimeout:     cfg.WriteTimeout,
 		MaxAllowedPacket: cfg.MaxAllowedPacket,
+		ConnectionID:     cfg.ConnectionID,
 	})
 	if err != nil {
 		return err
 	}
 	front := sc.PacketConn()
 	st := session.NewState()
+	st.SetConnectionID(sc.ConnectionID())
 	if db := sc.Database(); db != "" {
 		st.SetDatabase(db)
 	}
@@ -113,7 +132,8 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 		case mysql.ComQuit:
 			return nil
 		case mysql.ComPing:
-			if err := mysql.WriteOK(front, 0, 0, mysql.ServerStatusAutocommit, 0); err != nil {
+			status := mysql.ServerStatusWord(st.Autocommit(), st.InTx())
+			if err := mysql.WriteOK(front, 0, 0, status, 0); err != nil {
 				return err
 			}
 		case mysql.ComInitDB:
@@ -154,7 +174,8 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 			// Match prior behavior: Release failure still clears the session state.
 			_ = cfg.Exec.Release(ec, false)
 			st.Reset()
-			if err := mysql.WriteOK(front, 0, 0, mysql.ServerStatusAutocommit, 0); err != nil {
+			status := mysql.ServerStatusWord(st.Autocommit(), st.InTx())
+			if err := mysql.WriteOK(front, 0, 0, status, 0); err != nil {
 				return err
 			}
 		default:
@@ -174,6 +195,9 @@ func parseStatementAST(stmt *sql.Statement, raw string) {
 	}
 }
 
+// handleExecError writes one ERR packet. A MySQL error can arrive after part
+// of a result set was already forwarded (sharded merge failure); ERR is a
+// valid terminator there, so the session stays alive.
 func handleExecError(front *packet.Conn, err error) error {
 	var me *errs.MySQL
 	if errors.As(err, &me) {

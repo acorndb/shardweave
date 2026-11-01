@@ -12,6 +12,10 @@ import (
 	"github.com/acorndb/shardweave/pkg/backend"
 	"github.com/acorndb/shardweave/pkg/config"
 	"github.com/acorndb/shardweave/pkg/constant"
+	"github.com/acorndb/shardweave/pkg/errs"
+	"github.com/acorndb/shardweave/pkg/mysql"
+	"github.com/acorndb/shardweave/pkg/mysql/auth"
+	"github.com/acorndb/shardweave/pkg/mysql/packet"
 	"github.com/stretchr/testify/require"
 )
 
@@ -55,12 +59,41 @@ func TestServer_MaxConnections(t *testing.T) {
 	c2, err := net.Dial("tcp", srv.Addr())
 	require.NoError(t, err)
 	defer func() { _ = c2.Close() }()
-	require.NoError(t, c2.SetReadDeadline(time.Now().Add(time.Second)))
-	_, err = c2.Read(make([]byte, 1))
-	require.Error(t, err, "second connection must be rejected")
+	require.NoError(t, c2.SetReadDeadline(time.Now().Add(2*time.Second)))
+	data, err := packet.NewConn(c2).ReadPacket()
+	require.NoError(t, err)
+	require.Equal(t, byte(mysql.ErrHeader), data[0], "rejection must be an ERR packet, not a handshake")
+	var me *errs.MySQL
+	require.ErrorAs(t, mysql.DecodeServerError(data), &me)
+	require.Equal(t, uint16(errs.ErTooManyConnections), me.Number)
+	require.Equal(t, errs.StateTooManyConns, me.SQLState)
 
 	require.NoError(t, c1.Close())
 	require.Eventually(t, func() bool { return srv.ActiveConnections() == 0 }, time.Second, time.Millisecond)
+}
+
+// TestServer_ConnectionIDsAreUnique pins the frontend handshake contract: every
+// accepted session gets its own MySQL connection id, starting at 1.
+func TestServer_ConnectionIDsAreUnique(t *testing.T) {
+	cfg := minimalConfig()
+	srv, err := New(cfg, writeConfig(t, cfg))
+	require.NoError(t, err)
+	t.Cleanup(srv.Close)
+	go func() { _ = srv.Run() }()
+
+	readID := func() uint32 {
+		c, err := net.Dial("tcp", srv.Addr())
+		require.NoError(t, err)
+		defer func() { _ = c.Close() }()
+		data, err := packet.NewConn(c).ReadPacket()
+		require.NoError(t, err)
+		hs, err := auth.ParseHandshakeV10(data)
+		require.NoError(t, err)
+		return hs.ConnectionID
+	}
+
+	require.Equal(t, uint32(1), readID())
+	require.Equal(t, uint32(2), readID())
 }
 
 func TestServer_AcquireConn(t *testing.T) {

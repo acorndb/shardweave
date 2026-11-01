@@ -40,6 +40,9 @@ type fakeExec struct {
 	signal    chan struct{}
 	handleErr error
 	closed    bool
+	// onHandle lets a test mutate session state as a backend would (for
+	// example, BEGIN opening a transaction) before the call is recorded.
+	onHandle func(*session.State, *sql.Statement)
 }
 
 func newFakeExec() *fakeExec {
@@ -47,6 +50,9 @@ func newFakeExec() *fakeExec {
 }
 
 func (f *fakeExec) Handle(_ context.Context, c *execute.Runtime, stmt *sql.Statement) error {
+	if f.onHandle != nil {
+		f.onHandle(c.State, stmt)
+	}
 	call := handleCall{
 		stmt:       stmt,
 		db:         c.State.Database(),
@@ -178,6 +184,79 @@ func TestServe_Ping(t *testing.T) {
 	data := readPacket(t, pc)
 	require.NotEmpty(t, data)
 	require.Equal(t, byte(mysql.OKHeader), data[0])
+
+	quit(t, pc, serveErr)
+}
+
+// okStatus reads SERVER_STATUS from an OK packet with zero affected rows and
+// zero last insert id (the shape PING and RESET use).
+func okStatus(t *testing.T, data []byte) uint16 {
+	t.Helper()
+	require.GreaterOrEqual(t, len(data), 7)
+	require.Equal(t, byte(mysql.OKHeader), data[0])
+	return binary.LittleEndian.Uint16(data[3:5])
+}
+
+func TestServe_PingReportsServerStatus(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup string
+		hook  func(*session.State, *sql.Statement)
+		want  uint16
+	}{
+		{
+			name: "autocommit",
+			want: mysql.ServerStatusAutocommit,
+		},
+		{
+			name:  "in_transaction",
+			setup: "BEGIN",
+			hook: func(st *session.State, stmt *sql.Statement) {
+				if stmt.Raw == "BEGIN" {
+					st.SetInTx(true)
+				}
+			},
+			want: mysql.ServerStatusAutocommit | mysql.ServerStatusInTrans,
+		},
+		{
+			name:  "autocommit_off",
+			setup: "SET autocommit=0",
+			want:  0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			exec := newFakeExec()
+			exec.onHandle = tc.hook
+			pc, serveErr := newProxySession(t, exec)
+
+			if tc.setup != "" {
+				writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte(tc.setup)...))
+				exec.waitCall(t)
+			}
+
+			writeCommand(t, pc, []byte{mysql.ComPing})
+			require.Equal(t, tc.want, okStatus(t, readPacket(t, pc)))
+
+			quit(t, pc, serveErr)
+		})
+	}
+}
+
+func TestServe_ResetConnectionReportsAutocommit(t *testing.T) {
+	exec := newFakeExec()
+	exec.onHandle = func(st *session.State, stmt *sql.Statement) {
+		if stmt.Raw == "BEGIN" {
+			st.SetInTx(true)
+		}
+	}
+	pc, serveErr := newProxySession(t, exec)
+
+	writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("BEGIN")...))
+	exec.waitCall(t)
+
+	writeCommand(t, pc, []byte{mysql.ComResetConnection})
+	require.Equal(t, mysql.ServerStatusAutocommit, okStatus(t, readPacket(t, pc)))
 
 	quit(t, pc, serveErr)
 }

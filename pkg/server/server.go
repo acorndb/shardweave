@@ -35,6 +35,7 @@ type Server struct {
 	maxConns         int
 	sharding         bool
 	activeConns      atomic.Int64
+	connIDs          connIDAllocator
 
 	listener net.Listener
 	running  atomic.Bool
@@ -230,7 +231,7 @@ func (s *Server) Run() error {
 		}
 		if !s.acquireConn() {
 			slog.Warn("server reached max connections", "remote", conn.RemoteAddr().String(), "max", s.maxConns)
-			_ = conn.Close()
+			go rejectTooManyConnections(conn, s.writeTimeout)
 			continue
 		}
 		go s.onConn(conn)
@@ -280,11 +281,13 @@ func (s *Server) ActiveConnections() int {
 
 func (s *Server) onConn(c net.Conn) {
 	defer s.releaseConn()
+	id := s.connIDs.alloc()
+	defer s.connIDs.free(id)
 	defer func() {
 		if err := recover(); err != nil {
 			buf := make([]byte, 4096)
 			n := runtime.Stack(buf, false)
-			slog.Error("server onConn panic", "remote", c.RemoteAddr().String(), "err", err, "stack", string(buf[:n]))
+			slog.Error("server onConn panic", "conn_id", id, "remote", c.RemoteAddr().String(), "err", err, "stack", string(buf[:n]))
 		}
 		_ = c.Close()
 	}()
@@ -296,6 +299,7 @@ func (s *Server) onConn(c net.Conn) {
 		WriteTimeout:     s.writeTimeout,
 		MaxAllowedPacket: s.maxAllowedPacket,
 		Sharding:         s.sharding,
+		ConnectionID:     id,
 	})
 }
 
