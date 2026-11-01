@@ -23,6 +23,19 @@ func TestState_SetDatabase(t *testing.T) {
 	require.Equal(t, "app", s.Database())
 }
 
+func TestState_ConnectionID(t *testing.T) {
+	s := session.NewState()
+	require.Zero(t, s.ConnectionID())
+
+	s.SetConnectionID(7)
+	require.Equal(t, uint32(7), s.ConnectionID())
+
+	s.SetDatabase("app")
+	s.SetInTx(true)
+	s.Reset()
+	require.Equal(t, uint32(7), s.ConnectionID(), "COM_RESET_CONNECTION keeps the same frontend session")
+}
+
 func TestState_TxAndReserved(t *testing.T) {
 	s := session.NewState()
 	s.SetInTx(true)

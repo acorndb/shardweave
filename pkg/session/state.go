@@ -4,12 +4,13 @@ import "strings"
 
 // State holds frontend session fields that affect backend connection reuse.
 type State struct {
-	database   string
-	inTx       bool
-	autocommit bool
-	reserved   bool
-	stmtPinned bool
-	charset    string
+	connectionID uint32
+	database     string
+	inTx         bool
+	autocommit   bool
+	reserved     bool
+	stmtPinned   bool
+	charset      string
 
 	// Connection-scoped information functions. They are answered by the proxy
 	// from these fields, not by the backend connection currently in use.
@@ -36,6 +37,14 @@ func (s *State) SetDatabase(db string) {
 	// buffer (util/zerocopy.HackString hands out zero-copy strings).
 	s.database = strings.Clone(db)
 }
+
+// ConnectionID is the id advertised in the frontend handshake. Connects the
+// handshake, CONNECTION_ID(), logs, and (later) KILL to one value.
+func (s *State) ConnectionID() uint32 { return s.connectionID }
+
+// SetConnectionID records the frontend connection id. COM_RESET_CONNECTION
+// keeps it: the client still owns the same session.
+func (s *State) SetConnectionID(id uint32) { s.connectionID = id }
 
 func (s *State) InTx() bool { return s.inTx }
 func (s *State) SetInTx(v bool) {
