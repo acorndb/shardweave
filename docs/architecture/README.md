@@ -92,7 +92,7 @@
 ## 3. 依赖规则（强制）
 
 ```
-mysql、result、sql、session   ← 叶子/准叶子
+mysql、result、sql、session、util/zerocopy   ← 叶子/准叶子（util/zerocopy：零拷贝 Bytes↔string）
 backend                        → mysql、result
 route                          → sql、session
 plan                           → sql、route、session、sql/rewrite

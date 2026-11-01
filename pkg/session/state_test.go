@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"testing"
+	"unsafe"
 
 	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/stretchr/testify/require"
@@ -108,4 +109,26 @@ func TestState_SessionFunctions(t *testing.T) {
 	s.Reset()
 	require.Equal(t, uint64(0), s.LastInsertID(), "COM_RESET_CONNECTION clears LAST_INSERT_ID")
 	require.Equal(t, int64(-1), s.RowCount(), "COM_RESET_CONNECTION resets ROW_COUNT")
+}
+
+// TestState_ClonesRetainedStrings pins the ownership contract: session fields
+// outlive the statement, so they must not alias a caller buffer that the
+// command loop may reuse (see util/zerocopy.HackString).
+func TestState_ClonesRetainedStrings(t *testing.T) {
+	buf := []byte("calendar")
+	alias := unsafe.String(unsafe.SliceData(buf), len(buf))
+	nameBuf := []byte("time_zone")
+	nameAlias := unsafe.String(unsafe.SliceData(nameBuf), len(nameBuf))
+
+	s := session.NewState()
+	s.SetDatabase(alias)
+	s.SetCharset(alias)
+	s.SetVar(nameAlias, alias)
+
+	buf[0] = 'X'     // caller reuses its buffer after the statement
+	nameBuf[0] = 'X' // the variable name aliases the statement too
+
+	require.Equal(t, "calendar", s.Database())
+	require.Equal(t, "calendar", s.Charset())
+	require.Equal(t, "calendar", s.Vars()["time_zone"], "both key and value must be owned")
 }

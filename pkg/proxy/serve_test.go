@@ -390,3 +390,20 @@ func TestServe_ParsesExplainRoute(t *testing.T) {
 
 	quit(t, pc, serveErr)
 }
+
+// TestServe_StatementTextSurvivesNextRead guards the zero-copy contract:
+// the statement text aliases the packet payload, so ReadPacket must keep
+// returning fresh buffers rather than reusing a read buffer.
+func TestServe_StatementTextSurvivesNextRead(t *testing.T) {
+	exec := newFakeExec()
+	pc, serveErr := newProxySession(t, exec)
+
+	writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("SELECT 1")...))
+	first := exec.waitCall(t)
+
+	writeCommand(t, pc, append([]byte{mysql.ComQuery}, []byte("SELECT 2")...))
+	exec.waitCall(t)
+
+	require.Equal(t, "SELECT 1", first.stmt.Raw)
+	quit(t, pc, serveErr)
+}

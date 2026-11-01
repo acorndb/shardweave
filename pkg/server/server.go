@@ -238,20 +238,32 @@ func (s *Server) Run() error {
 	return nil
 }
 
+// acquireConn reserves one frontend session slot. In production only the
+// accept loop calls it, so the counter has a single incrementer and closers
+// only decrement. The CAS loop is bounded; an exhausted budget falls back to
+// reserve-and-validate, so false always means the limit is reached.
 func (s *Server) acquireConn() bool {
 	if s.maxConns <= 0 {
 		s.activeConns.Add(1)
 		return true
 	}
-	for {
+	max := int64(s.maxConns)
+	for i := 0; i < constant.MaxAcquireCASRounds; i++ {
 		cur := s.activeConns.Load()
-		if cur >= int64(s.maxConns) {
+		if cur >= max {
 			return false
 		}
 		if s.activeConns.CompareAndSwap(cur, cur+1) {
 			return true
 		}
 	}
+	// Retry budget exhausted: reserve once and validate instead of spinning.
+	// false here still means the limit is reached, not that the CAS lost.
+	if n := s.activeConns.Add(1); n > max {
+		s.activeConns.Add(-1)
+		return false
+	}
+	return true
 }
 
 func (s *Server) releaseConn() {

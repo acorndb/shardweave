@@ -4,7 +4,6 @@ package shard
 import (
 	"context"
 	"fmt"
-	"hash/fnv"
 	"strconv"
 	"strings"
 
@@ -550,7 +549,7 @@ func shardIndex(rule Rule, value any) (int, error) {
 	case constant.ShardingHashModStr:
 		switch v := value.(type) {
 		case string:
-			return int(fnvSum([]byte(v)) % uint64(n)), nil
+			return int(fnvSum(v) % uint64(n)), nil
 		case []byte:
 			return int(fnvSum(v) % uint64(n)), nil
 		default:
@@ -584,10 +583,19 @@ func integerKey(value any) (uint64, bool) {
 	return 0, false
 }
 
-func fnvSum(b []byte) uint64 {
-	h := fnv.New64a()
-	_, _ = h.Write(b)
-	return h.Sum64()
+// fnvSum is FNV-1a 64 over v. The hand-rolled loop avoids the hash/fnv
+// interface and, for string keys, the []byte conversion copy.
+func fnvSum[T ~string | ~[]byte](v T) uint64 {
+	const (
+		offset64 = 14695981039346656037
+		prime64  = 1099511628211
+	)
+	h := uint64(offset64)
+	for i := 0; i < len(v); i++ {
+		h ^= uint64(v[i])
+		h *= prime64
+	}
+	return h
 }
 
 func reject(format string, args ...any) error {

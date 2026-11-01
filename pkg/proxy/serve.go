@@ -16,6 +16,7 @@ import (
 	"github.com/acorndb/shardweave/pkg/session"
 	"github.com/acorndb/shardweave/pkg/sql"
 	sqlparser "github.com/acorndb/shardweave/pkg/sql/parser"
+	"github.com/acorndb/shardweave/pkg/util/zerocopy"
 )
 
 // SessionConfig wires frontend auth and backend executor for passthrough.
@@ -80,7 +81,7 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 		if len(data) > 1 {
 			switch cmd {
 			case mysql.ComQuery:
-				raw := string(data[1:])
+				raw := zerocopy.HackString(data[1:])
 				stmt.Kind = sql.KindQuery
 				if inner, ok := sql.ParseExplainRoute(raw); ok {
 					stmt.Kind = sql.KindExplainRoute
@@ -93,11 +94,11 @@ func Serve(ctx context.Context, raw net.Conn, cfg SessionConfig) error {
 					parseStatementAST(stmt, raw)
 				}
 			case mysql.ComInitDB:
-				stmt.Raw = string(data[1:])
+				stmt.Raw = zerocopy.HackString(data[1:])
 				stmt.Kind = sql.KindUse
 				stmt.Effect = sql.Effect{UseDB: stmt.Raw}
 			case mysql.ComStmtPrepare:
-				stmt.Raw = string(data[1:])
+				stmt.Raw = zerocopy.HackString(data[1:])
 				if cfg.Sharding {
 					parseStatementAST(stmt, stmt.Raw)
 				}

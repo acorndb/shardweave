@@ -1,6 +1,11 @@
-// Package constant holds process-wide string enums (YAML values, mode names).
-// Keep this package dependency-free so config/router/executor can share it.
+// Package constant holds process-wide constants (YAML values, mode names,
+// tuning knobs). Keep this package dependency-free so config/router/executor
+// can share it.
 package constant
+
+// MaxAcquireCASRounds bounds the CAS retry loop in server.acquireConn before
+// it falls back to reserve-and-validate.
+const MaxAcquireCASRounds = 3
 
 // backend.mode
 const (

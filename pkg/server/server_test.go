@@ -4,6 +4,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,6 +61,66 @@ func TestServer_MaxConnections(t *testing.T) {
 
 	require.NoError(t, c1.Close())
 	require.Eventually(t, func() bool { return srv.ActiveConnections() == 0 }, time.Second, time.Millisecond)
+}
+
+func TestServer_AcquireConn(t *testing.T) {
+	tests := []struct {
+		name      string
+		max       int
+		pre       int64
+		want      bool
+		wantCount int64
+	}{
+		{name: "unlimited", max: 0, want: true, wantCount: 1},
+		{name: "below_limit", max: 2, want: true, wantCount: 1},
+		{name: "at_limit", max: 2, pre: 2, want: false, wantCount: 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Server{maxConns: tc.max}
+			s.activeConns.Store(tc.pre)
+			require.Equal(t, tc.want, s.acquireConn())
+			require.Equal(t, tc.wantCount, s.activeConns.Load())
+		})
+	}
+}
+
+func TestServer_ReleaseConnFreesSlot(t *testing.T) {
+	s := &Server{maxConns: 1}
+	require.True(t, s.acquireConn())
+	require.False(t, s.acquireConn(), "limit reached")
+	s.releaseConn()
+	require.True(t, s.acquireConn(), "released slot must be reusable")
+}
+
+func TestServer_AcquireConnConcurrentChurn(t *testing.T) {
+	const (
+		maxSlots = 4
+		workers  = 16
+		rounds   = 500
+	)
+	s := &Server{maxConns: maxSlots}
+	var admitted, over atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < rounds; j++ {
+				if !s.acquireConn() {
+					continue
+				}
+				if n := admitted.Add(1); n > maxSlots {
+					over.Store(n)
+				}
+				admitted.Add(-1)
+				s.releaseConn()
+			}
+		}()
+	}
+	wg.Wait()
+	require.Zero(t, over.Load(), "acquireConn over-admitted slots")
+	require.Zero(t, s.activeConns.Load(), "slots leaked")
 }
 
 func TestServer_UpdateConfigUsers(t *testing.T) {

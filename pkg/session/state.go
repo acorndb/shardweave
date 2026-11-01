@@ -1,5 +1,7 @@
 package session
 
+import "strings"
+
 // State holds frontend session fields that affect backend connection reuse.
 type State struct {
 	database   string
@@ -30,7 +32,9 @@ func NewState() *State {
 
 func (s *State) Database() string { return s.database }
 func (s *State) SetDatabase(db string) {
-	s.database = db
+	// session state outlives the statement: never alias the caller's packet
+	// buffer (util/zerocopy.HackString hands out zero-copy strings).
+	s.database = strings.Clone(db)
 }
 
 func (s *State) InTx() bool { return s.inTx }
@@ -69,7 +73,8 @@ func (s *State) UnmarkStmtPinned() { s.stmtPinned = false }
 
 func (s *State) Charset() string { return s.charset }
 func (s *State) SetCharset(cs string) {
-	s.charset = cs
+	// Cloned for the same reason as SetDatabase.
+	s.charset = strings.Clone(cs)
 }
 
 // LastInsertID is the value LAST_INSERT_ID() would return for this session.
@@ -90,12 +95,14 @@ func (s *State) SetRowCount(n int64) {
 	s.rowCount = n
 }
 
-// SetVar records one replayable session variable.
+// SetVar records one replayable session variable. Both the name and the value
+// are cloned: both are substrings of the statement text, which may alias a
+// packet buffer far larger than the variable itself.
 func (s *State) SetVar(name, value string) {
 	if s.vars == nil {
 		s.vars = make(map[string]string)
 	}
-	s.vars[name] = value
+	s.vars[strings.Clone(name)] = strings.Clone(value)
 }
 
 // Vars returns the replayable session variables (do not mutate).
