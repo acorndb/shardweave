@@ -146,7 +146,15 @@ func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statemen
 		}
 		if err != nil {
 			cleanup(true)
-			return false, fmt.Errorf("execute: merge: %w", err)
+			// The column definitions (and possibly rows) are already on the
+			// wire, so the error must terminate the result set instead of
+			// dropping the connection. A shard ERR is already *errs.MySQL and
+			// keeps its code; transport/decode failures become 1105.
+			var me *errs.MySQL
+			if errors.As(err, &me) {
+				return false, fmt.Errorf("execute: merge: %w", err)
+			}
+			return false, errs.Unknown("sharded result set failed: %v", err)
 		}
 		cells, err := encodeCells(row, len(outFields))
 		if err != nil {
@@ -158,6 +166,8 @@ func (p *Pipeline) dispatch(ctx context.Context, rt *Runtime, stmt *sql.Statemen
 			return false, err
 		}
 	}
+	// Scatter is rejected for transactions and pinned sessions (plan.Builder),
+	// so this synthetic terminator can never need SERVER_STATUS_IN_TRANS.
 	if err := mysql.WriteEOF(rt.Front, frontendDeprecateEOF, mysql.ServerStatusAutocommit, 0); err != nil {
 		cleanup(true)
 		return false, err

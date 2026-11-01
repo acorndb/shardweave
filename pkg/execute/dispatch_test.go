@@ -174,6 +174,25 @@ func TestDispatch_Concat(t *testing.T) {
 	require.Equal(t, int64(-1), rt.State.RowCount())
 }
 
+// TestDispatch_ConcatRejectedInTransaction pins the invariant that keeps the
+// merged terminator's status simple: scatter never runs in a transaction or a
+// sticky session, so its synthetic EOF cannot need SERVER_STATUS_IN_TRANS.
+func TestDispatch_ConcatRejectedInTransaction(t *testing.T) {
+	p := newMultiPipeline(t, &tracker{}, &tracker{}, nil, nil)
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	rt.State.SetInTx(true)
+
+	err := p.Handle(context.Background(), rt, query("SELECT id, amount FROM orders"))
+	var rej *errs.MySQL
+	require.ErrorAs(t, err, &rej)
+	require.Equal(t, uint16(1235), rej.Number)
+	require.Contains(t, rej.Message, "transaction")
+	require.Empty(t, collect(), "a rejected scatter plan writes no packets")
+}
+
 func TestDispatch_MetadataMismatch(t *testing.T) {
 	tr0, tr1 := &tracker{}, &tracker{}
 	p := newMultiPipeline(t, tr0, tr1,
@@ -767,9 +786,41 @@ func TestDispatch_RowError(t *testing.T) {
 	rt.Front = front
 	err := p.Handle(context.Background(), rt, query("SELECT id, amount FROM orders"))
 	require.ErrorContains(t, err, "connection reset")
-	require.NotEmpty(t, collect())
+	var me *errs.MySQL
+	require.ErrorAs(t, err, &me, "a transport error after the header must become a MySQL ERR")
+	require.Equal(t, uint16(errs.ErUnknownError), me.Number)
+	require.NotEmpty(t, collect(), "the partial result set was already forwarded")
 	require.Empty(t, rt.leases)
 	require.True(t, tr0.last(t).closed, "partial result must not return the backend to the pool")
 	require.True(t, tr1.last(t).closed)
+	require.Equal(t, int64(-1), rt.State.RowCount())
+}
+
+// TestDispatch_RowMySQLServerError pins that a shard ERR arriving after the
+// result header keeps its real error number instead of being flattened to 1105.
+func TestDispatch_RowMySQLServerError(t *testing.T) {
+	tr0, tr1 := &tracker{}, &tracker{}
+	p := newMultiPipeline(t, tr0, tr1,
+		func(c *fakeConn) {
+			c.fields = orderFields("id")
+			c.rows = []result.Row{{[]byte("1"), []byte("10")}}
+		},
+		func(c *fakeConn) {
+			c.fields = orderFields("id")
+			c.rowErr = &errs.MySQL{Number: 1146, SQLState: "42S02", Message: "Table 'bench.orders' doesn't exist"}
+		})
+
+	front, collect := captureFront(t)
+	rt := newRuntime()
+	rt.Front = front
+	err := p.Handle(context.Background(), rt, query("SELECT id, amount FROM orders"))
+
+	var me *errs.MySQL
+	require.ErrorAs(t, err, &me)
+	require.Equal(t, uint16(1146), me.Number)
+	require.Equal(t, "42S02", me.SQLState)
+	require.Contains(t, me.Message, "doesn't exist")
+	require.NotEmpty(t, collect())
+	require.Empty(t, rt.leases)
 	require.Equal(t, int64(-1), rt.State.RowCount())
 }
