@@ -184,7 +184,7 @@ gnet/evio 事件循环（goroutine-per-connection 足够）、跨分片 2PC 与�
 | **M1.5 模块化 seam** ✅ | `backend.Slice`、`route/source`、`plan`/`result`/`execute` 骨架；删 sharding 桩 | 差分全绿，行为不变 |
 | **M2 会话与单分片** ✅ | `Session` 状态、`backend` 配置、单分片路由、`Reject`、`EXPLAIN ROUTE` | 路由表驱动单测 + 单分片 e2e |
 | **M3 跨分片** ✅ | MultiShard、dispatch、identity/order/aggregate/limit、变形 harness；超出设计的增量：collation 归并、池生命周期（脏即弃）、会话变量重放、语句判定单真相源 | 分片 vs 单库一致（聚合 + collation 矩阵 oracle 全绿） |
-| **M4 生产化**（未开始） | 健康检查、故障回落、限流/指标、容量与性能门禁 | 故障注入 + 性能门禁 |
+| **M4 生产化**（未开始） | 健康检查、故障回落、限流/指标、容量与性能门禁；第一切片 M4a（运维面）设计已就绪：[design/ops-plane-design.md](../design/ops-plane-design.md) | 故障注入 + 性能门禁 |
 
 ## 9. 决策记录
 

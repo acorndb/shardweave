@@ -11,6 +11,8 @@
   （含 collation 专项 §13）
 - [statement-classification.md](statement-classification.md)：语句判定统一
   （token 单真相源）设计与落地状态
+- [ops-plane-design.md](ops-plane-design.md)：M4a 运维面设计（admin HTTP / 池与
+  后端健康 / 优雅升级）——**设计稿，开发待人工 review 完成后启动**
 - [test-infrastructure.md](test-infrastructure.md)：测试分层、真实拓扑与 oracle
 - [industrial-readiness-gap.md](industrial-readiness-gap.md)：单机剩余差距
   （2026-10-31 快照，池/会话/归并部分已演进）
