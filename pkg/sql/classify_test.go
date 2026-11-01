@@ -238,10 +238,13 @@ func TestClassify_Unsupported(t *testing.T) {
 		{"set_names_gbk", "SET NAMES gbk", "utf8mb4"},
 		{"set_autocommit", "SET autocommit = 0", ""},
 		{"set_user_var", "SET @x = 1", ""},
-		// Ledger: the standalone checker no longer flags the exact form that
-		// rewriteSessionFunc rewrites end-to-end (Class.SessionFunc records it).
-		{"row_count_alias_rewritable", "SELECT ROW_COUNT() AS n", ""},
-		{"last_insert_id_rewritable", "SELECT LAST_INSERT_ID()", ""},
+		// The standalone checker rejects every surviving session-function
+		// reference: the exact COM_QUERY form is rewritten to a CAST literal
+		// (and its Class recomputed) before judgment, so a reference that is
+		// still visible here means the form is not rewritable or the command
+		// cannot be rewritten (COM_STMT_PREPARE).
+		{"row_count_alias", "SELECT ROW_COUNT() AS n", "ROW_COUNT"},
+		{"last_insert_id_exact", "SELECT LAST_INSERT_ID()", "LAST_INSERT_ID"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

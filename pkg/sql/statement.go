@@ -61,3 +61,14 @@ func (s *Statement) EnsureClass() *Class {
 	s.classReady = true
 	return &s.Class
 }
+
+// ResetClass drops the cached snapshot so the next EnsureClass recomputes it.
+// Used after a rewrite replaces Raw (e.g. SELECT LAST_INSERT_ID() → CAST
+// literal): judgments must see the rewritten statement, not the original.
+func (s *Statement) ResetClass() {
+	if s == nil {
+		return
+	}
+	s.Class = Class{}
+	s.classReady = false
+}

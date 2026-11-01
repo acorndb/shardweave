@@ -187,6 +187,22 @@ func (p *Pipeline) Handle(ctx context.Context, rt *Runtime, stmt *sql.Statement)
 		return p.explainRoute(ctx, rt, stmt)
 	}
 
+	// SET NAMES utf8mb4 is answered locally instead of being forwarded: a
+	// forwarded SET NAMES would reset character_set_results on the backend and
+	// undo the results=NULL policy that keeps column metadata truthful. The
+	// backend charset is utf8mb4 from the handshake, so the statement is a
+	// no-op there anyway; only utf8mb4 reaches this point (anything else is
+	// rejected in Class.UnsupportedReason).
+	if stmt.Cmd == mysql.ComQuery && stmt.EnsureClass().SetNames != "" {
+		applyEffect(rt.State, stmt.Effect)
+		rt.State.SetRowCount(0)
+		status := mysql.ServerStatusAutocommit
+		if rt.State.InTx() {
+			status |= mysql.ServerStatusInTrans
+		}
+		return mysql.WriteOK(rt.Front, 0, 0, status, 0)
+	}
+
 	rewriteSessionFunc(rt.State, stmt)
 	success := false
 	defer func() {
@@ -469,6 +485,10 @@ func rewriteSessionFunc(st *session.State, stmt *sql.Statement) {
 	copy(payload[1:], rewritten)
 	stmt.Payload = payload
 	stmt.Raw = rewritten
+	// The rewrite removed the session-function reference; drop the cached
+	// snapshot so UnsupportedReason judges the rewritten statement instead of
+	// rejecting the original form.
+	stmt.ResetClass()
 }
 
 // applyResponseState mirrors MySQL's connection-scoped function semantics:

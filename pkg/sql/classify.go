@@ -232,13 +232,13 @@ func (c Class) UnsupportedReason() string {
 		case "FOUND_ROWS":
 			return "FOUND_ROWS() is not supported by shardweave"
 		case "LAST_INSERT_ID":
-			if c.SessionFunc == nil {
-				return "LAST_INSERT_ID() is not supported in this form by shardweave"
-			}
+			// The exact rewritable form is rewritten to a CAST literal before
+			// planning (and its Class recomputed), so a surviving reference
+			// here means the form is not rewritable or the command cannot be
+			// rewritten (COM_STMT_PREPARE): reject either way.
+			return "LAST_INSERT_ID() is not supported in this form by shardweave"
 		case "ROW_COUNT":
-			if c.SessionFunc == nil {
-				return "ROW_COUNT() is not supported in this form by shardweave"
-			}
+			return "ROW_COUNT() is not supported in this form by shardweave"
 		}
 	}
 	return ""

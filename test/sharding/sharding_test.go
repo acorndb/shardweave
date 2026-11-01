@@ -172,9 +172,6 @@ func TestSingleShardRouting(t *testing.T) {
 	requireOrderedColumn(t, ctx, conn, "SELECT amount FROM orders ORDER BY amount % 100",
 		[]string{"200", "50"})
 	assertReject(t, ctx, conn, "SELECT * FROM orders ORDER BY amount + 1")
-	// String ORDER BY needs collation-aware comparison; reject instead of
-	// returning a byte-order result that may differ from MySQL.
-	assertReject(t, ctx, conn, "SELECT name FROM profiles ORDER BY name")
 
 	// Aggregates without GROUP BY: each shard returns one partial row and the
 	// merge combines COUNT/SUM/MIN/MAX.
@@ -210,7 +207,6 @@ func TestSingleShardRouting(t *testing.T) {
 	requireRouteSlices(t, ctx, conn, "EXPLAIN ROUTE SELECT COUNT(DISTINCT amount) FROM orders",
 		[]string{"s0", "s1"})
 	assertReject(t, ctx, conn, "SELECT COUNT(DISTINCT amount, id) FROM orders")
-	assertReject(t, ctx, conn, "SELECT COUNT(DISTINCT name) FROM profiles")
 	assertReject(t, ctx, conn, "SELECT COUNT(*), amount FROM orders")
 	assertReject(t, ctx, conn, "SELECT COUNT(*) FROM orders ORDER BY 1")
 	assertReject(t, ctx, conn, "SELECT * FROM orders WHERE user_id IN (SELECT user_id FROM orders)")
@@ -235,6 +231,12 @@ func TestSingleShardRouting(t *testing.T) {
 	require.Equal(t, 2, connScalar(t, ctx, conn, "SELECT COUNT(*) AS c FROM profiles"))
 	requireOrderedColumn(t, ctx, conn, "SELECT name FROM profiles ORDER BY score",
 		[]string{"alice", "bob"})
+	// String ORDER BY merges across shards using the column collation
+	// (merge-engine-design §13); the two values live on different shards.
+	requireOrderedColumn(t, ctx, conn, "SELECT name FROM profiles ORDER BY name",
+		[]string{"alice", "bob"})
+	requireOrderedColumn(t, ctx, conn, "SELECT name FROM profiles ORDER BY name DESC",
+		[]string{"bob", "alice"})
 	var profileAvg float64
 	require.NoError(t, conn.QueryRowContext(ctx, "SELECT AVG(score) FROM profiles").Scan(&profileAvg))
 	require.Equal(t, 1.5, profileAvg)
@@ -341,7 +343,10 @@ func TestSingleShardRouting(t *testing.T) {
 	requireOrderedColumn(t, ctx, conn, "SELECT DISTINCT amount FROM orders ORDER BY amount DESC LIMIT 1",
 		[]string{"200"})
 	requireRowCount(t, ctx, conn, "SELECT DISTINCT amount FROM orders LIMIT 1", 1)
-	assertReject(t, ctx, conn, "SELECT DISTINCT name FROM profiles")
+	// String DISTINCT merges across shards by collation weights (§13).
+	requireOrderedColumn(t, ctx, conn, "SELECT DISTINCT name FROM profiles ORDER BY name",
+		[]string{"alice", "bob"})
+	require.Equal(t, 2, connScalar(t, ctx, conn, "SELECT COUNT(DISTINCT name) FROM profiles"))
 	assertReject(t, ctx, conn, "SELECT DISTINCT amount FROM orders ORDER BY user_id")
 
 	// Unsupported shapes are explicit 1235, not silent wrong results.

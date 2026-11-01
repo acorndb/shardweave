@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -883,6 +884,28 @@ func TestPipeline_SessionVarReplay(t *testing.T) {
 	require.Equal(t, "+08:00", tr.last(t).lastAlign.Vars["time_zone"],
 		"the next query must replay the session variable during Align")
 	require.Equal(t, 1, tr.opens(), "the connection must be reused")
+}
+
+func TestPipeline_SetNamesAnsweredLocally(t *testing.T) {
+	tr := &tracker{}
+	p, err := New(clusterOf(t, sliceWith("default", newPool(t, "master", tr, nil))),
+		plan.Builder{Router: source.AllMaster{}})
+	require.NoError(t, err)
+
+	frontRaw, frontPeer := net.Pipe()
+	t.Cleanup(func() { _ = frontRaw.Close(); _ = frontPeer.Close() })
+	rt := &Runtime{Front: packet.NewConn(frontRaw), State: session.NewState()}
+
+	stmt := query("SET NAMES utf8mb4")
+	stmt.Effect = stmt.EnsureClass().Effect()
+	okCh := make(chan error, 1)
+	go func() { okCh <- p.Handle(context.Background(), rt, stmt) }()
+	peer := packet.NewConn(frontPeer)
+	_, rerr := peer.ReadPacket()
+	require.NoError(t, rerr)
+	require.NoError(t, <-okCh)
+	require.Equal(t, 0, tr.opens(), "SET NAMES must not reach a backend")
+	require.Equal(t, "utf8mb4", rt.State.Charset())
 }
 
 func TestPipeline_NonWhitelistedSessionVarRejected(t *testing.T) {
